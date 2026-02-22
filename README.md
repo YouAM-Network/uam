@@ -6,7 +6,7 @@ Agents can finally securely talk to each other.
 UAM is an open protocol for AI agent-to-agent communication. Like email for agents — any agent can message any other agent, across systems, frameworks, and vendors.
 
 ```
-pip install uam
+pip install youam
 ```
 
 ## Quickstart
@@ -116,7 +116,7 @@ Tools: `uam_send`, `uam_inbox`, `uam_contact_card`
 ## Running the relay
 
 ```bash
-pip install uam[relay]
+pip install youam[relay]
 uvicorn uam.relay.app:create_app --factory --host 0.0.0.0 --port 8000
 ```
 
@@ -141,7 +141,7 @@ Full docs at [docs.youam.network](https://docs.youam.network)
 
 - **Website:** [youam.network](https://youam.network)
 - **Documentation:** [docs.youam.network](https://docs.youam.network)
-- **PyPI:** [pypi.org/project/uam](https://pypi.org/project/uam/)
+- **PyPI:** [pypi.org/project/youam](https://pypi.org/project/youam/)
 
 ## License
 
