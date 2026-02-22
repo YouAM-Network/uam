@@ -1,0 +1,1641 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "UAM Relay",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/v1/register": {
+      "post": {
+        "summary": "Register",
+        "description": "Register a new agent with the relay.\n\nThis is the only public (unauthenticated) endpoint besides /health.\nRate limited to 5 registrations per minute per IP.",
+        "operationId": "register_api_v1_register_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegisterResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agents/{address}/public-key": {
+      "get": {
+        "summary": "Get Public Key",
+        "description": "Return the public key for a registered agent.\n\nUnauthenticated -- any caller can look up any agent's public key.\nThis is required for encrypting the first message (handshake.request)\nwhen the sender has no prior relationship with the recipient.",
+        "operationId": "get_public_key_api_v1_agents__address__public_key_get",
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Address"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicKeyResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/send": {
+      "post": {
+        "summary": "Send Message",
+        "description": "Send a signed message envelope via REST.\n\nOrder of operations (DoS-resistant):\n1.  Auth (via dependency injection -- already done)\n2.  Blocklist check (SPAM-01 -- O(1) set lookup)\n3.  Allowlist check (SPAM-01 -- O(1), sets skip_reputation flag)\n4.  Adaptive sender rate limit (SPAM-04 -- reputation-based limit)\n5.  Parse envelope\n6.  Sender identity match\n7.  Domain rate limit (SPAM-03 -- relay domain exempt)\n8.  Recipient rate limit (RELAY-05)\n9.  Reputation score check (SPAM-06 -- drop if score <20)\n10. Signature verification (expensive -- LAST)\n11. Route or store",
+        "operationId": "send_message_api_v1_send_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SendResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/inbox/{address}": {
+      "get": {
+        "summary": "Get Inbox",
+        "description": "Retrieve stored messages for an agent.\n\nBearer token auth via ``verify_token_http`` dependency.\nAgent can only read their own inbox.",
+        "operationId": "get_inbox_api_v1_inbox__address__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Address"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 500,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboxResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/federation/deliver": {
+      "post": {
+        "summary": "Federation Deliver",
+        "description": "Stub endpoint for relay-to-relay federation.",
+        "operationId": "federation_deliver_api_v1_federation_deliver_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/demo/session": {
+      "post": {
+        "summary": "Create Demo Session",
+        "description": "Create an ephemeral demo agent with a real Ed25519 keypair.\n\nThe keypair is held server-side; the browser only receives a session\ntoken and the agent address.",
+        "operationId": "create_demo_session_api_v1_demo_session_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateSessionResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/demo/send": {
+      "post": {
+        "summary": "Demo Send",
+        "description": "Send a message from the demo session to any registered agent.\n\nThe relay signs and encrypts the envelope on behalf of the ephemeral\nagent using the server-held private key.",
+        "operationId": "demo_send_api_v1_demo_send_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DemoSendRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DemoSendResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/demo/inbox": {
+      "get": {
+        "summary": "Demo Inbox",
+        "description": "Return decrypted plaintext messages for the demo session.\n\nThe relay decrypts each stored envelope using the server-held private\nkey, so the browser receives plaintext content.",
+        "operationId": "demo_inbox_api_v1_demo_inbox_get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Demo session ID",
+              "title": "Session Id"
+            },
+            "description": "Demo session ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DemoInboxResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/verify-domain": {
+      "post": {
+        "summary": "Verify Domain",
+        "description": "Verify domain ownership for Tier 2 status (DNS-04).\n\nRequires Bearer token authentication.  The relay independently\nverifies that the agent's public key appears in the domain's DNS\nTXT record or HTTPS ``.well-known/uam.json`` file.",
+        "operationId": "verify_domain_api_v1_verify_domain_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyDomainRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VerifyDomainResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/agents/{address}/verification": {
+      "get": {
+        "summary": "Get Verification Status",
+        "description": "Return verification status for an agent (public, no auth required).\n\nReturns ``{\"address\": ..., \"tier\": 1|2, \"domain\": ...}``\nor 404 if the agent is not registered.",
+        "operationId": "get_verification_status_api_v1_agents__address__verification_get",
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Address"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Verification Status Api V1 Agents  Address  Verification Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agents/{address}/webhook": {
+      "put": {
+        "summary": "Set Webhook Url",
+        "description": "Set or update the webhook URL for an agent (HOOK-01).",
+        "operationId": "set_webhook_url_api_v1_agents__address__webhook_put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Address"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WebhookUrlRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookUrlResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete Webhook Url",
+        "description": "Remove the webhook URL for an agent.",
+        "operationId": "delete_webhook_url_api_v1_agents__address__webhook_delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Address"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookUrlResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "Get Webhook Url",
+        "description": "Get the current webhook URL for an agent.",
+        "operationId": "get_webhook_url_api_v1_agents__address__webhook_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Address"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookUrlResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agents/{address}/webhook/deliveries": {
+      "get": {
+        "summary": "List Webhook Deliveries",
+        "description": "Get recent webhook delivery records for an agent (HOOK-06).",
+        "operationId": "list_webhook_deliveries_api_v1_agents__address__webhook_deliveries_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Address"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookDeliveryListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/blocklist": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "List Blocked",
+        "description": "List all blocklist entries.",
+        "operationId": "list_blocked_api_v1_admin_blocklist_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BlocklistListResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Add Blocked",
+        "description": "Add a pattern to the blocklist.",
+        "operationId": "add_blocked_api_v1_admin_blocklist_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BlocklistRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Add Blocked Api V1 Admin Blocklist Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/blocklist/{pattern}": {
+      "delete": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Remove Blocked",
+        "description": "Remove a pattern from the blocklist.",
+        "operationId": "remove_blocked_api_v1_admin_blocklist__pattern__delete",
+        "parameters": [
+          {
+            "name": "pattern",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Pattern"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Remove Blocked Api V1 Admin Blocklist  Pattern  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/allowlist": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "List Allowed",
+        "description": "List all allowlist entries.",
+        "operationId": "list_allowed_api_v1_admin_allowlist_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AllowlistListResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Add Allowed",
+        "description": "Add a pattern to the allowlist.",
+        "operationId": "add_allowed_api_v1_admin_allowlist_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AllowlistRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Add Allowed Api V1 Admin Allowlist Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/allowlist/{pattern}": {
+      "delete": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Remove Allowed",
+        "description": "Remove a pattern from the allowlist.",
+        "operationId": "remove_allowed_api_v1_admin_allowlist__pattern__delete",
+        "parameters": [
+          {
+            "name": "pattern",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Pattern"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Remove Allowed Api V1 Admin Allowlist  Pattern  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/reputation/{address}": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Get Reputation",
+        "description": "Inspect agent reputation.",
+        "operationId": "get_reputation_api_v1_admin_reputation__address__get",
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Address"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReputationResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Set Reputation",
+        "description": "Admin override of reputation score.",
+        "operationId": "set_reputation_api_v1_admin_reputation__address__put",
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Address"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetReputationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReputationResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Health",
+        "description": "Return relay status. No authentication required.",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AllowlistEntry": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "pattern": {
+            "type": "string",
+            "title": "Pattern"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "pattern",
+          "created_at"
+        ],
+        "title": "AllowlistEntry"
+      },
+      "AllowlistListResponse": {
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/AllowlistEntry"
+            },
+            "type": "array",
+            "title": "Entries"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "entries",
+          "count"
+        ],
+        "title": "AllowlistListResponse"
+      },
+      "AllowlistRequest": {
+        "properties": {
+          "pattern": {
+            "type": "string",
+            "title": "Pattern"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "pattern"
+        ],
+        "title": "AllowlistRequest"
+      },
+      "BlocklistEntry": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "pattern": {
+            "type": "string",
+            "title": "Pattern"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "pattern",
+          "created_at"
+        ],
+        "title": "BlocklistEntry"
+      },
+      "BlocklistListResponse": {
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/BlocklistEntry"
+            },
+            "type": "array",
+            "title": "Entries"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "entries",
+          "count"
+        ],
+        "title": "BlocklistListResponse"
+      },
+      "BlocklistRequest": {
+        "properties": {
+          "pattern": {
+            "type": "string",
+            "title": "Pattern"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "pattern"
+        ],
+        "title": "BlocklistRequest"
+      },
+      "CreateSessionResponse": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "address": {
+            "type": "string",
+            "title": "Address"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "address"
+        ],
+        "title": "CreateSessionResponse"
+      },
+      "DemoInboxResponse": {
+        "properties": {
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/DemoMessage"
+            },
+            "type": "array",
+            "title": "Messages"
+          }
+        },
+        "type": "object",
+        "required": [
+          "messages"
+        ],
+        "title": "DemoInboxResponse"
+      },
+      "DemoMessage": {
+        "properties": {
+          "from_address": {
+            "type": "string",
+            "title": "From Address"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          },
+          "timestamp": {
+            "type": "string",
+            "title": "Timestamp"
+          },
+          "message_id": {
+            "type": "string",
+            "title": "Message Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "from_address",
+          "content",
+          "timestamp",
+          "message_id"
+        ],
+        "title": "DemoMessage"
+      },
+      "DemoSendRequest": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "to_address": {
+            "type": "string",
+            "title": "To Address"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "to_address",
+          "message"
+        ],
+        "title": "DemoSendRequest"
+      },
+      "DemoSendResponse": {
+        "properties": {
+          "message_id": {
+            "type": "string",
+            "title": "Message Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "message_id"
+        ],
+        "title": "DemoSendResponse"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HealthResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "agents_online": {
+            "type": "integer",
+            "title": "Agents Online"
+          },
+          "version": {
+            "type": "string",
+            "title": "Version"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "agents_online",
+          "version"
+        ],
+        "title": "HealthResponse"
+      },
+      "InboxResponse": {
+        "properties": {
+          "address": {
+            "type": "string",
+            "title": "Address"
+          },
+          "messages": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Messages"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "address",
+          "messages",
+          "count"
+        ],
+        "title": "InboxResponse"
+      },
+      "PublicKeyResponse": {
+        "properties": {
+          "address": {
+            "type": "string",
+            "title": "Address"
+          },
+          "public_key": {
+            "type": "string",
+            "title": "Public Key"
+          },
+          "tier": {
+            "type": "integer",
+            "title": "Tier",
+            "default": 1
+          },
+          "verified_domain": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verified Domain"
+          }
+        },
+        "type": "object",
+        "required": [
+          "address",
+          "public_key"
+        ],
+        "title": "PublicKeyResponse"
+      },
+      "RegisterRequest": {
+        "properties": {
+          "agent_name": {
+            "type": "string",
+            "title": "Agent Name"
+          },
+          "public_key": {
+            "type": "string",
+            "title": "Public Key"
+          },
+          "webhook_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhook Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "agent_name",
+          "public_key"
+        ],
+        "title": "RegisterRequest"
+      },
+      "RegisterResponse": {
+        "properties": {
+          "address": {
+            "type": "string",
+            "title": "Address"
+          },
+          "token": {
+            "type": "string",
+            "title": "Token"
+          },
+          "relay": {
+            "type": "string",
+            "title": "Relay"
+          }
+        },
+        "type": "object",
+        "required": [
+          "address",
+          "token",
+          "relay"
+        ],
+        "title": "RegisterResponse"
+      },
+      "ReputationResponse": {
+        "properties": {
+          "address": {
+            "type": "string",
+            "title": "Address"
+          },
+          "score": {
+            "type": "integer",
+            "title": "Score"
+          },
+          "tier": {
+            "type": "string",
+            "title": "Tier"
+          },
+          "messages_sent": {
+            "type": "integer",
+            "title": "Messages Sent"
+          },
+          "messages_rejected": {
+            "type": "integer",
+            "title": "Messages Rejected"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "address",
+          "score",
+          "tier",
+          "messages_sent",
+          "messages_rejected",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ReputationResponse"
+      },
+      "SendRequest": {
+        "properties": {
+          "envelope": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Envelope"
+          }
+        },
+        "type": "object",
+        "required": [
+          "envelope"
+        ],
+        "title": "SendRequest"
+      },
+      "SendResponse": {
+        "properties": {
+          "message_id": {
+            "type": "string",
+            "title": "Message Id"
+          },
+          "delivered": {
+            "type": "boolean",
+            "title": "Delivered"
+          }
+        },
+        "type": "object",
+        "required": [
+          "message_id",
+          "delivered"
+        ],
+        "title": "SendResponse"
+      },
+      "SetReputationRequest": {
+        "properties": {
+          "score": {
+            "type": "integer",
+            "title": "Score"
+          }
+        },
+        "type": "object",
+        "required": [
+          "score"
+        ],
+        "title": "SetReputationRequest"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "VerifyDomainRequest": {
+        "properties": {
+          "domain": {
+            "type": "string",
+            "title": "Domain"
+          }
+        },
+        "type": "object",
+        "required": [
+          "domain"
+        ],
+        "title": "VerifyDomainRequest"
+      },
+      "VerifyDomainResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "domain": {
+            "type": "string",
+            "title": "Domain"
+          },
+          "tier": {
+            "type": "integer",
+            "title": "Tier"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "domain",
+          "tier"
+        ],
+        "title": "VerifyDomainResponse"
+      },
+      "WebhookDeliveryListResponse": {
+        "properties": {
+          "address": {
+            "type": "string",
+            "title": "Address"
+          },
+          "deliveries": {
+            "items": {
+              "$ref": "#/components/schemas/WebhookDeliveryRecord"
+            },
+            "type": "array",
+            "title": "Deliveries"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "address",
+          "deliveries",
+          "count"
+        ],
+        "title": "WebhookDeliveryListResponse"
+      },
+      "WebhookDeliveryRecord": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "message_id": {
+            "type": "string",
+            "title": "Message Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "attempt_count": {
+            "type": "integer",
+            "title": "Attempt Count"
+          },
+          "last_status_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Status Code"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "message_id",
+          "status",
+          "attempt_count",
+          "created_at"
+        ],
+        "title": "WebhookDeliveryRecord"
+      },
+      "WebhookUrlRequest": {
+        "properties": {
+          "webhook_url": {
+            "type": "string",
+            "title": "Webhook Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "webhook_url"
+        ],
+        "title": "WebhookUrlRequest"
+      },
+      "WebhookUrlResponse": {
+        "properties": {
+          "address": {
+            "type": "string",
+            "title": "Address"
+          },
+          "webhook_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhook Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "address",
+          "webhook_url"
+        ],
+        "title": "WebhookUrlResponse"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  }
+}

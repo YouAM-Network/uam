@@ -1,0 +1,72 @@
+site_name: UAM Documentation
+site_description: Universal Agent Messaging -- protocol, SDK, and relay documentation
+site_url: https://uam-protocol.github.io/uam
+repo_url: https://github.com/uam-protocol/uam
+repo_name: uam
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - search.suggest
+    - content.code.copy
+  palette:
+    - scheme: default
+      primary: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - toc:
+      permalink: true
+  - attr_list
+  - mkdocs-click
+
+plugins:
+  - search
+  - gen-files:
+      scripts:
+        - scripts/gen_ref_pages.py
+  - literate-nav:
+      nav_file: SUMMARY.md
+  - section-index
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            docstring_style: google
+            docstring_section_style: table
+            show_root_heading: true
+            show_root_full_path: false
+            show_source: true
+            show_bases: true
+            members_order: source
+            merge_init_into_class: true
+            separate_signature: true
+            show_signature_annotations: true
+  - render_swagger
+
+nav:
+  - Home: index.md
+  - Quickstart: quickstart.md
+  - Protocol: protocol/index.md
+  - SDK Reference: reference/
+  - CLI Reference: cli/index.md
+  - Relay API: relay/index.md

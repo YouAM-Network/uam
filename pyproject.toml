@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "uam"
+version = "0.1.0"
+description = "Universal Agent Messaging protocol library"
+requires-python = ">=3.10"
+dependencies = [
+    "pynacl>=1.6.2",
+    "uuid6>=2025.0.1",
+    "httpx>=0.28",
+    "websockets>=14",
+    "pydantic>=2.0",
+    "aiosqlite>=0.21",
+    "click>=8.1",
+    "tomli>=2.0; python_version < '3.11'",
+    "dnspython>=2.8",
+]
+
+[project.scripts]
+uam = "uam.cli.main:cli"
+uam-mcp = "uam.mcp.server:main"
+
+[project.optional-dependencies]
+relay = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+]
+mcp = [
+    "mcp>=1.0",
+]
+demo = [
+    "litellm>=1.30",
+]
+docs = [
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.27",
+    "mkdocs-click>=0.8",
+    "mkdocs-gen-files>=0.5",
+    "mkdocs-literate-nav>=0.6",
+    "mkdocs-section-index>=0.3",
+    "mkdocs-render-swagger-plugin>=0.1",
+]
+all = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "mcp>=1.0",
+    "litellm>=1.30",
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.27",
+    "mkdocs-click>=0.8",
+    "mkdocs-gen-files>=0.5",
+    "mkdocs-literate-nav>=0.6",
+    "mkdocs-section-index>=0.3",
+    "mkdocs-render-swagger-plugin>=0.1",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov",
+    "pytest-asyncio>=0.25",
+    "pytest-httpx>=0.35",
+    "httpx>=0.28",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
