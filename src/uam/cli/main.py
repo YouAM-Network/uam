@@ -15,7 +15,7 @@ import click
 import httpx
 
 from uam.protocol import UAMError
-from uam.protocol.crypto import public_key_fingerprint
+from uam.protocol.crypto import deserialize_verify_key, public_key_fingerprint
 from uam.sdk.agent import Agent
 from uam.sdk.config import SDKConfig
 from uam.sdk.contact_book import ContactBook
@@ -50,6 +50,16 @@ def _error(msg: str) -> None:
     """Print an error message to stderr and exit 1."""
     click.echo(msg, err=True)
     raise SystemExit(1)
+
+
+def _trust_indicator(trust_state: str) -> str:
+    """Map a trust_state to a display string with ASCII-safe indicator."""
+    indicators = {
+        "provisional": "provisional (!)",
+        "pinned": "pinned [P]",
+        "verified": "verified [V]",
+    }
+    return indicators.get(trust_state, trust_state)
 
 
 # ---------------------------------------------------------------------------
@@ -235,12 +245,12 @@ def contacts(ctx: click.Context) -> None:
         return
 
     # Print table header
-    click.echo(f"{'ADDRESS':<30} {'TRUST':<18} {'LAST SEEN'}")
+    click.echo(f"{'ADDRESS':<30} {'TRUST':<22} {'LAST SEEN'}")
     for row in rows:
         addr = row["address"]
-        trust = row["trust_state"]
+        trust = _trust_indicator(row["trust_state"])
         last = row["last_seen"] or ""
-        click.echo(f"{addr:<30} {trust:<18} {last}")
+        click.echo(f"{addr:<30} {trust:<22} {last}")
 
 
 async def _list_contacts(book: ContactBook) -> list[dict]:
@@ -248,6 +258,118 @@ async def _list_contacts(book: ContactBook) -> list[dict]:
     await book.open()
     try:
         return await book.list_contacts()
+    finally:
+        await book.close()
+
+
+# ---------------------------------------------------------------------------
+# uam contact (TOFU-04) -- subcommands: fingerprint, verify, remove
+# ---------------------------------------------------------------------------
+
+
+@cli.group()
+def contact():
+    """Contact management commands (fingerprint, verify, remove)."""
+    pass
+
+
+@contact.command("fingerprint")
+@click.argument("address")
+@click.pass_context
+def contact_fingerprint(ctx: click.Context, address: str) -> None:
+    """Display the fingerprint for a known contact's public key."""
+    agent_name = ctx.obj.get("name") or _find_agent_name()
+    cfg = SDKConfig(name=agent_name or "_probe")
+    book = ContactBook(cfg.data_dir)
+
+    try:
+        pk_str = asyncio.run(_get_contact_public_key(book, address))
+    except Exception:
+        pk_str = None
+
+    if pk_str is None:
+        _error(f"Contact not found: {address}")
+
+    vk = deserialize_verify_key(pk_str)
+    fp = public_key_fingerprint(vk)
+    short_fp = fp[:16]
+
+    click.echo(f"Address:     {address}")
+    click.echo(f"Fingerprint: {short_fp}")
+    click.echo(f"Full:        {fp}")
+
+
+async def _get_contact_public_key(book: ContactBook, address: str) -> str | None:
+    """Open contact book, look up public key, close."""
+    await book.open()
+    try:
+        return await book.get_public_key(address)
+    finally:
+        await book.close()
+
+
+@contact.command("verify")
+@click.argument("address")
+@click.pass_context
+def contact_verify(ctx: click.Context, address: str) -> None:
+    """Manually verify a contact, upgrading their trust state to verified."""
+    agent_name = ctx.obj.get("name") or _find_agent_name()
+    cfg = SDKConfig(name=agent_name or "_probe")
+    book = ContactBook(cfg.data_dir)
+
+    try:
+        result = asyncio.run(_verify_contact(book, address))
+    except Exception as exc:
+        _error(f"Error: {exc}")
+
+    if result is None:
+        _error(f"Contact not found: {address}")
+
+    click.echo(f"Contact {address} verified. Trust state: verified")
+
+
+async def _verify_contact(book: ContactBook, address: str) -> str | None:
+    """Upgrade a contact to verified trust state. Returns public_key or None."""
+    await book.open()
+    try:
+        pk = await book.get_public_key(address)
+        if pk is None:
+            return None
+        await book.add_contact(
+            address, pk, trust_state="verified", trust_source="manual-verify"
+        )
+        return pk
+    finally:
+        await book.close()
+
+
+@contact.command("remove")
+@click.argument("address")
+@click.pass_context
+def contact_remove(ctx: click.Context, address: str) -> None:
+    """Remove a contact from the contact book (escape hatch for key rotation)."""
+    agent_name = ctx.obj.get("name") or _find_agent_name()
+    cfg = SDKConfig(name=agent_name or "_probe")
+    book = ContactBook(cfg.data_dir)
+
+    try:
+        removed = asyncio.run(_remove_contact(book, address))
+    except Exception as exc:
+        _error(f"Error: {exc}")
+
+    if not removed:
+        _error(f"Contact not found: {address}")
+
+    click.echo(
+        f"Contact {address} removed. Future messages will re-resolve the public key."
+    )
+
+
+async def _remove_contact(book: ContactBook, address: str) -> bool:
+    """Open contact book, remove contact, close."""
+    await book.open()
+    try:
+        return await book.remove_contact(address)
     finally:
         await book.close()
 

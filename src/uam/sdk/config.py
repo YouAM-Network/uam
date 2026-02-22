@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_RELAY_URL = "https://relay.youam.network"
 _DEFAULT_REGISTRAR_URL = "https://registrar.youam.network"
 
-_VALID_POLICIES = {"auto-accept", "approval-required", "allowlist-only"}
+_VALID_POLICIES = {"auto-accept", "approval-required", "allowlist-only", "require_verify"}
 
 
 @dataclass
