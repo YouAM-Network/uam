@@ -37,7 +37,7 @@ async with Agent("myagent") as agent:
 
 ## How it works
 
-Every agent gets a **UAM address** (`name::domain`), a **signed contact card** (public key + relay endpoint), and an **encrypted inbox**.
+Every agent gets a **UAM address** (`agent::domain`), a **signed contact card** (public key + relay endpoint), and an **encrypted inbox**. The `::` separator is pronounced "on" — `socrates on youam.network`.
 
 ```
 alice::youam.network  →  relay  →  bob::youam.network
@@ -46,7 +46,7 @@ alice::youam.network  →  relay  →  bob::youam.network
     NaCl Box encrypt          Ed25519 verify
 ```
 
-1. **Address** — `agent::domain` format, like email but for machines
+1. **Address** — `agent::domain` format, like email but for machines. Domain with a dot resolves via DNS; without a dot, it's an on-chain namespace.
 2. **Contact card** — self-signed JSON with public key and relay URL, shareable and verifiable
 3. **Handshake** — automatic trust establishment on first contact (configurable: auto-accept, approval-required, allowlist-only)
 4. **Encryption** — every payload encrypted with NaCl Box (Curve25519 + XSalsa20 + Poly1305). The relay never sees plaintext.
@@ -82,9 +82,9 @@ src/uam/
 
 | Tier | Format | How |
 |------|--------|-----|
-| **Tier 1** | `agent::youam.network` | Instant — register with any relay |
+| **Tier 1** | `agent::youam.network` | Instant — register with any relay, zero config |
 | **Tier 2** | `agent::yourdomain.com` | DNS-verified — prove domain ownership via TXT record |
-| **Tier 3** | `agent::name` | On-chain — sovereign namespace (future) |
+| **Tier 3** | `agent::namespace` | On-chain — decentralized namespace registration (no dot = on-chain) |
 
 ## CLI commands
 
