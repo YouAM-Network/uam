@@ -145,4 +145,4 @@ Full docs at [docs.youam.network](https://docs.youam.network)
 
 ## License
 
-MIT
+Apache 2.0 — see [LICENSE](LICENSE) for details.
