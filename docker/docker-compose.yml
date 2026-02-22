@@ -1,0 +1,28 @@
+# UAM Relay - Single Instance Deployment
+# Usage: docker-compose -f docker/docker-compose.yml up -d
+
+version: "3.8"
+
+services:
+  relay:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: uam-relay
+    ports:
+      - "${UAM_PORT:-8000}:8000"
+    env_file:
+      - .env
+    volumes:
+      - relay-data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  relay-data:
+    driver: local

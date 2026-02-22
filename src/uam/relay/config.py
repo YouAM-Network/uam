@@ -42,3 +42,21 @@ class Settings:
         self.reputation_dns_verified_score: int = int(
             os.getenv("UAM_REPUTATION_DNS_VERIFIED_SCORE", "60")
         )
+        # Federation settings (FED-01 through FED-10)
+        self.relay_key_path: str = os.getenv("UAM_RELAY_KEY_PATH", "relay_key.pem")
+        self.federation_enabled: bool = os.getenv(
+            "UAM_FEDERATION_ENABLED", "true"
+        ).lower() in ("1", "true", "yes")
+        self.federation_max_hops: int = int(
+            os.getenv("UAM_FEDERATION_MAX_HOPS", "3")
+        )
+        self.federation_relay_rate_limit: int = int(
+            os.getenv("UAM_FEDERATION_RELAY_RATE_LIMIT", "1000")
+        )
+        self.federation_timestamp_max_age: int = int(
+            os.getenv("UAM_FEDERATION_TIMESTAMP_MAX_AGE", "300")
+        )
+        self.federation_discovery_ttl_hours: int = int(
+            os.getenv("UAM_FEDERATION_DISCOVERY_TTL_HOURS", "1")
+        )
+        self.federation_retry_delays: list[int] = [0, 30, 300, 1800, 7200]

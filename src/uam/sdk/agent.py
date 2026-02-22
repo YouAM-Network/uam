@@ -244,9 +244,22 @@ class Agent:
             attachments=attachments,
         )
 
-        # Send via transport
+        # Send via transport (with multi-relay failover -- CARD-06)
         wire = to_wire_dict(envelope)
-        await self._transport.send(wire)
+        relay_urls = await self._get_relay_urls(to_address)
+        if (
+            relay_urls is not None
+            and len(relay_urls) == 1
+            and relay_urls[0] == self._config.relay_url
+        ):
+            # Same relay -- use existing transport (no failover overhead)
+            await self._transport.send(wire)
+        elif relay_urls is not None and len(relay_urls) > 0:
+            # Multi-relay or cross-relay: try each in order
+            await self._try_send_with_failover(wire, relay_urls)
+        else:
+            # No relay info -- fall back to own transport
+            await self._transport.send(wire)
         return envelope.message_id
 
     async def inbox(self, limit: int = 50) -> list[ReceivedMessage]:
@@ -441,6 +454,74 @@ class Agent:
         _run_sync(self.unblock(pattern))
 
     # -- Internal methods ----------------------------------------------------
+
+    # -- Multi-relay failover (CARD-06) --------------------------------------
+
+    async def _get_relay_urls(self, to_address: str) -> list[str] | None:
+        """Return ordered relay URLs for *to_address* (CARD-06).
+
+        Resolution order:
+        1. Contact book ``relays`` array (multi-relay from stored card)
+        2. Contact book ``relay`` (single relay, wrapped in list)
+        3. ``[self._config.relay_url]`` (default: send to own relay)
+        """
+        urls = await self._contact_book.get_relay_urls(to_address)
+        if urls is not None:
+            return urls
+        # Fallback: own relay
+        return [self._config.relay_url]
+
+    async def _try_send_with_failover(
+        self,
+        wire: dict,
+        relay_urls: list[str],
+    ) -> None:
+        """Try sending *wire* envelope to each relay URL in order (CARD-06).
+
+        Uses transient ``httpx`` POST requests (not the agent's persistent
+        transport) so the envelope can be delivered to any relay that
+        hosts the recipient.
+
+        On success (2xx), returns immediately.  On connection/HTTP error,
+        logs a warning and tries the next relay.  If ALL relays fail,
+        raises the last exception.
+        """
+        last_error: Exception | None = None
+        for url in relay_urls:
+            # Normalise: strip trailing '/ws' or '/ws/' to get base HTTP URL,
+            # then ensure we hit the HTTP send endpoint.
+            base = url.rstrip("/")
+            if base.endswith("/ws"):
+                base = base[:-3]
+            # Convert wss:// -> https:// and ws:// -> http:// for POST
+            base = base.replace("wss://", "https://").replace("ws://", "http://")
+            send_url = f"{base}/api/v1/send"
+
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.post(
+                        send_url,
+                        json={"envelope": wire},
+                        headers={"Authorization": f"Bearer {self._token}"},
+                    )
+                    resp.raise_for_status()
+                logger.debug("Sent envelope via relay %s", url)
+                return
+            except (
+                httpx.ConnectError,
+                httpx.ConnectTimeout,
+                httpx.TimeoutException,
+                httpx.HTTPStatusError,
+            ) as exc:
+                last_error = exc
+                logger.warning(
+                    "Relay %s failed (%s), trying next relay", url, exc
+                )
+
+        # All relays failed
+        if last_error is not None:
+            raise last_error
+        raise UAMError("No relay URLs to try")
 
     async def _ensure_connected(self) -> None:
         """Lazily connect if not already connected."""

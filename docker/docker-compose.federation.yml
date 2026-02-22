@@ -1,0 +1,95 @@
+# UAM Relay - Two-Relay Federation Deployment
+# Proves that two independent relays can federate using the same codebase.
+#
+# Usage: docker-compose -f docker/docker-compose.federation.yml up -d
+#
+# Relay Alpha: http://localhost:8001 (domain: alpha.local)
+# Relay Beta:  http://localhost:8002 (domain: beta.local)
+#
+# Both relays share a Docker network so they can discover each other
+# via the .well-known fallback (DNS SRV is not available in local Docker).
+
+version: "3.8"
+
+services:
+  relay-alpha:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: uam-relay-alpha
+    hostname: alpha.local
+    ports:
+      - "8001:8000"
+    environment:
+      UAM_RELAY_DOMAIN: alpha.local
+      UAM_RELAY_HTTP_URL: http://relay-alpha:8000
+      UAM_RELAY_WS_URL: ws://localhost:8001/ws
+      UAM_DB_PATH: /app/data/relay.db
+      UAM_RELAY_KEY_PATH: /app/data/relay_key.pem
+      UAM_FEDERATION_ENABLED: "true"
+      UAM_FEDERATION_MAX_HOPS: "3"
+      UAM_FEDERATION_TIMESTAMP_MAX_AGE: "300"
+      UAM_FEDERATION_DISCOVERY_TTL_HOURS: "1"
+      UAM_LOG_LEVEL: INFO
+      UAM_ADMIN_API_KEY: alpha-admin-key
+    volumes:
+      - alpha-data:/app/data
+    networks:
+      federation:
+        aliases:
+          - alpha.local
+    extra_hosts:
+      - "beta.local:host-gateway"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  relay-beta:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: uam-relay-beta
+    hostname: beta.local
+    ports:
+      - "8002:8000"
+    environment:
+      UAM_RELAY_DOMAIN: beta.local
+      UAM_RELAY_HTTP_URL: http://relay-beta:8000
+      UAM_RELAY_WS_URL: ws://localhost:8002/ws
+      UAM_DB_PATH: /app/data/relay.db
+      UAM_RELAY_KEY_PATH: /app/data/relay_key.pem
+      UAM_FEDERATION_ENABLED: "true"
+      UAM_FEDERATION_MAX_HOPS: "3"
+      UAM_FEDERATION_TIMESTAMP_MAX_AGE: "300"
+      UAM_FEDERATION_DISCOVERY_TTL_HOURS: "1"
+      UAM_LOG_LEVEL: INFO
+      UAM_ADMIN_API_KEY: beta-admin-key
+    volumes:
+      - beta-data:/app/data
+    networks:
+      federation:
+        aliases:
+          - beta.local
+    extra_hosts:
+      - "alpha.local:host-gateway"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+networks:
+  federation:
+    driver: bridge
+
+volumes:
+  alpha-data:
+    driver: local
+  beta-data:
+    driver: local

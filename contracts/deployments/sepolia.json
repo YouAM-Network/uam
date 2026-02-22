@@ -1,0 +1,18 @@
+{
+  "network": "base-sepolia",
+  "chainId": 84532,
+  "rpcUrl": "https://sepolia.base.org",
+  "contracts": {
+    "UAMPriceOracle": {
+      "address": "0x5BfEDC3B10A573c56280Ac4052a5F2715667317a",
+      "deployedAt": "2026-02-22"
+    },
+    "UAMNameRegistry": {
+      "address": "0x8F0049474bDA14cfB55C795cfF97AC1182f9ECee",
+      "deployedAt": "2026-02-22"
+    }
+  },
+  "priceFeed": "0x4adC67D868764F3Fc48Ed4b29f11f7e7380B9027",
+  "explorerUrl": "https://sepolia.basescan.org",
+  "abiPath": "./UAMNameRegistry.abi.json"
+}

@@ -41,6 +41,11 @@ class ContactCard:
     verified_domain: Optional[str] = None
     payload_formats: Optional[list[str]] = None
     fingerprint: Optional[str] = None
+    # CARD-04: Multi-relay support.  Outside signature scope so intermediaries
+    # (e.g., relay operators) can update the relay list without invalidating
+    # the card's signature.  Presence of this field signals v0.2 capability;
+    # the version string stays at UAM_VERSION ("0.1") for now.
+    relays: Optional[list[str]] = None
 
 
 def _build_signable_dict(card: ContactCard) -> dict:
@@ -78,6 +83,8 @@ def contact_card_to_dict(card: ContactCard) -> dict:
         d["payload_formats"] = card.payload_formats
     if card.fingerprint is not None:
         d["fingerprint"] = card.fingerprint
+    if card.relays is not None:
+        d["relays"] = card.relays
     return d
 
 
@@ -110,6 +117,7 @@ def contact_card_from_dict(d: dict, *, verify: bool = True) -> ContactCard:
         verified_domain=d.get("verified_domain"),
         payload_formats=d.get("payload_formats"),
         fingerprint=d.get("fingerprint"),
+        relays=d.get("relays"),
     )
 
     if verify:
@@ -129,6 +137,7 @@ def create_contact_card(
     connection_endpoint: str | None = None,
     verified_domain: str | None = None,
     payload_formats: list[str] | None = None,
+    relays: list[str] | None = None,
 ) -> ContactCard:
     """Create a self-signed contact card.
 
@@ -164,6 +173,7 @@ def create_contact_card(
         verified_domain=verified_domain,
         payload_formats=payload_formats,
         fingerprint=fp,
+        relays=relays,
     )
 
     # Sign (payload_formats and fingerprint are NOT in signable dict)
@@ -184,6 +194,7 @@ def create_contact_card(
         verified_domain=verified_domain,
         payload_formats=payload_formats,
         fingerprint=fp,
+        relays=relays,
     )
 
 

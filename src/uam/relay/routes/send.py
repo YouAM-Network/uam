@@ -27,6 +27,15 @@ _EXPIRY_GRACE_SECONDS = 30
 router = APIRouter()
 
 
+async def _queue_federation(db, target_domain: str, envelope_dict: dict, from_relay: str) -> None:  # noqa: ANN001
+    """Queue a federation message for retry (FED-10)."""
+    await db.execute(
+        "INSERT INTO federation_queue (target_domain, envelope, via, hop_count) VALUES (?, ?, ?, ?)",
+        (target_domain, json.dumps(envelope_dict), json.dumps([from_relay]), 1),
+    )
+    await db.commit()
+
+
 @router.post("/send", response_model=SendResponse)
 async def send_message(
     body: SendRequest,
@@ -153,14 +162,48 @@ async def send_message(
             delivered = True  # webhook delivery initiated (async)
 
     if delivery_method is None:
-        # Tier 3: Store-and-forward (eventual)
-        await store_message(
-            db, envelope.from_address, envelope.to_address,
-            json.dumps(body.envelope), expires=expires_str,
-        )
-        delivery_method = "stored"
+        # Step 12: Federation forwarding for non-local recipients (FED-01)
+        recipient_domain = ""
+        if "::" in envelope.to_address:
+            recipient_domain = envelope.to_address.split("::")[1]
 
-    delivered_flag = delivery_method != "stored"
+        if recipient_domain and recipient_domain != settings.relay_domain:
+            # Non-local recipient -- forward via federation
+            federation_service = getattr(request.app.state, "federation_service", None)
+            if federation_service and settings.federation_enabled:
+                fed_result = await federation_service.forward(
+                    envelope_dict=body.envelope,
+                    from_relay=settings.relay_domain,
+                )
+                if fed_result.delivered:
+                    delivery_method = "federated"
+                elif fed_result.queued:
+                    delivery_method = "federation_queued"
+                else:
+                    # Federation failed -- queue for retry
+                    await _queue_federation(
+                        request.app.state.db,
+                        recipient_domain,
+                        body.envelope,
+                        settings.relay_domain,
+                    )
+                    delivery_method = "federation_queued"
+            else:
+                # Federation not available -- store locally as fallback
+                await store_message(
+                    db, envelope.from_address, envelope.to_address,
+                    json.dumps(body.envelope), expires=expires_str,
+                )
+                delivery_method = "stored"
+        else:
+            # Local recipient not online -- store for pickup
+            await store_message(
+                db, envelope.from_address, envelope.to_address,
+                json.dumps(body.envelope), expires=expires_str,
+            )
+            delivery_method = "stored"
+
+    delivered_flag = delivery_method not in ("stored", "federation_queued")
 
     # Generate receipt.delivered for the sender (MSG-05 anti-loop guard)
     if delivered_flag and not is_receipt:

@@ -5,7 +5,7 @@ The UAM Python SDK provides a high-level `Agent` class for sending and receiving
 ## Quick example
 
 ```python
-from uam import Agent
+from uam.sdk.agent import Agent
 
 agent = Agent("my-agent")
 

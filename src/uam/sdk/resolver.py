@@ -97,19 +97,20 @@ class Tier2Resolver(AddressResolver):
         raise UAMError(f"Cannot resolve Tier 2 address: {address}")
 
 
-class Tier3Resolver(AddressResolver):
-    """Tier 3 stub: On-chain namespace lookup.
+try:
+    from uam.sdk.tier3 import Tier3Resolver  # noqa: F401
+except (ImportError, UAMError):
+    # Fallback stub when web3 is not installed or ABI not found
+    class Tier3Resolver(AddressResolver):  # type: ignore[no-redef]
+        """Tier 3 stub: requires 'youam[chain]' extra."""
 
-    See ROADMAP Phase 2 -- will resolve agent addresses via on-chain
-    namespace registries for decentralised identity verification.
-    """
-
-    async def resolve_public_key(
-        self, address: str, token: str, relay_url: str
-    ) -> str:
-        raise NotImplementedError(
-            "On-chain resolution is not yet implemented (Tier 3)"
-        )
+        async def resolve_public_key(
+            self, address: str, token: str, relay_url: str
+        ) -> str:
+            raise UAMError(
+                "On-chain resolution requires web3. "
+                "Install with: pip install 'youam[chain]'"
+            )
 
 
 class SmartResolver(AddressResolver):
@@ -118,13 +119,18 @@ class SmartResolver(AddressResolver):
     Routing rules:
       - domain == relay_domain  -> Tier 1 (relay HTTP API lookup)
       - domain contains a '.'  -> Tier 2 (DNS TXT / HTTPS fallback)
-      - domain has no dots     -> Tier 3 (not yet implemented, raises UAMError)
+      - domain has no dots     -> Tier 3 (on-chain namespace lookup)
     """
 
-    def __init__(self, relay_domain: str) -> None:
+    def __init__(
+        self,
+        relay_domain: str,
+        tier3_resolver: AddressResolver | None = None,
+    ) -> None:
         self._relay_domain = relay_domain
         self._tier1 = Tier1Resolver()
         self._tier2 = Tier2Resolver()
+        self._tier3: AddressResolver = tier3_resolver or Tier3Resolver()
 
     async def resolve_public_key(
         self, address: str, token: str, relay_url: str
@@ -138,7 +144,5 @@ class SmartResolver(AddressResolver):
         if "." in domain:
             return await self._tier2.resolve_public_key(address, token, relay_url)
 
-        raise UAMError(
-            f"Tier 3 resolution is not yet implemented. "
-            f"Cannot resolve dot-free domain: {domain!r}"
-        )
+        # dot-free domain -> Tier 3 on-chain resolution
+        return await self._tier3.resolve_public_key(address, token, relay_url)

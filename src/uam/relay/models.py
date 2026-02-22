@@ -187,3 +187,28 @@ class PresenceResponse(BaseModel):
     address: str
     online: bool
     last_seen: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Federation models (FED-01)
+# ---------------------------------------------------------------------------
+
+
+class FederationDeliverRequest(BaseModel):
+    envelope: dict[str, Any]
+    via: list[str] = []
+    hop_count: int = 0
+    timestamp: str
+    from_relay: str
+
+
+class FederationDeliverResponse(BaseModel):
+    status: str  # "delivered" | "queued" | "rejected"
+    detail: str | None = None
+
+
+class WellKnownRelayResponse(BaseModel):
+    relay_domain: str
+    federation_endpoint: str
+    public_key: str
+    version: str = "0.1"

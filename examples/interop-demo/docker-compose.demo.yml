@@ -1,0 +1,89 @@
+# UAM Interop Demo - Two Federated Relay Instances
+# Proves cross-language, cross-relay interop between Python and TypeScript agents.
+#
+# Relay Alpha: http://localhost:9001 (domain: alpha.demo)
+# Relay Beta:  http://localhost:9002 (domain: beta.demo)
+#
+# Both relays federate over a shared Docker network using container DNS aliases
+# for .well-known discovery (DNS SRV is not available in local Docker).
+
+version: "3.8"
+
+services:
+  relay-alpha:
+    build:
+      context: ../../
+      dockerfile: docker/Dockerfile
+    container_name: uam-demo-relay-alpha
+    hostname: alpha.demo
+    ports:
+      - "9001:8000"
+    environment:
+      UAM_RELAY_DOMAIN: alpha.demo
+      UAM_RELAY_HTTP_URL: http://relay-alpha:8000
+      UAM_RELAY_WS_URL: ws://relay-alpha:8000/ws
+      UAM_DB_PATH: /app/data/relay.db
+      UAM_RELAY_KEY_PATH: /app/data/relay_key.pem
+      UAM_FEDERATION_ENABLED: "true"
+      UAM_FEDERATION_MAX_HOPS: "3"
+      UAM_FEDERATION_TIMESTAMP_MAX_AGE: "300"
+      UAM_FEDERATION_DISCOVERY_TTL_HOURS: "1"
+      UAM_LOG_LEVEL: INFO
+      UAM_ADMIN_API_KEY: demo-alpha-admin
+    volumes:
+      - demo-alpha-data:/app/data
+    networks:
+      uam-demo:
+        aliases:
+          - alpha.demo
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+
+  relay-beta:
+    build:
+      context: ../../
+      dockerfile: docker/Dockerfile
+    container_name: uam-demo-relay-beta
+    hostname: beta.demo
+    ports:
+      - "9002:8000"
+    environment:
+      UAM_RELAY_DOMAIN: beta.demo
+      UAM_RELAY_HTTP_URL: http://relay-beta:8000
+      UAM_RELAY_WS_URL: ws://relay-beta:8000/ws
+      UAM_DB_PATH: /app/data/relay.db
+      UAM_RELAY_KEY_PATH: /app/data/relay_key.pem
+      UAM_FEDERATION_ENABLED: "true"
+      UAM_FEDERATION_MAX_HOPS: "3"
+      UAM_FEDERATION_TIMESTAMP_MAX_AGE: "300"
+      UAM_FEDERATION_DISCOVERY_TTL_HOURS: "1"
+      UAM_LOG_LEVEL: INFO
+      UAM_ADMIN_API_KEY: demo-beta-admin
+    volumes:
+      - demo-beta-data:/app/data
+    networks:
+      uam-demo:
+        aliases:
+          - beta.demo
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+
+networks:
+  uam-demo:
+    driver: bridge
+
+volumes:
+  demo-alpha-data:
+    driver: local
+  demo-beta-data:
+    driver: local

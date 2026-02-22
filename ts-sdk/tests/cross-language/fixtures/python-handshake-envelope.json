@@ -1,0 +1,11 @@
+{
+  "uam_version": "0.1",
+  "message_id": "019c8401-28f0-79a4-9e04-2126afd9b8e6",
+  "from": "alice::test.example.com",
+  "to": "bob::test.example.com",
+  "timestamp": "2026-02-22T06:19:54.480Z",
+  "type": "handshake.request",
+  "nonce": "8hDhddkgzdM82YaKdEomAmH0OYfFdD9R",
+  "payload": "NT79v1aY69z8K8vuaz2bvOG6iRmZJJbx7vZSK2k2fg9u_1uTuWE9PCFI1R1vYwcHoRFWk3bT0l_U6IrBaIx02gtEfTEwWfU6hwsraM_4cqG0jeU",
+  "signature": "3FRz5rqcIZz6uNXvm3XUbsaLSxICYYtw_TyAjsdbDNSd2e8C9EGDeb-q-_KcImhQf5nrcyGnQWxlIxobk-uIDA"
+}

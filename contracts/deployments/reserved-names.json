@@ -1,0 +1,11 @@
+{
+  "reserved": [
+    "uam", "protocol", "admin", "system", "relay", "registry",
+    "test", "demo", "hello", "support", "help", "info",
+    "api", "sdk", "docs", "network", "bridge", "hub"
+  ],
+  "premium": [
+    "ai", "bot", "agent", "ops", "dev", "app", "data", "core",
+    "lab", "io", "ml", "llm", "gpt", "web", "net", "sec"
+  ]
+}

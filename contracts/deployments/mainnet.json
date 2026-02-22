@@ -1,0 +1,18 @@
+{
+  "network": "base",
+  "chainId": 8453,
+  "rpcUrl": "https://mainnet.base.org",
+  "contracts": {
+    "UAMPriceOracle": {
+      "address": "0x_DEPLOYED_ORACLE_ADDRESS",
+      "deployedAt": ""
+    },
+    "UAMNameRegistry": {
+      "address": "0x_DEPLOYED_REGISTRY_ADDRESS",
+      "deployedAt": ""
+    }
+  },
+  "priceFeed": "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70",
+  "explorerUrl": "https://basescan.org",
+  "abiPath": "./UAMNameRegistry.abi.json"
+}

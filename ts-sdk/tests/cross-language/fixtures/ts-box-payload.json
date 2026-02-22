@@ -1,0 +1,6 @@
+{
+  "plaintext": "Box encrypted by TypeScript",
+  "ciphertext_b64": "nsUCied-UHBS7S-HQSqYWYkx9dM12FwVb0W2uWNZ2Vr_4FUnlB0NA5fkAZgbl71CNgvR7ih7tHxaK_SKjYlQAGbZLw",
+  "sender_seed_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+  "recipient_seed_b64": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8"
+}

@@ -25,6 +25,9 @@ logger = logging.getLogger(__name__)
 # How often to prune stale rate-limiter buckets (seconds)
 _RATE_LIMIT_CLEANUP_INTERVAL: float = 300.0  # 5 minutes
 
+# Federation retry loop interval (seconds)
+_FEDERATION_RETRY_INTERVAL: float = 30.0
+
 # How often to sweep expired dedup entries (seconds)
 _DEDUP_CLEANUP_INTERVAL: float = 3600.0  # 1 hour
 
@@ -40,6 +43,9 @@ async def _rate_limiter_cleanup_loop(app: FastAPI) -> None:
         app.state.recipient_limiter.cleanup()
         app.state.register_limiter.cleanup()
         app.state.domain_limiter.cleanup()
+        federation_limiter = getattr(app.state, "federation_limiter", None)
+        if federation_limiter:
+            federation_limiter.cleanup()
         logger.debug("Rate limiter buckets cleaned up")
 
 
@@ -72,6 +78,82 @@ async def _expired_message_sweep_loop(app: FastAPI) -> None:
         count = await cleanup_expired_messages(app.state.db)
         if count:
             logger.info("Swept %d expired stored messages", count)
+
+
+async def _federation_retry_loop(app: FastAPI) -> None:
+    """Process the federation_queue: retry failed/pending federation deliveries (FED-10).
+
+    Picks messages from federation_queue where status='pending' and next_retry <= now.
+    For each, attempts forward via FederationService. On success, marks status='delivered'.
+    On failure, increments attempt_count, computes next_retry from retry_delays schedule,
+    marks status='failed' if all retries exhausted.
+    """
+    import json
+
+    while True:
+        await asyncio.sleep(_FEDERATION_RETRY_INTERVAL)
+        try:
+            db = app.state.db
+            federation_service = getattr(app.state, "federation_service", None)
+            settings = app.state.settings
+            if not federation_service or not settings.federation_enabled:
+                continue
+
+            # Get pending messages ready for retry
+            cursor = await db.execute(
+                "SELECT id, target_domain, envelope, via, hop_count, attempt_count "
+                "FROM federation_queue "
+                "WHERE status = 'pending' AND datetime(next_retry) <= datetime('now') "
+                "ORDER BY next_retry ASC LIMIT 50"
+            )
+            rows = await cursor.fetchall()
+
+            for row in rows:
+                queue_id = row[0] if isinstance(row, tuple) else row["id"]
+                target_domain = row[1] if isinstance(row, tuple) else row["target_domain"]
+                envelope_json = row[2] if isinstance(row, tuple) else row["envelope"]
+                via_json = row[3] if isinstance(row, tuple) else row["via"]
+                hop_count = row[4] if isinstance(row, tuple) else row["hop_count"]
+                attempt_count = row[5] if isinstance(row, tuple) else row["attempt_count"]
+
+                envelope_dict = json.loads(envelope_json)
+                via_list = json.loads(via_json)
+
+                result = await federation_service.forward(
+                    envelope_dict=envelope_dict,
+                    from_relay=settings.relay_domain,
+                    via=via_list,
+                    hop_count=hop_count,
+                )
+
+                if result.delivered:
+                    await db.execute(
+                        "UPDATE federation_queue SET status = 'delivered' WHERE id = ?",
+                        (queue_id,),
+                    )
+                    await db.commit()
+                    logger.info("Federation retry delivered: queue_id=%d to %s", queue_id, target_domain)
+                else:
+                    new_attempt = attempt_count + 1
+                    retry_delays = settings.federation_retry_delays
+                    if new_attempt >= len(retry_delays):
+                        # All retries exhausted
+                        await db.execute(
+                            "UPDATE federation_queue SET status = 'failed', error = ?, attempt_count = ? WHERE id = ?",
+                            (result.error or "max retries", new_attempt, queue_id),
+                        )
+                        await db.commit()
+                        logger.warning("Federation retry exhausted: queue_id=%d to %s after %d attempts", queue_id, target_domain, new_attempt)
+                    else:
+                        delay = retry_delays[new_attempt]
+                        await db.execute(
+                            "UPDATE federation_queue SET attempt_count = ?, next_retry = datetime('now', '+' || ? || ' seconds'), error = ? WHERE id = ?",
+                            (new_attempt, str(delay), result.error, queue_id),
+                        )
+                        await db.commit()
+                        logger.info("Federation retry scheduled: queue_id=%d to %s, attempt %d, next in %ds", queue_id, target_domain, new_attempt, delay)
+        except Exception:
+            logger.exception("Error in federation retry loop")
 
 
 @asynccontextmanager
@@ -117,6 +199,49 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await webhook_service.start()
     app.state.webhook_service = webhook_service
 
+    # Federation: relay keypair, federation service, safety modules (FED-01 through FED-10)
+    from uam.relay.relay_auth import load_or_generate_relay_keypair
+    from uam.relay.federation import FederationService
+    from uam.relay.relay_blocklist import RelayAllowBlockList
+    from uam.relay.relay_reputation import RelayReputationManager
+
+    if settings.federation_enabled:
+        relay_sk, relay_vk = load_or_generate_relay_keypair(settings.relay_key_path)
+        app.state.relay_signing_key = relay_sk
+        app.state.relay_verify_key = relay_vk
+        logger.info("Relay keypair loaded from %s", settings.relay_key_path)
+
+        # Federation service (FED-01, FED-02)
+        federation_service = FederationService(app.state.db, settings, relay_sk, relay_vk)
+        app.state.federation_service = federation_service
+
+        # Relay-level blocklist/allowlist (FED-07)
+        relay_blocklist = RelayAllowBlockList()
+        await relay_blocklist.load(app.state.db)
+        app.state.relay_blocklist = relay_blocklist
+
+        # Relay-level reputation (FED-08)
+        relay_reputation = RelayReputationManager(
+            app.state.db,
+            base_rate_limit=settings.federation_relay_rate_limit,
+        )
+        await relay_reputation.load_cache()
+        app.state.relay_reputation = relay_reputation
+
+        # Per-source-relay rate limiter (FED-06)
+        app.state.federation_limiter = SlidingWindowCounter(
+            limit=settings.federation_relay_rate_limit,
+            window_seconds=60.0,
+        )
+    else:
+        app.state.relay_signing_key = None
+        app.state.relay_verify_key = None
+        app.state.federation_service = None
+        app.state.relay_blocklist = None
+        app.state.relay_reputation = None
+        app.state.federation_limiter = None
+        logger.info("Federation is disabled")
+
     # Ephemeral demo sessions (DEMO-01)
     app.state.demo_sessions = SessionManager(ttl_minutes=10, max_sessions=1000)
 
@@ -136,7 +261,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Background sweep for expired stored messages (MSG-04)
     expired_msg_task = asyncio.create_task(_expired_message_sweep_loop(app))
 
+    # Federation retry loop (FED-10)
+    federation_retry_task = asyncio.create_task(_federation_retry_loop(app)) if settings.federation_enabled else None
+
     yield
+
+    # Cancel federation retry loop (FED-10)
+    if federation_retry_task:
+        federation_retry_task.cancel()
+        try:
+            await federation_retry_task
+        except asyncio.CancelledError:
+            pass
 
     expired_msg_task.cancel()
     try:
@@ -163,6 +299,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await cleanup_task
     except asyncio.CancelledError:
         pass
+
+    # Federation resource cleanup
+    if app.state.federation_service:
+        await app.state.federation_service.close()
+    if getattr(app.state, "federation_limiter", None):
+        app.state.federation_limiter.cleanup()
+
     await webhook_service.stop()
     await heartbeat.stop()
     await close_db(app.state.db)
@@ -241,6 +384,7 @@ def create_app() -> FastAPI:
     from uam.relay.routes.send import router as send_router
     from uam.relay.routes.inbox import router as inbox_router
     from uam.relay.routes.federation import router as federation_router
+    from uam.relay.routes.federation import well_known_router
     from uam.relay.routes.demo import router as demo_router
     from uam.relay.routes.verify_domain import router as verify_domain_router
     from uam.relay.routes.webhook_admin import router as webhook_admin_router
@@ -258,11 +402,12 @@ def create_app() -> FastAPI:
     app.include_router(admin_router, prefix="/api/v1")
     app.include_router(presence_router, prefix="/api/v1")
 
-    # Health and WebSocket (no prefix)
+    # Health, WebSocket, and .well-known (no prefix)
     from uam.relay.routes.health import router as health_router
     from uam.relay.ws import router as ws_router
 
     app.include_router(health_router)
     app.include_router(ws_router)
+    app.include_router(well_known_router)
 
     return app

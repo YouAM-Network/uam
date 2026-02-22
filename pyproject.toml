@@ -3,7 +3,7 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "uam"
+name = "youam"
 version = "0.1.0"
 description = "Universal Agent Messaging protocol library"
 requires-python = ">=3.10"
@@ -24,6 +24,9 @@ uam = "uam.cli.main:cli"
 uam-mcp = "uam.mcp.server:main"
 
 [project.optional-dependencies]
+chain = [
+    "web3[async]>=7.0",
+]
 relay = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.34",
@@ -46,6 +49,7 @@ docs = [
 all = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.34",
+    "web3[async]>=7.0",
     "mcp>=1.0",
     "litellm>=1.30",
     "mkdocs-material>=9.5",
@@ -62,6 +66,7 @@ dev = [
     "pytest-asyncio>=0.25",
     "pytest-httpx>=0.35",
     "httpx>=0.28",
+    "jsonschema>=4.20",
 ]
 
 [tool.setuptools.packages.find]

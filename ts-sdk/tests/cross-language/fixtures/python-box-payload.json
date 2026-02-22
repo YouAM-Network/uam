@@ -1,0 +1,6 @@
+{
+  "plaintext": "Box encrypted by Python",
+  "ciphertext_b64": "kXvUjFfxqj3_0xrL44vWTEjmB7XYPQPMEAj5pHs5EAZSqgs2XD1szEggrEAPCgHhtHOK82EkzUeHo91uf0wy",
+  "sender_seed_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+  "recipient_seed_b64": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8"
+}

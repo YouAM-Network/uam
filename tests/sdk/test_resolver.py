@@ -132,11 +132,11 @@ class TestTier2Resolver:
 
 
 class TestTierStubs:
-    """Tier 3 raises NotImplementedError."""
+    """Tier 3 without contract address raises UAMError."""
 
-    async def test_tier3_raises_not_implemented(self):
-        with pytest.raises(NotImplementedError, match="Tier 3"):
-            await Tier3Resolver().resolve_public_key("addr", "key", "url")
+    async def test_tier3_raises_uam_error_without_contract(self):
+        with pytest.raises(UAMError, match="contract address not configured"):
+            await Tier3Resolver().resolve_public_key("alice::somename", "key", "url")
 
 
 class TestSmartResolver:
@@ -146,20 +146,20 @@ class TestSmartResolver:
         """address with domain == relay_domain routes to Tier 1."""
         from unittest.mock import AsyncMock, patch
 
-        resolver = SmartResolver("uam.network")
+        resolver = SmartResolver("youam.network")
         with patch.object(resolver._tier1, "resolve_public_key", new_callable=AsyncMock) as mock_t1:
             mock_t1.return_value = "TIER1KEY"
             key = await resolver.resolve_public_key(
-                "alice::uam.network", "tok", "http://relay"
+                "alice::youam.network", "tok", "http://relay"
             )
         assert key == "TIER1KEY"
-        mock_t1.assert_awaited_once_with("alice::uam.network", "tok", "http://relay")
+        mock_t1.assert_awaited_once_with("alice::youam.network", "tok", "http://relay")
 
     async def test_dotted_domain_routes_to_tier2(self):
         """address with a dotted domain (not relay) routes to Tier 2."""
         from unittest.mock import AsyncMock, patch
 
-        resolver = SmartResolver("uam.network")
+        resolver = SmartResolver("youam.network")
         with patch.object(resolver._tier2, "resolve_public_key", new_callable=AsyncMock) as mock_t2:
             mock_t2.return_value = "TIER2KEY"
             key = await resolver.resolve_public_key(
@@ -168,22 +168,23 @@ class TestSmartResolver:
         assert key == "TIER2KEY"
         mock_t2.assert_awaited_once_with("alice::example.com", "tok", "http://relay")
 
-    async def test_dot_free_domain_raises_uam_error(self):
-        """address with a dot-free domain (Tier 3) raises UAMError."""
-        resolver = SmartResolver("uam.network")
-        with pytest.raises(UAMError, match="Tier 3 resolution is not yet implemented"):
+    async def test_dot_free_domain_routes_to_tier3(self):
+        """address with a dot-free domain routes to Tier 3 (on-chain)."""
+        resolver = SmartResolver("youam.network")
+        # Without contract address configured, Tier3Resolver raises UAMError
+        with pytest.raises(UAMError, match="contract address not configured"):
             await resolver.resolve_public_key("alice::somename", "tok", "http://relay")
 
     async def test_exact_domain_match_not_substring(self):
         """Domain comparison is exact equality, not endswith/startswith."""
         from unittest.mock import AsyncMock, patch
 
-        resolver = SmartResolver("uam.network")
-        # 'notuam.network' is NOT the relay domain -- should route to Tier 2
+        resolver = SmartResolver("youam.network")
+        # 'notyouam.network' is NOT the relay domain -- should route to Tier 2
         with patch.object(resolver._tier2, "resolve_public_key", new_callable=AsyncMock) as mock_t2:
             mock_t2.return_value = "TIER2KEY"
             key = await resolver.resolve_public_key(
-                "alice::notuam.network", "tok", "http://relay"
+                "alice::notyouam.network", "tok", "http://relay"
             )
         assert key == "TIER2KEY"
         mock_t2.assert_awaited_once()

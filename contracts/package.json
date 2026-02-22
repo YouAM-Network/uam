@@ -1,0 +1,9 @@
+{
+  "name": "uam-contracts",
+  "version": "0.1.0",
+  "description": "UAM Name Registry smart contracts",
+  "scripts": {
+    "build": "forge build",
+    "test": "forge test"
+  }
+}

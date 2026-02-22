@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 import click
+import httpx
 
 from uam.protocol import UAMError
 from uam.protocol.crypto import public_key_fingerprint
@@ -480,3 +481,243 @@ def verify_domain(ctx: click.Context, domain: str, timeout: int, poll_interval: 
         _error(f"Error: {exc}")
     except RuntimeError as exc:
         _error(f"Error: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# uam bridge (A2A-03)
+# ---------------------------------------------------------------------------
+
+
+@cli.group()
+def bridge():
+    """Cross-protocol bridge commands."""
+    pass
+
+
+@bridge.group()
+def a2a():
+    """A2A protocol bridge commands."""
+    pass
+
+
+@a2a.command("import")
+@click.argument("url")
+@click.pass_context
+def a2a_import(ctx: click.Context, url: str) -> None:
+    """Import an A2A agent by fetching its Agent Card.
+
+    URL should be the agent's base URL or direct path to agent.json.
+    If the URL doesn't end with '/agent.json' or '/.well-known/agent.json',
+    appends '/.well-known/agent.json' automatically.
+    """
+    from uam.bridge.a2a import contact_from_a2a
+
+    # Normalize URL
+    normalized = url.rstrip("/")
+    if not normalized.endswith("/agent.json"):
+        normalized = f"{normalized}/.well-known/agent.json"
+
+    # Fetch A2A Agent Card
+    try:
+        resp = httpx.get(normalized, timeout=15.0, follow_redirects=True)
+        resp.raise_for_status()
+        card_data = resp.json()
+    except httpx.ConnectError:
+        _error(f"Error: Could not connect to {normalized}")
+    except httpx.HTTPStatusError as exc:
+        _error(f"Error: HTTP {exc.response.status_code} from {normalized}")
+    except Exception as exc:
+        _error(f"Error: {exc}")
+
+    # Convert A2A -> UAM
+    try:
+        card, metadata = contact_from_a2a(card_data, source_url=normalized)
+    except UAMError as exc:
+        _error(f"Error: {exc}")
+
+    # Determine agent name for contact book location
+    agent_name = ctx.obj.get("name") or _find_agent_name()
+    cfg = SDKConfig(name=agent_name or "_probe")
+    book = ContactBook(cfg.data_dir)
+
+    try:
+        asyncio.run(_do_a2a_import(book, card))
+    except Exception as exc:
+        _error(f"Error: {exc}")
+
+    click.echo(f"Imported A2A agent: {card.display_name} ({card.address})")
+
+    # Print bridge metadata summary
+    skills = metadata.a2a_fields.get("skills", [])
+    caps = metadata.a2a_fields.get("capabilities", {})
+    caps_summary = ", ".join(f"{k}={v}" for k, v in caps.items()) if caps else "none"
+    click.echo(f"  Skills: {len(skills)} | Capabilities: {caps_summary}")
+
+    for skill in skills:
+        click.echo(f"  - {skill.get('name', skill.get('id', 'unnamed'))}")
+
+
+async def _do_a2a_import(book: ContactBook, card) -> None:
+    """Open contact book, add imported A2A contact, close."""
+    await book.open()
+    try:
+        await book.add_contact(
+            address=card.address,
+            public_key=card.public_key,
+            display_name=card.display_name,
+            trust_state="bridge",
+            trust_source="a2a-import",
+            relay=card.relay,
+        )
+    finally:
+        await book.close()
+
+
+# ---------------------------------------------------------------------------
+# uam register (REG-06/07)
+# ---------------------------------------------------------------------------
+
+
+@cli.command("register")
+@click.argument("name")
+@click.option("--relay", "-r", default=None, help="Relay URL for the namespace.")
+@click.option(
+    "--registrar-url",
+    default=None,
+    envvar="UAM_REGISTRAR_URL",
+    help="Registrar API URL.",
+)
+@click.option(
+    "--no-browser", is_flag=True, help="Print checkout URL instead of opening browser."
+)
+@click.pass_context
+def register(
+    ctx: click.Context,
+    name: str,
+    relay: str | None,
+    registrar_url: str | None,
+    no_browser: bool,
+) -> None:
+    """Register a namespace via the custodial registrar (no wallet required).
+
+    Checks availability, displays pricing, opens Stripe checkout in browser,
+    and polls the registrar API until registration is confirmed.
+    """
+    import base64
+    import time
+    import webbrowser
+
+    # 1. Detect agent name
+    agent_name = ctx.obj.get("name") or _find_agent_name()
+    if not agent_name:
+        _error("No agent initialized. Run `uam init` first.")
+
+    # 2. Load agent's public key
+    cfg = SDKConfig(name=agent_name)
+    km = KeyManager(cfg.key_dir)
+    key_path = Path(cfg.key_dir) / f"{agent_name}.key"
+    if not key_path.exists():
+        _error("No agent initialized. Run `uam init` first.")
+    km.load_or_generate(agent_name)
+
+    # 3. Encode public key as base64
+    public_key_b64 = base64.b64encode(bytes(km.verify_key)).decode()
+
+    # 4. Determine relay URL and registrar URL
+    relay_url = relay or cfg.relay_url
+    base_url = (registrar_url or cfg.registrar_url or "").rstrip("/")
+
+    # 5. Check availability
+    try:
+        resp = httpx.get(f"{base_url}/api/v1/names/{name}", timeout=15.0)
+        resp.raise_for_status()
+        info = resp.json()
+    except httpx.HTTPStatusError as exc:
+        _error(f"Error checking availability: HTTP {exc.response.status_code}")
+    except Exception as exc:
+        _error(f"Error checking availability: {exc}")
+
+    if not info.get("available"):
+        status = info.get("registration_status")
+        if status:
+            _error(f"Name '{name}' is not available (status: {status}).")
+        else:
+            _error(f"Name '{name}' is not available.")
+
+    # 6. Show price
+    price_cents = info.get("price_usd_cents", 500)
+    price_display = f"${price_cents / 100:.2f}/year"
+    click.echo(f"Name:    {name}")
+    click.echo(f"Price:   {price_display}")
+    click.echo(f"Relay:   {relay_url}")
+    click.echo()
+
+    # 7. Confirm
+    click.confirm("Proceed to payment?", abort=True)
+
+    # 8. Create registration
+    try:
+        resp = httpx.post(
+            f"{base_url}/api/v1/register",
+            json={
+                "name": name,
+                "public_key": public_key_b64,
+                "relay_url": relay_url,
+            },
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+        reg = resp.json()
+    except httpx.HTTPStatusError as exc:
+        detail = ""
+        try:
+            detail = exc.response.json().get("detail", "")
+        except Exception:
+            pass
+        _error(f"Registration failed: {detail or exc.response.status_code}")
+    except Exception as exc:
+        _error(f"Registration failed: {exc}")
+
+    checkout_url = reg.get("checkout_url", "")
+    click.echo(f"\nCheckout URL: {checkout_url}")
+
+    # 9. Open browser
+    if not no_browser and checkout_url:
+        webbrowser.open(checkout_url)
+        click.echo("Opened browser for payment.")
+    elif checkout_url:
+        click.echo("Open the URL above in your browser to complete payment.")
+
+    # 10. Poll for completion
+    click.echo("\nWaiting for payment confirmation...")
+    max_polls = 60
+    poll_interval = 5  # seconds
+    for i in range(max_polls):
+        time.sleep(poll_interval)
+
+        try:
+            resp = httpx.get(f"{base_url}/api/v1/names/{name}", timeout=15.0)
+            resp.raise_for_status()
+            poll_info = resp.json()
+        except Exception:
+            continue  # retry on transient errors
+
+        if not poll_info.get("available"):
+            status = poll_info.get("registration_status")
+            if status == "completed" or status is None:
+                # Registered on-chain (status None means no local record = on-chain only)
+                click.echo(f"\nRegistered! Your address: {name}::youam.network")
+                return
+            if status == "failed":
+                _error(f"\nRegistration failed. Check registrar logs for details.")
+
+        # Progress indication every 30 seconds
+        elapsed = (i + 1) * poll_interval
+        if elapsed % 30 == 0:
+            click.echo(f"  Still waiting... ({elapsed}s elapsed)")
+
+    click.echo(
+        "\nPayment confirmation timed out after 5 minutes. "
+        "Your registration may still complete -- check later with:\n"
+        f"  uam register {name}"
+    )

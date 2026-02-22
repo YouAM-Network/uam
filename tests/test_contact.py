@@ -582,3 +582,151 @@ class TestV11BackwardCompat:
 
         # v1.0 verification still works
         verify_contact_card(card)
+
+
+# ---------------------------------------------------------------------------
+# Multi-relay support (CARD-04)
+# ---------------------------------------------------------------------------
+
+
+class TestMultiRelay:
+    """Tests for the relays field on ContactCard (CARD-04)."""
+
+    def test_relays_default_none(self, keypair):
+        """Cards created without relays= have relays=None."""
+        sk, _ = keypair
+        card = create_contact_card(
+            address="alice::youam.network",
+            display_name="Alice",
+            relay="wss://relay.youam.network",
+            signing_key=sk,
+        )
+        assert card.relays is None
+
+    def test_relays_stored_on_card(self, keypair):
+        """Cards created with relays= store the array."""
+        sk, _ = keypair
+        urls = ["wss://relay1.example.com/ws", "wss://relay2.example.com/ws"]
+        card = create_contact_card(
+            address="alice::youam.network",
+            display_name="Alice",
+            relay="wss://relay1.example.com/ws",
+            signing_key=sk,
+            relays=urls,
+        )
+        assert card.relays == urls
+
+    def test_relays_serialization(self, keypair):
+        """contact_card_to_dict includes relays when present."""
+        sk, _ = keypair
+        urls = ["wss://relay1.example.com/ws", "wss://relay2.example.com/ws"]
+        card = create_contact_card(
+            address="alice::youam.network",
+            display_name="Alice",
+            relay="wss://relay1.example.com/ws",
+            signing_key=sk,
+            relays=urls,
+        )
+        d = contact_card_to_dict(card)
+        assert d["relays"] == urls
+
+    def test_relays_omitted_when_none(self, keypair):
+        """contact_card_to_dict omits relays when it is None."""
+        sk, _ = keypair
+        card = create_contact_card(
+            address="alice::youam.network",
+            display_name="Alice",
+            relay="wss://relay.youam.network",
+            signing_key=sk,
+        )
+        d = contact_card_to_dict(card)
+        assert "relays" not in d
+
+    def test_relays_deserialization(self, keypair):
+        """contact_card_from_dict restores relays from dict."""
+        sk, _ = keypair
+        urls = ["wss://relay1.example.com/ws", "wss://relay2.example.com/ws"]
+        card = create_contact_card(
+            address="alice::youam.network",
+            display_name="Alice",
+            relay="wss://relay1.example.com/ws",
+            signing_key=sk,
+            relays=urls,
+        )
+        d = contact_card_to_dict(card)
+        restored = contact_card_from_dict(d)
+        assert restored.relays == urls
+
+    def test_v10_dict_deserializes_without_relays(self, keypair):
+        """A v1.0 dict (no relays key) deserializes with relays=None."""
+        sk, _ = keypair
+        card = create_contact_card(
+            address="alice::youam.network",
+            display_name="Alice",
+            relay="wss://relay.youam.network",
+            signing_key=sk,
+        )
+        d = contact_card_to_dict(card)
+        assert "relays" not in d  # no relays key
+        restored = contact_card_from_dict(d)
+        assert restored.relays is None
+
+    def test_relays_outside_signature_scope(self, keypair):
+        """relays MUST NOT appear in _build_signable_dict."""
+        sk, _ = keypair
+        card = create_contact_card(
+            address="alice::youam.network",
+            display_name="Alice",
+            relay="wss://relay.youam.network",
+            signing_key=sk,
+            relays=["wss://relay1.example.com/ws", "wss://relay2.example.com/ws"],
+        )
+        signable = _build_signable_dict(card)
+        assert "relays" not in signable
+
+    def test_relays_does_not_change_signature(self, keypair):
+        """Card WITH relays has identical signature to same card WITHOUT relays."""
+        sk, _ = keypair
+        card_without = create_contact_card(
+            address="alice::youam.network",
+            display_name="Alice",
+            relay="wss://relay.youam.network",
+            signing_key=sk,
+        )
+        card_with = create_contact_card(
+            address="alice::youam.network",
+            display_name="Alice",
+            relay="wss://relay.youam.network",
+            signing_key=sk,
+            relays=["wss://relay1.example.com/ws", "wss://relay2.example.com/ws"],
+        )
+        assert card_without.signature == card_with.signature
+
+    def test_relays_card_verifies(self, keypair):
+        """A card with relays passes signature verification."""
+        sk, _ = keypair
+        card = create_contact_card(
+            address="alice::youam.network",
+            display_name="Alice",
+            relay="wss://relay.youam.network",
+            signing_key=sk,
+            relays=["wss://relay1.example.com/ws", "wss://relay2.example.com/ws"],
+        )
+        verify_contact_card(card)  # should not raise
+
+    def test_relays_roundtrip(self, keypair):
+        """Full roundtrip: create_contact_card -> to_dict -> from_dict -> verify -> relays present."""
+        sk, _ = keypair
+        urls = ["wss://relay1.example.com/ws", "wss://relay2.example.com/ws"]
+        card = create_contact_card(
+            address="alice::youam.network",
+            display_name="Alice",
+            relay="wss://relay1.example.com/ws",
+            signing_key=sk,
+            relays=urls,
+        )
+        d = contact_card_to_dict(card)
+        restored = contact_card_from_dict(d)
+        verify_contact_card(restored)
+        assert restored.relays == urls
+        assert restored == card

@@ -12,7 +12,7 @@ UAM addresses follow the format `agent::domain`:
 |-----------|-------|
 | Agent name | 1--64 lowercase alphanumeric characters, hyphens, underscores. Cannot start or end with a hyphen. |
 | Separator | `::` (double colon) |
-| Domain | DNS-style domain name or namespace identifier, 1--255 characters |
+| Domain | Standard DNS-style domain name, 1--255 characters |
 | Max total length | 128 characters |
 
 **Examples:** `alice::youam.network`, `my-bot::example.com`, `agent42::corp.internal`
@@ -20,7 +20,7 @@ UAM addresses follow the format `agent::domain`:
 **Regex (reference):**
 
 ```
-^(?:[a-z0-9][a-z0-9_-]{0,62}[a-z0-9]|[a-z0-9])::[a-z0-9](?:[a-z0-9.-]{0,253}[a-z0-9])?$
+^[a-z0-9][a-z0-9_-]{0,62}[a-z0-9]|[a-z0-9])::[a-z0-9](?:[a-z0-9.-]{0,253}[a-z0-9])?$
 ```
 
 ---
@@ -135,28 +135,24 @@ Every envelope is signed by the sender. The signature covers all fields except t
 
 When an agent needs to look up another agent's public key, UAM supports three resolution tiers:
 
-| Tier | Format | Method | Trust Level | Description |
-|------|--------|--------|-------------|-------------|
-| **Tier 1** | `agent::relay.domain` | Relay API lookup | Relay-vouched | `GET /api/v1/agents/{address}/public-key` -- the relay returns the registered public key |
-| **Tier 2** | `agent::yourdomain.com` | DNS TXT or HTTPS | Domain-verified | DNS TXT record at `_uam.{domain}` or HTTPS `.well-known/uam.json` |
-| **Tier 3** | `agent::namespace` | On-chain lookup | Decentralized | Future: blockchain-based namespace registry (no dot = on-chain) |
-
-**Resolution logic:** If the domain contains a dot, resolve via DNS (Tier 1 if it's the relay domain, Tier 2 otherwise). If the domain has no dot, it's an on-chain namespace (Tier 3).
+| Tier | Method | Trust Level | Description |
+|------|--------|-------------|-------------|
+| **Tier 1** | Relay API lookup | Relay-vouched | `GET /api/v1/agents/{address}/public-key` -- the relay returns the registered public key |
+| **Tier 2** | DNS TXT or HTTPS | Domain-verified | DNS TXT record at `_uam.{domain}` or HTTPS fetch of `https://{domain}/.well-known/uam.json` |
+| **Tier 3** | On-chain namespace | Decentralized | Future: blockchain-based key registry |
 
 ### Tier 2 verification methods
 
 **DNS TXT record:**
 
 - Record host: `_uam.{domain}`
-- Record value: `v=uam1; key=ed25519:{base64_public_key}; relay={relay_url}`
-- Tag parsing is case-insensitive
+- Record value: `uam=1 relay={relay_url} key={base64_public_key}`
 
-**HTTPS .well-known (fallback):**
+**HTTPS .well-known:**
 
 - URL: `https://{domain}/.well-known/uam.json`
-- Body: `{"v": "uam1", "agents": {"agent_name": {"key": "ed25519:{base64_public_key}"}}}`
+- Body: JSON containing `relay`, `public_key`, and `address` fields
 - SSRF protection: Only public IP addresses are allowed (fail-closed)
-- Used when DNS TXT is unavailable
 
 ---
 

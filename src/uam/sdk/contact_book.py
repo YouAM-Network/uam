@@ -6,6 +6,7 @@ Provides a fast in-memory cache for is_known() and is_blocked() checks.
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -95,6 +96,17 @@ class ContactBook:
             await self._db.execute("PRAGMA user_version = 1")
             await self._db.commit()
 
+        if version < 2:
+            logger.info("Migrating ContactBook schema to version 2 (CARD-04: relay columns)")
+            await self._db.execute(
+                "ALTER TABLE contacts ADD COLUMN relay TEXT"
+            )
+            await self._db.execute(
+                "ALTER TABLE contacts ADD COLUMN relays_json TEXT"
+            )
+            await self._db.execute("PRAGMA user_version = 2")
+            await self._db.commit()
+
     async def close(self) -> None:
         """Close the database connection."""
         if self._db is not None:
@@ -115,6 +127,28 @@ class ContactBook:
             row = await cursor.fetchone()
             return row[0] if row else None
 
+    async def get_relay_urls(self, address: str) -> list[str] | None:
+        """Return the relay URLs for a known contact (CARD-04).
+
+        If the contact has a ``relays`` array, returns that list.
+        If only a primary ``relay`` is stored, returns ``[relay]``.
+        Returns ``None`` if the contact is unknown or has no relay data.
+        """
+        if self._db is None:
+            return None
+        async with self._db.execute(
+            "SELECT relay, relays_json FROM contacts WHERE address = ?", (address,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            relay, relays_json = row
+            if relays_json is not None:
+                return json.loads(relays_json)
+            if relay is not None:
+                return [relay]
+            return None
+
     async def add_contact(
         self,
         address: str,
@@ -122,6 +156,8 @@ class ContactBook:
         display_name: str | None = None,
         trust_state: str = "trusted",
         trust_source: str | None = None,
+        relay: str | None = None,
+        relays: list[str] | None = None,
     ) -> None:
         """Add or update a contact (upsert).
 
@@ -129,21 +165,26 @@ class ContactBook:
             trust_source: How this contact was established (e.g.,
                 ``"auto-accepted"``, ``"explicit-approval"``).  If ``None``,
                 existing trust_source is preserved on update.
+            relay: The contact's primary relay URL (CARD-04).
+            relays: List of alternative relay URLs for failover (CARD-04).
         """
         if self._db is None:
             raise RuntimeError("ContactBook not open. Call open() first.")
+        relays_json = json.dumps(relays) if relays is not None else None
         await self._db.execute(
             """
-            INSERT INTO contacts (address, public_key, display_name, trust_state, trust_source)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO contacts (address, public_key, display_name, trust_state, trust_source, relay, relays_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(address) DO UPDATE SET
                 public_key = excluded.public_key,
                 display_name = excluded.display_name,
                 trust_state = excluded.trust_state,
                 trust_source = COALESCE(excluded.trust_source, contacts.trust_source),
+                relay = COALESCE(excluded.relay, contacts.relay),
+                relays_json = COALESCE(excluded.relays_json, contacts.relays_json),
                 last_seen = datetime('now')
             """,
-            (address, public_key, display_name, trust_state, trust_source),
+            (address, public_key, display_name, trust_state, trust_source, relay, relays_json),
         )
         await self._db.commit()
         self._known_addresses.add(address)

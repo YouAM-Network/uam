@@ -142,6 +142,125 @@ async def _migrate(db: aiosqlite.Connection) -> None:
         await db.execute("PRAGMA user_version = 3")
         await db.commit()
 
+    if version < 4:
+        logger.info("Relay DB migration: applying version 4 (known_relays)")
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS known_relays (
+                domain          TEXT PRIMARY KEY,
+                federation_url  TEXT NOT NULL,
+                public_key      TEXT NOT NULL,
+                discovered_via  TEXT NOT NULL DEFAULT 'well-known',
+                last_verified   TEXT NOT NULL DEFAULT (datetime('now')),
+                ttl_hours       INTEGER NOT NULL DEFAULT 1,
+                status          TEXT NOT NULL DEFAULT 'active'
+            )
+            """
+        )
+        await db.execute("PRAGMA user_version = 4")
+        await db.commit()
+
+    if version < 5:
+        logger.info("Relay DB migration: applying version 5 (federation_log)")
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS federation_log (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_id      TEXT NOT NULL,
+                from_relay      TEXT NOT NULL,
+                to_relay        TEXT NOT NULL,
+                direction       TEXT NOT NULL,
+                hop_count       INTEGER NOT NULL DEFAULT 0,
+                status          TEXT NOT NULL,
+                error           TEXT,
+                created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_federation_log_message "
+            "ON federation_log(message_id)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_federation_log_relay "
+            "ON federation_log(from_relay, created_at)"
+        )
+        await db.execute("PRAGMA user_version = 5")
+        await db.commit()
+
+    if version < 6:
+        logger.info("Relay DB migration: applying version 6 (relay_blocklist, relay_allowlist)")
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS relay_blocklist (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                domain      TEXT NOT NULL UNIQUE,
+                reason      TEXT,
+                created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS relay_allowlist (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                domain      TEXT NOT NULL UNIQUE,
+                reason      TEXT,
+                created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+        await db.execute("PRAGMA user_version = 6")
+        await db.commit()
+
+    if version < 7:
+        logger.info("Relay DB migration: applying version 7 (relay_reputation)")
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS relay_reputation (
+                domain              TEXT PRIMARY KEY,
+                score               INTEGER NOT NULL DEFAULT 50,
+                messages_forwarded  INTEGER NOT NULL DEFAULT 0,
+                messages_rejected   INTEGER NOT NULL DEFAULT 0,
+                last_success        TEXT,
+                last_failure        TEXT,
+                created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+        await db.execute("PRAGMA user_version = 7")
+        await db.commit()
+
+    if version < 8:
+        logger.info("Relay DB migration: applying version 8 (federation_queue)")
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS federation_queue (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                target_domain   TEXT NOT NULL,
+                envelope        TEXT NOT NULL,
+                via             TEXT NOT NULL DEFAULT '[]',
+                hop_count       INTEGER NOT NULL DEFAULT 0,
+                attempt_count   INTEGER NOT NULL DEFAULT 0,
+                next_retry      TEXT NOT NULL DEFAULT (datetime('now')),
+                status          TEXT NOT NULL DEFAULT 'pending',
+                error           TEXT,
+                created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_federation_queue_status "
+            "ON federation_queue(status, next_retry)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_federation_queue_domain "
+            "ON federation_queue(target_domain, status)"
+        )
+        await db.execute("PRAGMA user_version = 8")
+        await db.commit()
+
 
 async def init_db(path: str) -> aiosqlite.Connection:
     """Open the database, apply pragmas and schema, return the connection."""
@@ -494,3 +613,84 @@ async def update_agent_webhook_url(
         (webhook_url, address),
     )
     await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Federation helpers (FED-01)
+# ---------------------------------------------------------------------------
+
+
+async def upsert_known_relay(
+    db: aiosqlite.Connection,
+    domain: str,
+    federation_url: str,
+    public_key: str,
+    discovered_via: str,
+    ttl_hours: int = 1,
+) -> None:
+    """Insert or update a known relay record."""
+    await db.execute(
+        """INSERT INTO known_relays (domain, federation_url, public_key, discovered_via, ttl_hours)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(domain) DO UPDATE SET
+             federation_url = excluded.federation_url,
+             public_key = excluded.public_key,
+             discovered_via = excluded.discovered_via,
+             last_verified = datetime('now'),
+             ttl_hours = excluded.ttl_hours,
+             status = 'active'""",
+        (domain, federation_url, public_key, discovered_via, ttl_hours),
+    )
+    await db.commit()
+
+
+async def get_known_relay(
+    db: aiosqlite.Connection, domain: str
+) -> dict[str, Any] | None:
+    """Look up a known relay by domain.  Returns its fields or ``None``."""
+    cursor = await db.execute(
+        "SELECT domain, federation_url, public_key, discovered_via, "
+        "last_verified, ttl_hours, status "
+        "FROM known_relays WHERE domain = ?",
+        (domain,),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return None
+    return dict(row)
+
+
+async def log_federation(
+    db: aiosqlite.Connection,
+    message_id: str,
+    from_relay: str,
+    to_relay: str,
+    direction: str,
+    hop_count: int,
+    status: str,
+    error: str | None = None,
+) -> None:
+    """Write an entry to the federation log."""
+    await db.execute(
+        "INSERT INTO federation_log "
+        "(message_id, from_relay, to_relay, direction, hop_count, status, error) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (message_id, from_relay, to_relay, direction, hop_count, status, error),
+    )
+    await db.commit()
+
+
+async def is_relay_blocked(db: aiosqlite.Connection, domain: str) -> bool:
+    """Return ``True`` if *domain* is on the relay blocklist."""
+    cursor = await db.execute(
+        "SELECT 1 FROM relay_blocklist WHERE domain = ?", (domain,)
+    )
+    return await cursor.fetchone() is not None
+
+
+async def is_relay_allowed(db: aiosqlite.Connection, domain: str) -> bool:
+    """Return ``True`` if *domain* is on the relay allowlist."""
+    cursor = await db.execute(
+        "SELECT 1 FROM relay_allowlist WHERE domain = ?", (domain,)
+    )
+    return await cursor.fetchone() is not None

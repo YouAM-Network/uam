@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 logger = logging.getLogger(__name__)
 
 _DEFAULT_RELAY_URL = "https://relay.youam.network"
+_DEFAULT_REGISTRAR_URL = "https://registrar.youam.network"
 
 _VALID_POLICIES = {"auto-accept", "approval-required", "allowlist-only"}
 
@@ -35,11 +36,18 @@ class SDKConfig:
     transport_type: str = "websocket"
     trust_policy: str = "auto-accept"
     relay_domain: str = ""
+    registrar_url: str | None = None
 
     def __post_init__(self) -> None:
         # Apply defaults from env vars where None is passed
         if self.relay_url is None:
             self.relay_url = os.getenv("UAM_RELAY_URL", _DEFAULT_RELAY_URL)
+
+        # Registrar URL: env var > constructor arg > default
+        if self.registrar_url is None:
+            self.registrar_url = os.getenv(
+                "UAM_REGISTRAR_URL", _DEFAULT_REGISTRAR_URL
+            )
 
         # Derive relay_ws_url from relay_url if not explicitly set
         if self.relay_ws_url is None:

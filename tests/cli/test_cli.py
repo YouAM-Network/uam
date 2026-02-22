@@ -40,10 +40,10 @@ def uam_home(tmp_path: Path) -> Path:
 
 
 def test_cli_help(runner: CliRunner):
-    """--help shows all 12 commands."""
+    """--help shows all commands including bridge."""
     result = runner.invoke(cli, ["--help"])
     assert result.exit_code == 0
-    for cmd in ("init", "send", "inbox", "whoami", "contacts", "card", "pending", "approve", "deny", "block", "unblock", "verify-domain"):
+    for cmd in ("init", "send", "inbox", "whoami", "contacts", "card", "pending", "approve", "deny", "block", "unblock", "verify-domain", "bridge"):
         assert cmd in result.output
 
 
@@ -718,6 +718,69 @@ def test_verify_domain_uam_error(runner: CliRunner, uam_home: Path):
 
     assert result.exit_code == 1
     assert "Error:" in result.output
+
+
+# ---------------------------------------------------------------------------
+# test_bridge_a2a_import
+# ---------------------------------------------------------------------------
+
+
+SAMPLE_A2A_CARD_FOR_CLI = {
+    "name": "Weather Agent",
+    "description": "Provides weather forecasts",
+    "url": "https://weather.example.com/a2a",
+    "version": "0.1",
+    "capabilities": {"streaming": True, "pushNotifications": False},
+    "skills": [
+        {
+            "id": "forecast",
+            "name": "Weather Forecast",
+            "description": "Get weather forecasts for any location",
+            "tags": ["weather", "forecast"],
+            "examples": ["What's the weather in Paris?"],
+        }
+    ],
+}
+
+
+def test_bridge_a2a_import(runner: CliRunner, uam_home: Path, monkeypatch):
+    """uam bridge a2a import fetches and imports A2A agent card."""
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = SAMPLE_A2A_CARD_FOR_CLI
+    mock_response.raise_for_status = MagicMock()
+
+    monkeypatch.setattr("uam.cli.main.httpx.get", lambda *a, **kw: mock_response)
+    monkeypatch.setattr("uam.cli.main._find_agent_name", lambda *a, **kw: "testuser")
+
+    result = runner.invoke(
+        cli,
+        ["bridge", "a2a", "import", "https://weather.example.com"],
+        env={"UAM_HOME": str(uam_home)},
+    )
+
+    assert result.exit_code == 0, f"CLI failed: {result.output}"
+    assert "Imported A2A agent" in result.output
+    assert "Weather Agent" in result.output
+
+
+def test_bridge_a2a_import_bad_url(runner: CliRunner, uam_home: Path, monkeypatch):
+    """uam bridge a2a import with unreachable URL shows error."""
+    import httpx as httpx_mod
+
+    monkeypatch.setattr(
+        "uam.cli.main.httpx.get",
+        MagicMock(side_effect=httpx_mod.ConnectError("Connection refused")),
+    )
+
+    result = runner.invoke(
+        cli,
+        ["bridge", "a2a", "import", "https://nonexistent.example.com"],
+        env={"UAM_HOME": str(uam_home)},
+    )
+
+    assert result.exit_code != 0
+    assert "Error" in result.output
 
 
 # ---------------------------------------------------------------------------
