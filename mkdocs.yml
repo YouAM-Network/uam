@@ -1,7 +1,7 @@
 site_name: UAM Documentation
 site_description: Universal Agent Messaging -- protocol, SDK, and relay documentation
-site_url: https://uam-protocol.github.io/uam
-repo_url: https://github.com/uam-protocol/uam
+site_url: https://docs.youam.network
+repo_url: https://github.com/youam-network/uam
 repo_name: uam
 
 theme:
