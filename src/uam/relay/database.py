@@ -350,11 +350,11 @@ async def init_db(path: str) -> aiosqlite.Connection:
     await db.execute("PRAGMA synchronous=NORMAL")
     await db.execute("PRAGMA foreign_keys=ON")
     db.row_factory = aiosqlite.Row
-    # Run migrations BEFORE schema — old DBs may be missing columns
-    # that SCHEMA indexes reference (e.g., agents.token).
-    await _migrate(db)
+    # Schema first (CREATE TABLE IF NOT EXISTS), then migrations
+    # which ALTER existing tables to add new columns.
     await db.executescript(SCHEMA)
     await db.commit()
+    await _migrate(db)
     return db
 
 
