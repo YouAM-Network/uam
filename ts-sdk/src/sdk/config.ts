@@ -14,6 +14,7 @@ const VALID_POLICIES = new Set([
   "auto-accept",
   "approval-required",
   "allowlist-only",
+  "require_verify",
 ]);
 
 export class SDKConfig {

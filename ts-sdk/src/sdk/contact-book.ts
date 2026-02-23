@@ -68,6 +68,7 @@ export class ContactBook {
         trust_source TEXT DEFAULT 'legacy-unknown',
         relay        TEXT,
         relays_json  TEXT,
+        pinned_at    TEXT,
         first_seen   TEXT NOT NULL DEFAULT (datetime('now')),
         last_seen    TEXT NOT NULL DEFAULT (datetime('now'))
       );
@@ -116,9 +117,15 @@ export class ContactBook {
     const version = versionRow.user_version;
 
     if (version < 2) {
-      // For new DBs, tables are created with all columns upfront.
-      // Just set user_version to 2 to match Python.
-      this._db.exec("PRAGMA user_version = 2");
+      // For new DBs, tables are created with all columns upfront
+      // (including pinned_at). Skip straight to version 3.
+      this._db.exec("PRAGMA user_version = 3");
+    } else if (version < 3) {
+      // Existing v2 database: add pinned_at column for key pinning lifecycle
+      this._db.exec(
+        "ALTER TABLE contacts ADD COLUMN pinned_at TEXT"
+      );
+      this._db.exec("PRAGMA user_version = 3");
     }
   }
 
@@ -329,6 +336,44 @@ export class ContactBook {
       .prepare("SELECT trust_state FROM contacts WHERE address = ?")
       .get(address) as { trust_state: string } | undefined;
     return row?.trust_state ?? null;
+  }
+
+  /**
+   * Set the pinned_at timestamp and trust_state='pinned' for a contact (TOFU).
+   */
+  setPinnedAt(address: string): void {
+    if (this._db === null) {
+      throw new Error("ContactBook not open. Call open() first.");
+    }
+    this._db
+      .prepare(
+        "UPDATE contacts SET pinned_at = datetime('now'), trust_state = 'pinned' WHERE address = ?"
+      )
+      .run(address);
+  }
+
+  /**
+   * Remove a contact by address. Returns true if a contact was deleted.
+   */
+  removeContact(address: string): boolean {
+    if (this._db === null) {
+      throw new Error("ContactBook not open. Call open() first.");
+    }
+    const result = this._db
+      .prepare("DELETE FROM contacts WHERE address = ?")
+      .run(address);
+    this._knownAddresses.delete(address);
+    return result.changes > 0;
+  }
+
+  /**
+   * Return true if the address has trust_state 'trusted', 'verified', or 'pinned'.
+   *
+   * Convenience helper for inbound message filtering (CARD-05, TOFU-02).
+   */
+  isTrustedOrVerified(address: string): boolean {
+    const state = this.getTrustState(address);
+    return state === "trusted" || state === "verified" || state === "pinned";
   }
 
   /**

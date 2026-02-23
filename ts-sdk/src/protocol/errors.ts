@@ -76,3 +76,12 @@ export class InvalidContactCardError extends UAMError {
     this.name = "InvalidContactCardError";
   }
 }
+
+/** Raised when a pinned contact's public key doesn't match the resolved key. */
+export class KeyPinningError extends UAMError {
+  constructor(message?: string) {
+    super(message);
+    this.name = "KeyPinningError";
+    Object.setPrototypeOf(this, KeyPinningError.prototype);
+  }
+}

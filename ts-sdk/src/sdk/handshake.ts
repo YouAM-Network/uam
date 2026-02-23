@@ -126,11 +126,11 @@ export class HandshakeManager {
     verifyContactCard(card);
 
     if (this._trustPolicy === "auto-accept") {
-      // Store the contact as trusted with trust_source tracking
+      // Store the contact as provisional (TOFU: trust upgrades on accept)
       this._contactBook.addContact(card.address, card.publicKey, {
         displayName: card.displayName,
-        trustState: "trusted",
-        trustSource: "auto-accepted",
+        trustState: "provisional",
+        trustSource: "auto-accepted-provisional",
       });
       // Send handshake.accept back
       await this._sendAccept(agent, envelope.fromAddress, senderVk);
@@ -147,7 +147,7 @@ export class HandshakeManager {
   }
 
   /**
-   * Process a handshake.accept: store the sender as trusted.
+   * Process a handshake.accept: store the sender as pinned (TOFU).
    */
   private async _handleAccept(
     envelope: MessageEnvelope,
@@ -155,8 +155,9 @@ export class HandshakeManager {
   ): Promise<void> {
     const senderPkStr = serializeVerifyKey(senderVk);
     this._contactBook.addContact(envelope.fromAddress, senderPkStr, {
-      trustState: "trusted",
+      trustState: "pinned",
     });
+    this._contactBook.setPinnedAt(envelope.fromAddress);
   }
 
   /**

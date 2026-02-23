@@ -65,12 +65,19 @@ export class KeyManager {
   /**
    * Load existing keypair or generate a new one.
    *
-   * First-run: generates keypair, writes {name}.key and {name}.pub,
-   * sets 0o600 permissions on the private key.
-   *
-   * Returning user: loads from disk, warns if permissions too permissive.
+   * Checks UAM_SIGNING_KEY env var first (base64-encoded Ed25519 seed).
+   * Falls back to file-based storage at {keyDir}/{name}.key.
+   * Generates a new keypair if neither source exists.
    */
   loadOrGenerate(name: string): void {
+    // 1. Check environment variable
+    const envKey = process.env["UAM_SIGNING_KEY"];
+    if (envKey) {
+      this._keypair = deserializeSigningKey(envKey.trim());
+      return;
+    }
+
+    // 2. File-based storage
     mkdirSync(this._keyDir, { recursive: true });
     const keyPath = join(this._keyDir, `${name}.key`);
     const pubPath = join(this._keyDir, `${name}.pub`);
@@ -93,6 +100,7 @@ export class KeyManager {
    * Store the relay token alongside the keypair.
    */
   saveToken(name: string, token: string): void {
+    mkdirSync(this._keyDir, { recursive: true });
     const tokenPath = join(this._keyDir, `${name}.token`);
     writeFileSync(tokenPath, token);
     this._setPermissions(tokenPath);
@@ -101,9 +109,17 @@ export class KeyManager {
   /**
    * Load a previously saved token, or return null.
    *
-   * Also checks for legacy .api_key files for backward compatibility.
+   * Checks UAM_TOKEN env var first, then file-based storage,
+   * then legacy .api_key files for backward compatibility.
    */
   loadToken(name: string): string | null {
+    // 1. Check environment variable
+    const envToken = process.env["UAM_TOKEN"];
+    if (envToken) {
+      return envToken.trim();
+    }
+
+    // 2. File-based storage
     const tokenPath = join(this._keyDir, `${name}.token`);
     if (existsSync(tokenPath)) {
       return readFileSync(tokenPath, "utf-8").trim();
