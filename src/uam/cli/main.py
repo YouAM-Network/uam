@@ -828,7 +828,7 @@ def register(
             status = poll_info.get("registration_status")
             if status == "completed" or status is None:
                 # Registered on-chain (status None means no local record = on-chain only)
-                click.echo(f"\nRegistered! Your address: {name}::youam.network")
+                click.echo(f"\nRegistered! Your address: {name}::uam.network")
                 return
             if status == "failed":
                 _error(f"\nRegistration failed. Check registrar logs for details.")

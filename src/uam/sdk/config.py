@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 logger = logging.getLogger(__name__)
 
 _DEFAULT_RELAY_URL = "https://relay.youam.network"
-_DEFAULT_REGISTRAR_URL = "https://registrar.youam.network"
+_DEFAULT_REGISTRAR_URL = "https://registrar.uam.network"
 
 _VALID_POLICIES = {"auto-accept", "approval-required", "allowlist-only", "require_verify"}
 

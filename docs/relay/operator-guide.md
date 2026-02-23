@@ -38,7 +38,7 @@ The relay will:
 
 ```bash
 # Clone the repository
-git clone https://github.com/youam-network/uam.git
+git clone https://github.com/anthropics/uam.git
 cd uam
 
 # Install dependencies
