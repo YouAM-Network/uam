@@ -1,7 +1,16 @@
-"""Ed25519 key generation, storage, loading, and token persistence (SDK-06)."""
+"""Ed25519 key generation, storage, loading, and token persistence (SDK-06).
+
+Supports two storage backends:
+- **Environment variables** (for ephemeral/containerized deployments):
+  ``UAM_SIGNING_KEY`` (base64-encoded Ed25519 seed) and ``UAM_TOKEN``.
+- **File-based** (default, at ``~/.uam/keys/``): auto-generated on first run.
+
+Environment variables take precedence over files when set.
+"""
 
 from __future__ import annotations
 
+import logging
 import os
 import platform
 import stat
@@ -17,6 +26,7 @@ from uam.protocol import (
     serialize_verify_key,
 )
 
+logger = logging.getLogger(__name__)
 
 _DEFAULT_KEY_DIR = Path.home() / ".uam" / "keys"
 
@@ -24,8 +34,15 @@ _DEFAULT_KEY_DIR = Path.home() / ".uam" / "keys"
 class KeyManager:
     """Manages Ed25519 keypair storage at ~/.uam/keys/ (SDK-06).
 
-    First-run: generates keypair, writes to disk, sets 600 permissions.
-    Returning user: loads from disk, warns if permissions too permissive.
+    Lookup order for signing keys:
+    1. ``UAM_SIGNING_KEY`` environment variable (base64-encoded seed)
+    2. File at ``{key_dir}/{name}.key``
+    3. Generate new keypair and write to files
+
+    Lookup order for tokens:
+    1. ``UAM_TOKEN`` environment variable
+    2. File at ``{key_dir}/{name}.token``
+    3. Legacy file at ``{key_dir}/{name}.api_key``
     """
 
     def __init__(self, key_dir: Path | str | None = None) -> None:
@@ -50,11 +67,19 @@ class KeyManager:
     def load_or_generate(self, name: str) -> None:
         """Load existing keypair or generate a new one.
 
-        First-run: generates keypair, writes ``{name}.key`` and ``{name}.pub``
-        files, sets 600 permissions on the private key.
-
-        Returning user: loads from disk, warns if permissions too permissive.
+        Checks ``UAM_SIGNING_KEY`` env var first (base64-encoded Ed25519 seed).
+        Falls back to file-based storage at ``{key_dir}/{name}.key``.
+        Generates a new keypair if neither source exists.
         """
+        # 1. Check environment variable
+        env_key = os.environ.get("UAM_SIGNING_KEY")
+        if env_key:
+            self._signing_key = deserialize_signing_key(env_key.strip())
+            self._verify_key = self._signing_key.verify_key
+            logger.debug("Loaded signing key from UAM_SIGNING_KEY env var")
+            return
+
+        # 2. File-based storage
         self._key_dir.mkdir(parents=True, exist_ok=True)
         key_path = self._key_dir / f"{name}.key"
         pub_path = self._key_dir / f"{name}.pub"
@@ -97,8 +122,16 @@ class KeyManager:
     def load_token(self, name: str) -> str | None:
         """Load a previously saved token, or return None.
 
-        Also checks for legacy ``.api_key`` files for backward compatibility.
+        Checks ``UAM_TOKEN`` env var first, then file-based storage,
+        then legacy ``.api_key`` files for backward compatibility.
         """
+        # 1. Check environment variable
+        env_token = os.environ.get("UAM_TOKEN")
+        if env_token:
+            logger.debug("Loaded token from UAM_TOKEN env var")
+            return env_token.strip()
+
+        # 2. File-based storage
         token_path = self._key_dir / f"{name}.token"
         if token_path.exists():
             return token_path.read_text().strip()
