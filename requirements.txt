@@ -6,6 +6,7 @@ websockets>=14
 pydantic>=2.0
 aiosqlite>=0.21
 click>=8.1
+dnspython>=2.8
 
 # Relay
 fastapi>=0.115
