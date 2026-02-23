@@ -13,6 +13,17 @@ import { inboxCommand } from "./commands/inbox.js";
 import { cardCommand } from "./commands/card.js";
 import { whoamiCommand } from "./commands/whoami.js";
 import { contactsCommand } from "./commands/contacts.js";
+import { pendingCommand } from "./commands/pending.js";
+import { approveCommand } from "./commands/approve.js";
+import { denyCommand } from "./commands/deny.js";
+import { blockCommand } from "./commands/block.js";
+import { unblockCommand } from "./commands/unblock.js";
+import {
+  contactFingerprintCommand,
+  contactVerifyCommand,
+  contactRemoveCommand,
+} from "./commands/contact.js";
+import { verifyDomainCommand } from "./commands/verify-domain.js";
 
 const program = new Command();
 
@@ -85,6 +96,96 @@ program
   .action(async () => {
     const globalName = program.opts().name;
     await contactsCommand({ name: globalName });
+  });
+
+// ---- contact (subcommands) -------------------------------------------------
+const contactCmd = program
+  .command("contact")
+  .description("Contact management commands (fingerprint, verify, remove)");
+
+contactCmd
+  .command("fingerprint <address>")
+  .description("Display the fingerprint for a known contact's public key")
+  .action(async (address: string) => {
+    const globalName = program.opts().name;
+    await contactFingerprintCommand(address, { name: globalName });
+  });
+
+contactCmd
+  .command("verify <address>")
+  .description("Manually verify a contact, upgrading trust state to verified")
+  .option("-y, --yes", "Skip confirmation prompt")
+  .action(async (address: string, opts) => {
+    const globalName = program.opts().name;
+    await contactVerifyCommand(address, { name: globalName, yes: opts.yes });
+  });
+
+contactCmd
+  .command("remove <address>")
+  .description("Remove a contact from the contact book")
+  .action(async (address: string) => {
+    const globalName = program.opts().name;
+    await contactRemoveCommand(address, { name: globalName });
+  });
+
+// ---- verify-domain ---------------------------------------------------------
+program
+  .command("verify-domain <domain>")
+  .description("Verify domain ownership for Tier 2 DNS-verified status")
+  .option("-t, --timeout <seconds>", "Polling timeout in seconds", "300")
+  .option("--poll-interval <seconds>", "Polling interval in seconds", "10")
+  .action(async (domain: string, opts) => {
+    const globalName = program.opts().name;
+    await verifyDomainCommand(domain, {
+      name: globalName,
+      timeout: parseInt(opts.timeout, 10),
+      pollInterval: parseInt(opts.pollInterval, 10),
+    });
+  });
+
+// ---- pending ---------------------------------------------------------------
+program
+  .command("pending")
+  .description("List pending handshake requests awaiting approval")
+  .action(async () => {
+    const globalName = program.opts().name;
+    await pendingCommand({ name: globalName });
+  });
+
+// ---- approve ---------------------------------------------------------------
+program
+  .command("approve <address>")
+  .description("Approve a pending handshake request")
+  .action(async (address: string) => {
+    const globalName = program.opts().name;
+    await approveCommand(address, { name: globalName });
+  });
+
+// ---- deny ------------------------------------------------------------------
+program
+  .command("deny <address>")
+  .description("Deny a pending handshake request")
+  .action(async (address: string) => {
+    const globalName = program.opts().name;
+    await denyCommand(address, { name: globalName });
+  });
+
+// ---- block -----------------------------------------------------------------
+program
+  .command("block <pattern>")
+  .description("Block an address or domain pattern (e.g., spammer::evil.com or *::evil.com)")
+  .action(async (pattern: string) => {
+    const globalName = program.opts().name;
+    await blockCommand(pattern, { name: globalName });
+  });
+
+// ---- unblock ---------------------------------------------------------------
+program
+  .command("unblock <pattern>")
+  .description("Remove a block on an address or domain pattern")
+  .action(async (pattern: string) => {
+    const globalName = program.opts().name;
+    await unblockCommand(pattern, { name: globalName });
   });
 
 program.parse(process.argv);

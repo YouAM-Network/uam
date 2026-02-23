@@ -10,6 +10,7 @@
 import {
   MessageType,
   UAMError,
+  KeyPinningError,
   SignatureVerificationError,
   DecryptionError,
   sodiumReady,
@@ -211,6 +212,18 @@ export class Agent {
   ): Promise<string> {
     await this._ensureConnected();
 
+    // TOFU-05: require_verify blocks unverified first sends
+    if (this._config.trustPolicy === "require_verify") {
+      const trust = this._contactBook.getTrustState(toAddress);
+      if (trust !== "pinned" && trust !== "verified") {
+        throw new UAMError(
+          `Trust policy 'require_verify' requires fingerprint ` +
+            `verification before sending to ${toAddress}. ` +
+            `Run: uam contact verify ${toAddress}`
+        );
+      }
+    }
+
     // Resolve recipient's verify key (Ed25519)
     const recipientVk = await this._resolvePublicKey(toAddress);
 
@@ -365,6 +378,64 @@ export class Agent {
     this._contactBook.removeBlock(pattern);
   }
 
+  // -- Domain verification (DNS-02) ----------------------------------------
+
+  /**
+   * Verify domain ownership via relay endpoint (DNS-02).
+   *
+   * Polls `POST /api/v1/verify-domain` until the relay confirms
+   * DNS TXT (or HTTPS fallback) verification succeeds, or timeout
+   * elapses.
+   *
+   * Returns `true` if verified, `false` on timeout.
+   */
+  async verifyDomain(
+    domain: string,
+    options?: { timeout?: number; pollInterval?: number }
+  ): Promise<boolean> {
+    const { generateTxtRecord } = await import("./dns-verifier.js");
+    await this._ensureConnected();
+
+    const timeout = options?.timeout ?? 300000; // 5 minutes
+    const pollInterval = options?.pollInterval ?? 10000; // 10 seconds
+
+    const expectedTxt = generateTxtRecord(
+      this.publicKey,
+      this._config.relayUrl
+    );
+    // Log expected TXT for user reference (they need to publish this)
+    void expectedTxt;
+
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+      try {
+        const resp = await fetch(
+          `${this._config.relayUrl}/api/v1/verify-domain`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${this._token}`,
+            },
+            body: JSON.stringify({ domain }),
+            signal: AbortSignal.timeout(30000),
+          }
+        );
+        if (resp.ok) {
+          const result = (await resp.json()) as Record<string, unknown>;
+          if (result["status"] === "verified") {
+            return true;
+          }
+        }
+      } catch {
+        // Request failed, retry after poll interval
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollInterval));
+    }
+
+    return false;
+  }
+
   // -- Internal methods ----------------------------------------------------
 
   /** Multi-relay failover (CARD-06). */
@@ -430,27 +501,46 @@ export class Agent {
 
   /**
    * Resolve a recipient's public key, checking contact book first.
+   *
+   * TOFU-01: Known contacts always use stored key (zero network I/O).
+   * TOFU-03: Race-condition double-check after network resolve.
+   * Raises KeyPinningError if a pinned contact's key doesn't match.
    */
   private async _resolvePublicKey(toAddress: string): Promise<Uint8Array> {
-    // Check contact book first
+    // TOFU-01: Check contact book first (local-first, zero network I/O)
     const pkStr = this._contactBook.getPublicKey(toAddress);
     if (pkStr !== null) {
+      // Known contact: always use stored key
       return deserializeVerifyKey(pkStr);
     }
 
-    // Not in contact book -- resolve via relay
-    const resolved = await this._resolver.resolvePublicKey(
+    // Unknown contact: resolve from network
+    const resolvedPkStr = await this._resolver.resolvePublicKey(
       toAddress,
       this._token!,
       this._config.relayUrl
     );
 
-    // Cache in contact book (unverified until handshake completes)
-    this._contactBook.addContact(toAddress, resolved, {
-      trustState: "unverified",
+    // TOFU-03: Double-check no pinned key exists (race condition guard)
+    const storedPk = this._contactBook.getPublicKey(toAddress);
+    if (storedPk !== null && storedPk !== resolvedPkStr) {
+      const trust = this._contactBook.getTrustState(toAddress);
+      if (trust === "pinned" || trust === "trusted" || trust === "verified") {
+        throw new KeyPinningError(
+          `CRITICAL: Public key mismatch for ${toAddress}! ` +
+            `Stored key does not match resolved key. ` +
+            `This may indicate a relay MITM attack. ` +
+            `To accept the new key: uam contact remove ${toAddress}`
+        );
+      }
+    }
+
+    // Store as provisional (TOFU: unverified until handshake completes)
+    this._contactBook.addContact(toAddress, resolvedPkStr, {
+      trustState: "provisional",
     });
 
-    return deserializeVerifyKey(resolved);
+    return deserializeVerifyKey(resolvedPkStr);
   }
 
   private async _initiateHandshake(
@@ -526,8 +616,7 @@ export class Agent {
 
     // For non-auto-accept policies, filter messages from unapproved senders
     if (this._handshake._trustPolicy !== "auto-accept") {
-      const trust = this._contactBook.getTrustState(envelope.fromAddress);
-      if (trust !== "trusted" && trust !== "verified") {
+      if (!this._contactBook.isTrustedOrVerified(envelope.fromAddress)) {
         return null;
       }
     }

@@ -1,8 +1,8 @@
 {
-  "name": "uam",
-  "version": "0.1.0",
+  "name": "@youam/sdk",
+  "version": "0.2.0",
   "type": "module",
-  "description": "Universal Agent Messaging (UAM) TypeScript SDK",
+  "description": "Universal Agent Messaging (UAM) TypeScript SDK -- end-to-end encrypted, trust-on-first-use agent messaging",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -25,6 +25,30 @@
     "dist",
     "README.md",
     "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/youam/uam.git",
+    "directory": "ts-sdk"
+  },
+  "homepage": "https://youam.network",
+  "bugs": {
+    "url": "https://github.com/youam/uam/issues"
+  },
+  "keywords": [
+    "uam",
+    "universal-agent-messaging",
+    "agent",
+    "messaging",
+    "e2e-encryption",
+    "ed25519",
+    "tofu",
+    "trust-on-first-use",
+    "handshake",
+    "contact-card",
+    "dns-verification",
+    "relay",
+    "a2a"
   ],
   "engines": {
     "node": ">=18"

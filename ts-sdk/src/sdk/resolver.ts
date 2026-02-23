@@ -7,6 +7,12 @@
 import { UAMError } from "../protocol/index.js";
 import { parseAddress } from "../protocol/address.js";
 import { Tier3Resolver, type Tier3Config } from "./tier3.js";
+import {
+  queryUamTxt,
+  parseUamTxt,
+  extractPublicKey,
+  resolveKeyViaHttps,
+} from "./dns-verifier.js";
 
 /**
  * Pluggable address resolver interface.
@@ -52,9 +58,12 @@ export class Tier1Resolver extends AddressResolver {
 }
 
 /**
- * Tier 2: DNS TXT record resolution.
+ * Tier 2: DNS TXT record resolution (DNS-01).
  *
- * Stub for MVP -- DNS resolution is not yet implemented in TypeScript SDK.
+ * Resolution order:
+ *   1. Query _uam.{domain} TXT records for v=uam1 entries
+ *   2. Fallback to HTTPS .well-known/uam.json
+ *   3. Throw UAMError if both fail
  */
 export class Tier2Resolver extends AddressResolver {
   async resolvePublicKey(
@@ -62,8 +71,24 @@ export class Tier2Resolver extends AddressResolver {
     _token: string,
     _relayUrl: string
   ): Promise<string> {
+    const parsed = parseAddress(address);
+
+    // 1. Try DNS TXT at _uam.{domain}
+    const txtRecords = await queryUamTxt(parsed.domain);
+    for (const txt of txtRecords) {
+      const tags = parseUamTxt(txt);
+      if (tags["v"] === "uam1") {
+        const key = extractPublicKey(tags);
+        if (key) return key;
+      }
+    }
+
+    // 2. Fallback to HTTPS .well-known
+    const httpsKey = await resolveKeyViaHttps(parsed.agent, parsed.domain);
+    if (httpsKey) return httpsKey;
+
     throw new UAMError(
-      `Tier 2 DNS resolution not yet implemented in TypeScript SDK. Cannot resolve: ${address}`
+      `Could not resolve public key for ${address} via DNS or HTTPS`
     );
   }
 }

@@ -1,12 +1,34 @@
 /**
  * uam contacts -- List known contacts from the local contact book.
  *
- * Matches Python CLI contacts command output format.
+ * Matches Python CLI contacts command output format with trust state indicators.
  */
 
 import { SDKConfig } from "../../sdk/config.js";
 import { ContactBook } from "../../sdk/contact-book.js";
 import { findAgentName } from "../helpers.js";
+
+/**
+ * Map a trust_state to a display string with ASCII-safe indicator.
+ *
+ * Matches Python _trust_indicator() from src/uam/cli/main.py (TOFU-04).
+ *
+ * - [P] -- provisional (with warning)
+ * - [T] -- trusted
+ * - [V] -- verified
+ * - [!] -- pinned (key locked)
+ * - [?] -- unknown
+ */
+export function trustIndicator(trustState: string): string {
+  const indicators: Record<string, string> = {
+    provisional: "provisional (!)",
+    trusted: "trusted [T]",
+    pinned: "pinned [P]",
+    verified: "verified [V]",
+    unknown: "unknown [?]",
+  };
+  return indicators[trustState] ?? trustState;
+}
 
 export async function contactsCommand(options: {
   name?: string;
@@ -29,14 +51,14 @@ export async function contactsCommand(options: {
 
     // Print table header
     console.log(
-      `${"ADDRESS".padEnd(30)} ${"TRUST".padEnd(18)} LAST SEEN`
+      `${"ADDRESS".padEnd(30)} ${"TRUST".padEnd(22)} LAST SEEN`
     );
     for (const row of rows) {
       const addr = row.address;
-      const trust = row.trustState;
+      const trust = trustIndicator(row.trustState);
       const last = row.lastSeen ?? "";
       console.log(
-        `${addr.padEnd(30)} ${trust.padEnd(18)} ${last}`
+        `${addr.padEnd(30)} ${trust.padEnd(22)} ${last}`
       );
     }
   } catch {
