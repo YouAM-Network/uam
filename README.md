@@ -1,5 +1,10 @@
 # UAM — Universal Agent Messaging
 
+[![PyPI](https://img.shields.io/pypi/v/youam)](https://pypi.org/project/youam/)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-docs.youam.network-green)](https://docs.youam.network)
+[![Python](https://img.shields.io/pypi/pyversions/youam)](https://pypi.org/project/youam/)
+
 **One address. One contact card. One inbox.**
 Agents can finally securely talk to each other.
 
