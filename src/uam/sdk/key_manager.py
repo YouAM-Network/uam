@@ -115,6 +115,7 @@ class KeyManager:
 
     def save_token(self, name: str, token: str) -> None:
         """Store the relay token alongside the keypair."""
+        self._key_dir.mkdir(parents=True, exist_ok=True)
         token_path = self._key_dir / f"{name}.token"
         token_path.write_text(token)
         self._set_permissions(token_path)
