@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from importlib.resources import files
 from pathlib import Path
 
 from uam.protocol import UAMError
@@ -17,16 +18,14 @@ logger = logging.getLogger(__name__)
 DEFAULT_RPC_URL = "https://sepolia.base.org"
 DEFAULT_CHAIN_ID = 84532  # Base Sepolia
 
-# ABI path relative to this file: ../../contracts/deployments/UAMNameRegistry.abi.json
-_ABI_PATH = (
-    Path(__file__).resolve().parent.parent.parent.parent
-    / "contracts"
-    / "deployments"
-    / "UAMNameRegistry.abi.json"
-)
-
 # Cache TTL: 1 hour
 _CACHE_TTL = 3600
+
+
+def _load_bundled_abi() -> list:
+    """Load the UAMNameRegistry ABI from the bundled package data."""
+    data = files("uam.data").joinpath("UAMNameRegistry.abi.json").read_text()
+    return json.loads(data)
 
 
 class Tier3Resolver(AddressResolver):
@@ -47,18 +46,22 @@ class Tier3Resolver(AddressResolver):
         self._contract_address = contract_address
         self._rpc_url = rpc_url
         self._chain_id = chain_id
-        self._abi = self._load_abi(Path(abi_path) if abi_path else _ABI_PATH)
+        self._abi_path = Path(abi_path) if abi_path else None
+        self._abi: list | None = None  # Lazy-loaded in _get_contract()
         self._cache_ttl = cache_ttl
         self._cache: dict[str, tuple[str, float]] = {}  # name -> (pubkey, expiry_time)
         self._w3 = None  # Lazy init
         self._contract = None
 
     @staticmethod
-    def _load_abi(path: Path) -> list:
-        if not path.exists():
-            raise UAMError(f"ABI file not found: {path}")
-        with open(path) as f:
-            return json.load(f)
+    def _load_abi(path: Path | None = None) -> list:
+        """Load ABI from explicit path or bundled package data."""
+        if path is not None:
+            if not path.exists():
+                raise UAMError(f"ABI file not found: {path}")
+            with open(path) as f:
+                return json.load(f)
+        return _load_bundled_abi()
 
     async def _get_contract(self):
         """Lazy-initialize web3 and contract instance."""
@@ -68,6 +71,8 @@ class Tier3Resolver(AddressResolver):
                     "Tier 3 contract address not configured. "
                     "Pass contract_address to Tier3Resolver()."
                 )
+            if self._abi is None:
+                self._abi = self._load_abi(self._abi_path)
             try:
                 from web3 import AsyncWeb3
                 from web3.providers import AsyncHTTPProvider

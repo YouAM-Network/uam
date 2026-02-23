@@ -261,6 +261,86 @@ async def _migrate(db: aiosqlite.Connection) -> None:
         await db.execute("PRAGMA user_version = 8")
         await db.commit()
 
+    if version < 9:
+        logger.info("Relay DB migration: applying version 9 (agents token + webhook_url columns)")
+        # Old DBs may have api_key instead of token. Detect and migrate.
+        cursor = await db.execute("PRAGMA table_info(agents)")
+        columns = {row[1] for row in await cursor.fetchall()}
+        has_api_key = "api_key" in columns
+        has_token = "token" in columns
+
+        if has_api_key and not has_token:
+            # Rename api_key -> token via table rebuild (SQLite can't rename columns pre-3.25)
+            logger.info("Renaming agents.api_key -> token")
+            await db.executescript("""
+                CREATE TABLE agents_new (
+                    address     TEXT PRIMARY KEY,
+                    public_key  TEXT NOT NULL,
+                    token       TEXT UNIQUE,
+                    webhook_url TEXT,
+                    last_seen   TEXT,
+                    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                INSERT INTO agents_new (address, public_key, token, webhook_url, last_seen, created_at)
+                    SELECT address, public_key, api_key, webhook_url, last_seen, created_at
+                    FROM agents;
+                DROP TABLE agents;
+                ALTER TABLE agents_new RENAME TO agents;
+            """)
+        else:
+            # Add missing columns
+            for col, col_def in [
+                ("token", "TEXT"),
+                ("webhook_url", "TEXT"),
+            ]:
+                try:
+                    await db.execute(f"ALTER TABLE agents ADD COLUMN {col} {col_def}")
+                except Exception:
+                    pass  # Column already exists
+
+        # Backfill: agents without a token get a random one
+        import secrets as _secrets
+        cursor = await db.execute("SELECT address FROM agents WHERE token IS NULL")
+        rows = await cursor.fetchall()
+        for row in rows:
+            await db.execute(
+                "UPDATE agents SET token = ? WHERE address = ?",
+                (_secrets.token_urlsafe(32), row[0]),
+            )
+        # Create unique index if not exists
+        try:
+            await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_token ON agents(token)")
+        except Exception:
+            pass
+        await db.execute("PRAGMA user_version = 9")
+        await db.commit()
+
+    if version < 10:
+        logger.info("Relay DB migration: applying version 10 (api_key -> token rename)")
+        # v9 shipped without the api_key detection. Re-run for DBs stuck at v9
+        # with the old api_key column still present.
+        cursor = await db.execute("PRAGMA table_info(agents)")
+        columns = {row[1] for row in await cursor.fetchall()}
+        if "api_key" in columns:
+            logger.info("Renaming agents.api_key -> token (v10)")
+            await db.executescript("""
+                CREATE TABLE agents_new (
+                    address     TEXT PRIMARY KEY,
+                    public_key  TEXT NOT NULL,
+                    token       TEXT UNIQUE,
+                    webhook_url TEXT,
+                    last_seen   TEXT,
+                    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                INSERT INTO agents_new (address, public_key, token, webhook_url, last_seen, created_at)
+                    SELECT address, public_key, api_key, webhook_url, last_seen, created_at
+                    FROM agents;
+                DROP TABLE agents;
+                ALTER TABLE agents_new RENAME TO agents;
+            """)
+        await db.execute("PRAGMA user_version = 10")
+        await db.commit()
+
 
 async def init_db(path: str) -> aiosqlite.Connection:
     """Open the database, apply pragmas and schema, return the connection."""
@@ -270,9 +350,11 @@ async def init_db(path: str) -> aiosqlite.Connection:
     await db.execute("PRAGMA synchronous=NORMAL")
     await db.execute("PRAGMA foreign_keys=ON")
     db.row_factory = aiosqlite.Row
+    # Run migrations BEFORE schema — old DBs may be missing columns
+    # that SCHEMA indexes reference (e.g., agents.token).
+    await _migrate(db)
     await db.executescript(SCHEMA)
     await db.commit()
-    await _migrate(db)
     return db
 
 
