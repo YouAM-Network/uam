@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerabilities
+    url: https://github.com/YouAM-Network/uam/security/advisories/new
+    about: Report security issues privately via GitHub Security Advisories. Do NOT open a public issue.
+  - name: Documentation
+    url: https://docs.youam.network
+    about: Check the docs before opening an issue.
