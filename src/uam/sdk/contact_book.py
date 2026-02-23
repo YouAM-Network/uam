@@ -20,6 +20,10 @@ CREATE TABLE IF NOT EXISTS contacts (
     public_key   TEXT NOT NULL,
     display_name TEXT,
     trust_state  TEXT NOT NULL DEFAULT 'unknown',
+    trust_source TEXT DEFAULT 'legacy-unknown',
+    relay        TEXT,
+    relays_json  TEXT,
+    pinned_at    TEXT,
     first_seen   TEXT NOT NULL DEFAULT (datetime('now')),
     last_seen    TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -28,6 +32,11 @@ CREATE TABLE IF NOT EXISTS pending_handshakes (
     address      TEXT PRIMARY KEY,
     contact_card TEXT NOT NULL,
     received_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS blocked_patterns (
+    pattern     TEXT PRIMARY KEY,
+    blocked_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 """
 
@@ -82,9 +91,12 @@ class ContactBook:
 
         if version < 1:
             logger.info("Migrating ContactBook schema to version 1")
-            await self._db.execute(
-                "ALTER TABLE contacts ADD COLUMN trust_source TEXT DEFAULT 'legacy-unknown'"
-            )
+            try:
+                await self._db.execute(
+                    "ALTER TABLE contacts ADD COLUMN trust_source TEXT DEFAULT 'legacy-unknown'"
+                )
+            except Exception:
+                pass  # Column already exists (fresh DB has it in _SCHEMA)
             await self._db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS blocked_patterns (
@@ -98,20 +110,29 @@ class ContactBook:
 
         if version < 2:
             logger.info("Migrating ContactBook schema to version 2 (CARD-04: relay columns)")
-            await self._db.execute(
-                "ALTER TABLE contacts ADD COLUMN relay TEXT"
-            )
-            await self._db.execute(
-                "ALTER TABLE contacts ADD COLUMN relays_json TEXT"
-            )
+            try:
+                await self._db.execute(
+                    "ALTER TABLE contacts ADD COLUMN relay TEXT"
+                )
+            except Exception:
+                pass  # Column already exists (fresh DB has it in _SCHEMA)
+            try:
+                await self._db.execute(
+                    "ALTER TABLE contacts ADD COLUMN relays_json TEXT"
+                )
+            except Exception:
+                pass  # Column already exists (fresh DB has it in _SCHEMA)
             await self._db.execute("PRAGMA user_version = 2")
             await self._db.commit()
 
         if version < 3:
             logger.info("Migrating ContactBook schema to version 3 (TOFU: pinned_at)")
-            await self._db.execute(
-                "ALTER TABLE contacts ADD COLUMN pinned_at TEXT"
-            )
+            try:
+                await self._db.execute(
+                    "ALTER TABLE contacts ADD COLUMN pinned_at TEXT"
+                )
+            except Exception:
+                pass  # Column already exists (fresh DB has it in _SCHEMA)
             await self._db.execute("PRAGMA user_version = 3")
             await self._db.commit()
 

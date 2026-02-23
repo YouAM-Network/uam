@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS messages (
     to_addr     TEXT NOT NULL,
     envelope    TEXT NOT NULL,
     delivered   INTEGER NOT NULL DEFAULT 0,
+    expires     TEXT,
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -96,6 +97,84 @@ CREATE TABLE IF NOT EXISTS allowlist (
     reason      TEXT,
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Tables previously only in migrations (now in SCHEMA as single source of truth):
+
+CREATE TABLE IF NOT EXISTS seen_message_ids (
+    message_id TEXT PRIMARY KEY,
+    from_addr  TEXT NOT NULL,
+    seen_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS known_relays (
+    domain          TEXT PRIMARY KEY,
+    federation_url  TEXT NOT NULL,
+    public_key      TEXT NOT NULL,
+    discovered_via  TEXT NOT NULL DEFAULT 'well-known',
+    last_verified   TEXT NOT NULL DEFAULT (datetime('now')),
+    ttl_hours       INTEGER NOT NULL DEFAULT 1,
+    status          TEXT NOT NULL DEFAULT 'active'
+);
+
+CREATE TABLE IF NOT EXISTS federation_log (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id      TEXT NOT NULL,
+    from_relay      TEXT NOT NULL,
+    to_relay        TEXT NOT NULL,
+    direction       TEXT NOT NULL,
+    hop_count       INTEGER NOT NULL DEFAULT 0,
+    status          TEXT NOT NULL,
+    error           TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_federation_log_message
+    ON federation_log(message_id);
+CREATE INDEX IF NOT EXISTS idx_federation_log_relay
+    ON federation_log(from_relay, created_at);
+
+CREATE TABLE IF NOT EXISTS relay_blocklist (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    domain      TEXT NOT NULL UNIQUE,
+    reason      TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS relay_allowlist (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    domain      TEXT NOT NULL UNIQUE,
+    reason      TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS relay_reputation (
+    domain              TEXT PRIMARY KEY,
+    score               INTEGER NOT NULL DEFAULT 50,
+    messages_forwarded  INTEGER NOT NULL DEFAULT 0,
+    messages_rejected   INTEGER NOT NULL DEFAULT 0,
+    last_success        TEXT,
+    last_failure        TEXT,
+    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS federation_queue (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_domain   TEXT NOT NULL,
+    envelope        TEXT NOT NULL,
+    via             TEXT NOT NULL DEFAULT '[]',
+    hop_count       INTEGER NOT NULL DEFAULT 0,
+    attempt_count   INTEGER NOT NULL DEFAULT 0,
+    next_retry      TEXT NOT NULL DEFAULT (datetime('now')),
+    status          TEXT NOT NULL DEFAULT 'pending',
+    error           TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_federation_queue_status
+    ON federation_queue(status, next_retry);
+CREATE INDEX IF NOT EXISTS idx_federation_queue_domain
+    ON federation_queue(target_domain, status);
 """
 
 
@@ -125,9 +204,12 @@ async def _migrate(db: aiosqlite.Connection) -> None:
 
     if version < 2:
         logger.info("Relay DB migration: applying version 2 (expires column)")
-        await db.execute(
-            "ALTER TABLE messages ADD COLUMN expires TEXT"
-        )
+        try:
+            await db.execute(
+                "ALTER TABLE messages ADD COLUMN expires TEXT"
+            )
+        except Exception:
+            pass  # Column already exists (fresh DB has it in SCHEMA)
         await db.execute("PRAGMA user_version = 2")
         await db.commit()
 
@@ -350,11 +432,26 @@ async def init_db(path: str) -> aiosqlite.Connection:
     await db.execute("PRAGMA synchronous=NORMAL")
     await db.execute("PRAGMA foreign_keys=ON")
     db.row_factory = aiosqlite.Row
-    # Schema first (CREATE TABLE IF NOT EXISTS), then migrations
-    # which ALTER existing tables to add new columns.
+
+    # Detect fresh DB: if core tables don't exist, apply SCHEMA first so
+    # migrations can safely ALTER TABLE on existing tables.
+    cursor = await db.execute(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='messages'"
+    )
+    is_fresh = (await cursor.fetchone())[0] == 0
+    if is_fresh:
+        await db.executescript(SCHEMA)
+        await db.commit()
+
+    # Run migrations (safe: tables exist either from SCHEMA or previous runs).
+    # On existing DBs this upgrades incrementally; on fresh DBs migrations
+    # become no-ops (columns/tables already in SCHEMA) but still set user_version.
+    await _migrate(db)
+
+    # Re-apply SCHEMA idempotently (catches any new CREATE TABLE IF NOT EXISTS
+    # added to SCHEMA that older DBs don't have yet).
     await db.executescript(SCHEMA)
     await db.commit()
-    await _migrate(db)
     return db
 
 

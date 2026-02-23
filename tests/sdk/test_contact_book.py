@@ -210,7 +210,7 @@ class TestSchemaMigration:
         try:
             async with book2._db.execute("PRAGMA user_version") as cur:
                 version = (await cur.fetchone())[0]
-                assert version == 1
+                assert version == 3
         finally:
             await book2.close()
 
