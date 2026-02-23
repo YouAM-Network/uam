@@ -7,6 +7,15 @@ name = "youam"
 version = "0.2.3"
 description = "Universal Agent Messaging protocol library"
 requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+]
 dependencies = [
     "pynacl>=1.6.2",
     "uuid6>=2025.0.1",
