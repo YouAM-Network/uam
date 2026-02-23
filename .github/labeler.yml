@@ -1,0 +1,43 @@
+# Maps changed file paths to labels for the actions/labeler action
+
+"area:cli":
+  - changed-files:
+      - any-glob-to-any-file: "src/uam/cli/**"
+
+"area:python-sdk":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/uam/sdk/**"
+          - "src/uam/agent.py"
+          - "src/uam/contacts/**"
+          - "src/uam/envelope.py"
+
+"area:ts-sdk":
+  - changed-files:
+      - any-glob-to-any-file: "ts-sdk/**"
+
+"area:relay":
+  - changed-files:
+      - any-glob-to-any-file: "src/uam/relay/**"
+
+"area:crypto":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/uam/crypto/**"
+          - "src/uam/crypto.py"
+          - "contracts/**"
+
+"area:contacts":
+  - changed-files:
+      - any-glob-to-any-file: "src/uam/contacts/**"
+
+"area:docs":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "docs/**"
+          - "*.md"
+          - "mkdocs.yml"
+
+"area:protocol":
+  - changed-files:
+      - any-glob-to-any-file: "docs/protocol/**"

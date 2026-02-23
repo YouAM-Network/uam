@@ -1,0 +1,22 @@
+name: Question
+description: Ask a question about usage or behavior
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check the [documentation](https://docs.youam.network) first — your answer may already be there.
+
+  - type: textarea
+    attributes:
+      label: Question
+      description: What would you like to know?
+    validations:
+      required: true
+
+  - type: input
+    attributes:
+      label: UAM version
+      description: "If relevant — output of `uam --version`"
+    validations:
+      required: false

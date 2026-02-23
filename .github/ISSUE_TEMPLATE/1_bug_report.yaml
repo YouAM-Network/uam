@@ -1,0 +1,78 @@
+name: Bug report
+description: Report an error or unexpected behavior
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Before reporting:** please search [existing issues](https://github.com/YouAM-Network/uam/issues) and verify the bug exists on the latest version (`pip install --upgrade youam`).
+
+  - type: textarea
+    attributes:
+      label: Summary
+      description: |
+        A clear description of the bug. Include the command you ran and the full error output.
+        If possible, include a minimal reproducible example.
+      placeholder: |
+        When I run `uam send ...`, I get the following error:
+        ```
+        Traceback (most recent call last):
+        ...
+        ```
+    validations:
+      required: true
+
+  - type: input
+    attributes:
+      label: UAM version
+      description: "Output of `uam --version` or `pip show youam`"
+      placeholder: "e.g., 0.2.3"
+    validations:
+      required: true
+
+  - type: input
+    attributes:
+      label: Platform
+      description: "OS, architecture, and Python version"
+      placeholder: "e.g., macOS 15.3 arm64, Python 3.12.12"
+    validations:
+      required: true
+
+  - type: dropdown
+    attributes:
+      label: Area
+      description: Which part of UAM is affected?
+      multiple: true
+      options:
+        - CLI (`uam` command)
+        - Python SDK
+        - TypeScript SDK
+        - Relay server
+        - Crypto / encryption
+        - Contacts / trust
+        - Configuration
+        - Documentation
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    attributes:
+      label: Installation method
+      description: How did you install UAM?
+      options:
+        - "pip install youam"
+        - "pip install youam[relay]"
+        - "npm install youam"
+        - From source (git clone)
+        - Docker
+        - Other
+    validations:
+      required: false
+
+  - type: textarea
+    attributes:
+      label: Additional context
+      description: Logs, screenshots, configuration, or anything else relevant.
+    validations:
+      required: false
