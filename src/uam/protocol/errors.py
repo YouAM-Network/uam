@@ -40,3 +40,7 @@ class DecryptionError(EncryptionError):
 
 class InvalidContactCardError(UAMError):
     """Raised when a contact card fails validation."""
+
+
+class KeyPinningError(UAMError):
+    """Raised when a pinned contact's public key doesn't match the resolved key."""

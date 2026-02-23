@@ -19,6 +19,7 @@ from uam.protocol import (
     UAMError,
     SignatureVerificationError,
     DecryptionError,
+    KeyPinningError,
     create_envelope,
     verify_envelope,
     decrypt_payload,
@@ -223,6 +224,16 @@ class Agent:
           5. Send via transport
         """
         await self._ensure_connected()
+
+        # TOFU-05: require_verify blocks unverified first sends
+        if self._config.trust_policy == "require_verify":
+            trust = await self._contact_book.get_trust_state(to_address)
+            if trust not in ("pinned", "verified"):
+                raise UAMError(
+                    f"Trust policy 'require_verify' requires fingerprint "
+                    f"verification before sending to {to_address}. "
+                    f"Run: uam contact verify {to_address}"
+                )
 
         # Resolve recipient's verify key (Ed25519)
         recipient_vk = await self._resolve_public_key(to_address)
@@ -532,23 +543,38 @@ class Agent:
         """Resolve a recipient's public key, checking contact book first.
 
         Returns a VerifyKey. Caches resolved keys in the contact book.
+        Raises KeyPinningError if a pinned contact's key doesn't match
+        the network-resolved key (TOFU-03).
         """
-        # Check contact book first
+        # TOFU-01: Check contact book first (local-first, zero network I/O)
         pk_str = await self._contact_book.get_public_key(to_address)
         if pk_str is not None:
+            # Known contact: always use stored key
             return deserialize_verify_key(pk_str)
 
-        # Not in contact book -- resolve via relay
-        pk_str = await self._resolver.resolve_public_key(
+        # Unknown contact: resolve from network
+        resolved_pk_str = await self._resolver.resolve_public_key(
             to_address, self._token, self._config.relay_url
         )
 
-        # Cache in contact book (unverified until handshake completes)
+        # TOFU-03: Double-check no pinned key exists (race condition guard)
+        stored_pk = await self._contact_book.get_public_key(to_address)
+        if stored_pk is not None and stored_pk != resolved_pk_str:
+            trust = await self._contact_book.get_trust_state(to_address)
+            if trust in ("pinned", "trusted", "verified"):
+                raise KeyPinningError(
+                    f"CRITICAL: Public key mismatch for {to_address}! "
+                    f"Stored key does not match resolved key. "
+                    f"This may indicate a relay MITM attack. "
+                    f"To accept the new key: uam contact remove {to_address}"
+                )
+
+        # Store as provisional (TOFU: unverified until handshake completes)
         await self._contact_book.add_contact(
-            to_address, pk_str, trust_state="unverified"
+            to_address, resolved_pk_str, trust_state="provisional"
         )
 
-        return deserialize_verify_key(pk_str)
+        return deserialize_verify_key(resolved_pk_str)
 
     async def _get_sender_public_key(self, from_address: str) -> str | None:
         """Look up sender's public key from contact book."""
@@ -620,10 +646,10 @@ class Agent:
         ):
             return await self._handshake.handle_inbound(self, envelope, sender_vk)
 
-        # For non-auto-accept policies, filter messages from unapproved senders (HAND-01, CARD-05)
+        # For non-auto-accept policies, filter messages from unapproved senders (HAND-01, CARD-05, TOFU)
         if self._handshake._trust_policy != "auto-accept":
             trust = await self._contact_book.get_trust_state(envelope.from_address)
-            if trust not in ("trusted", "verified"):
+            if trust not in ("trusted", "verified", "pinned"):
                 logger.info(
                     "Filtered message from unapproved sender %s (trust=%s, policy=%s)",
                     envelope.from_address,

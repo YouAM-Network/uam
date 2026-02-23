@@ -22,6 +22,7 @@ from uam.protocol.errors import (
     EncryptionError,
     DecryptionError,
     InvalidContactCardError,
+    KeyPinningError,
 )
 
 from uam.protocol.address import Address, parse_address
@@ -78,6 +79,7 @@ __all__ = [
     "EncryptionError",
     "DecryptionError",
     "InvalidContactCardError",
+    "KeyPinningError",
     # Address
     "Address",
     "parse_address",

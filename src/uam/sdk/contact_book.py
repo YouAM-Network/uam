@@ -107,6 +107,14 @@ class ContactBook:
             await self._db.execute("PRAGMA user_version = 2")
             await self._db.commit()
 
+        if version < 3:
+            logger.info("Migrating ContactBook schema to version 3 (TOFU: pinned_at)")
+            await self._db.execute(
+                "ALTER TABLE contacts ADD COLUMN pinned_at TEXT"
+            )
+            await self._db.execute("PRAGMA user_version = 3")
+            await self._db.commit()
+
     async def close(self) -> None:
         """Close the database connection."""
         if self._db is not None:
@@ -271,13 +279,34 @@ class ContactBook:
             row = await cursor.fetchone()
             return row[0] if row else None
 
-    async def is_trusted_or_verified(self, address: str) -> bool:
-        """Return True if *address* has trust_state 'trusted' or 'verified'.
+    async def set_pinned_at(self, address: str) -> None:
+        """Set the pinned_at timestamp for a contact."""
+        if self._db is None:
+            raise RuntimeError("ContactBook not open.")
+        await self._db.execute(
+            "UPDATE contacts SET pinned_at = datetime('now') WHERE address = ?",
+            (address,),
+        )
+        await self._db.commit()
 
-        Convenience helper for inbound message filtering (CARD-05).
+    async def remove_contact(self, address: str) -> bool:
+        """Remove a contact by address. Returns True if a contact was deleted."""
+        if self._db is None:
+            raise RuntimeError("ContactBook not open.")
+        cursor = await self._db.execute(
+            "DELETE FROM contacts WHERE address = ?", (address,)
+        )
+        await self._db.commit()
+        self._known_addresses.discard(address)
+        return cursor.rowcount > 0
+
+    async def is_trusted_or_verified(self, address: str) -> bool:
+        """Return True if *address* has trust_state 'trusted', 'verified', or 'pinned'.
+
+        Convenience helper for inbound message filtering (CARD-05, TOFU-02).
         """
         state = await self.get_trust_state(address)
-        return state in ("trusted", "verified")
+        return state in ("trusted", "verified", "pinned")
 
     # -- Blocking (HAND-04) --------------------------------------------------
 

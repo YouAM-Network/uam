@@ -170,7 +170,7 @@ class TestAutoAcceptTrustSource:
                 ("alice::test.local",),
             ) as cur:
                 row = await cur.fetchone()
-                assert row[0] == "auto-accepted"
+                assert row[0] == "auto-accepted-provisional"
         finally:
             await book.close()
 

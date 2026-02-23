@@ -127,13 +127,13 @@ class HandshakeManager:
         verify_contact_card(card)
 
         if self._trust_policy == "auto-accept":
-            # Store the contact as trusted with trust_source tracking
+            # Store the contact as provisional (TOFU: trust upgrades on accept)
             await self._contact_book.add_contact(
                 address=card.address,
                 public_key=card.public_key,
                 display_name=card.display_name,
-                trust_state="trusted",
-                trust_source="auto-accepted",
+                trust_state="provisional",
+                trust_source="auto-accepted-provisional",
             )
             # Send handshake.accept back
             await self._send_accept(agent, envelope.from_address, sender_vk)
@@ -163,15 +163,16 @@ class HandshakeManager:
         envelope: MessageEnvelope,
         sender_vk: VerifyKey,
     ) -> None:
-        """Process a handshake.accept: store the sender as trusted."""
+        """Process a handshake.accept: store the sender as pinned (TOFU)."""
         sender_pk_str = serialize_verify_key(sender_vk)
         await self._contact_book.add_contact(
             address=envelope.from_address,
             public_key=sender_pk_str,
-            trust_state="trusted",
+            trust_state="pinned",
         )
+        await self._contact_book.set_pinned_at(envelope.from_address)
         logger.info(
-            "Handshake accepted by %s, stored as trusted", envelope.from_address
+            "Handshake accepted by %s, stored as pinned (TOFU)", envelope.from_address
         )
 
     async def _send_accept(
