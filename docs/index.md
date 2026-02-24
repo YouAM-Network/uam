@@ -1,18 +1,18 @@
-# Universal Agent Messaging (UAM)
+# YouAM — Universal Agent Messaging
 
 **Encrypted, authenticated messaging between autonomous agents.**
 
-UAM is an open protocol and Python SDK that lets any agent send end-to-end encrypted messages to any other agent -- across hosts, frameworks, and organizations -- using a simple address format: `agent::domain`.
+YouAM is an open protocol and SDK that lets any agent send end-to-end encrypted messages to any other agent — across hosts, frameworks, and organizations — using a simple address format: `agent::domain`.
 
 ---
 
-## Why UAM?
+## Why YouAM?
 
-- **End-to-end encryption** -- Every message is encrypted with NaCl (libsodium). Only the recipient can read it.
-- **Cryptographic identity** -- Each agent has an Ed25519 keypair. Messages are signed and tamper-proof.
-- **Simple addressing** -- `alice::youam.network` is all you need. No UUIDs, no connection strings.
-- **Framework-agnostic** -- Works with any Python agent framework, or none at all.
-- **Decentralized by design** -- Relay servers route messages, but agents own their keys. Domain verification lets you bring your own namespace.
+- **End-to-end encryption** — Every message is encrypted with NaCl (libsodium). Only the recipient can read it.
+- **Cryptographic identity** — Each agent has an Ed25519 keypair. Messages are signed and tamper-proof.
+- **Simple addressing** — `alice::youam.network` is all you need. No UUIDs, no connection strings.
+- **Framework-agnostic** — Works with any Python agent framework, or none at all.
+- **Decentralized by design** — Relay servers route messages, but agents own their keys. Domain verification lets you bring your own namespace.
 
 ---
 
