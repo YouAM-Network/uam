@@ -1,6 +1,6 @@
 # Configuration Reference
 
-All UAM relay configuration is done through environment variables. Every variable is prefixed with `UAM_` and has a sensible default for development use.
+All UAM relay configuration is done through environment variables. Core relay settings are prefixed with `UAM_`. Database and pool settings use their own prefixes.
 
 ## Core Settings
 
@@ -9,10 +9,28 @@ All UAM relay configuration is done through environment variables. Every variabl
 | `UAM_RELAY_DOMAIN` | `youam.network` | string | The public domain name of this relay. Used in federation identity, `.well-known` responses, and destination domain validation for inbound federation. |
 | `UAM_RELAY_WS_URL` | `wss://relay.youam.network/ws` | string | The full public WebSocket URL agents use to connect. Advertised during registration. |
 | `UAM_RELAY_HTTP_URL` | `https://relay.youam.network` | string | The full public HTTP URL of the relay. Used to construct the federation endpoint URL in `.well-known/uam-relay.json`. |
-| `UAM_DB_PATH` | `relay.db` | string | Path to the SQLite database file. Created automatically on first startup. Can be absolute or relative to the working directory. |
 | `UAM_HOST` | `0.0.0.0` | string | The network interface to bind to. Use `0.0.0.0` for all interfaces, `127.0.0.1` for localhost only. |
 | `UAM_PORT` | `8000` | integer | The port the relay listens on. Override with platform-provided `$PORT` in production. |
 | `UAM_CORS_ORIGINS` | `*` | string | Allowed CORS origins. Use `*` for development, restrict to specific origins in production. |
+
+## Database Settings
+
+| Variable | Default | Type | Description |
+|----------|---------|------|-------------|
+| `DATABASE_URL` | *(derived from UAM_DB_PATH)* | string | Full database connection URL. Supports PostgreSQL (`postgresql+asyncpg://user:pass@host/db`) and SQLite (`sqlite+aiosqlite:///path/to/relay.db`). When not set, the relay auto-constructs a SQLite URL from `UAM_DB_PATH`. |
+| `UAM_DB_PATH` | `relay.db` | string | Path to the SQLite database file. Only used when `DATABASE_URL` is not set. Can be absolute or relative to the working directory. |
+| `MESSAGE_RETENTION_DAYS` | `30` | integer | Number of days to retain delivered/expired messages before the retention worker purges them. Set to `0` to disable purging. |
+
+## Connection Pool Settings (PostgreSQL only)
+
+These settings configure the SQLAlchemy async connection pool. They only apply when using PostgreSQL via `DATABASE_URL`. SQLite uses `NullPool`/`StaticPool` and ignores these.
+
+| Variable | Default | Type | Description |
+|----------|---------|------|-------------|
+| `DB_POOL_SIZE` | `5` | integer | Number of persistent connections in the pool. |
+| `DB_MAX_OVERFLOW` | `10` | integer | Maximum additional connections beyond `DB_POOL_SIZE` allowed during traffic spikes. |
+| `DB_POOL_TIMEOUT` | `30` | integer | Seconds to wait for a connection from the pool before raising an error. |
+| `DB_POOL_RECYCLE` | `1800` | integer | Seconds after which a connection is recycled (closed and replaced). Prevents stale connections from long-lived processes. |
 
 ## Security Settings
 
@@ -63,7 +81,7 @@ All UAM relay configuration is done through environment variables. Every variabl
 uvicorn uam.relay.app:create_app --factory
 ```
 
-### Single Production Relay
+### Single Production Relay (SQLite)
 
 ```bash
 UAM_RELAY_DOMAIN=relay.example.com
@@ -74,6 +92,28 @@ UAM_RELAY_KEY_PATH=/var/lib/uam/relay_key.pem
 UAM_ADMIN_API_KEY=change-this-to-a-strong-random-string
 UAM_LOG_LEVEL=INFO
 UAM_CORS_ORIGINS=https://example.com,https://app.example.com
+```
+
+### Production Relay (PostgreSQL)
+
+```bash
+UAM_RELAY_DOMAIN=relay.example.com
+UAM_RELAY_HTTP_URL=https://relay.example.com
+UAM_RELAY_WS_URL=wss://relay.example.com/ws
+DATABASE_URL=postgresql+asyncpg://uam:password@db.example.com:5432/uam_relay
+UAM_RELAY_KEY_PATH=/var/lib/uam/relay_key.pem
+UAM_ADMIN_API_KEY=change-this-to-a-strong-random-string
+UAM_LOG_LEVEL=INFO
+UAM_CORS_ORIGINS=https://example.com,https://app.example.com
+
+# Connection pool tuning (optional)
+DB_POOL_SIZE=10
+DB_MAX_OVERFLOW=20
+DB_POOL_TIMEOUT=30
+DB_POOL_RECYCLE=1800
+
+# Message retention
+MESSAGE_RETENTION_DAYS=30
 ```
 
 ### Federated Relay (Receiving from Peers)
@@ -103,4 +143,4 @@ See `docker/.env.example` for a copy-paste-ready template with all variables and
 
 ---
 
-*All variables are read from the `Settings` class in `src/uam/relay/config.py`. Restart the relay after changing environment variables.*
+*Core relay variables are read from the `Settings` class in `src/uam/relay/config.py`. Database and pool variables are read directly from the environment in `src/uam/db/engine.py`. Restart the relay after changing environment variables.*

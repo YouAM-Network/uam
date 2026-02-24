@@ -7,7 +7,12 @@ import logging
 from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from uam.db.crud.dedup import record_message_id
+from uam.db.crud.federation import enqueue_federation
+from uam.db.crud.messages import store_message
+from uam.db.session import get_session
 from uam.protocol import (
     InvalidEnvelopeError,
     SignatureVerificationError,
@@ -16,7 +21,6 @@ from uam.protocol import (
     verify_envelope,
 )
 from uam.relay.auth import verify_token_http
-from uam.relay.database import record_message_id, store_message
 from uam.relay.models import SendRequest, SendResponse
 
 logger = logging.getLogger(__name__)
@@ -27,13 +31,26 @@ _EXPIRY_GRACE_SECONDS = 30
 router = APIRouter()
 
 
-async def _queue_federation(db, target_domain: str, envelope_dict: dict, from_relay: str) -> None:  # noqa: ANN001
+async def _queue_federation(
+    session: AsyncSession,
+    target_domain: str,
+    envelope_dict: dict,
+    from_relay: str,
+    *,
+    commit: bool = True,
+) -> None:
     """Queue a federation message for retry (FED-10)."""
-    await db.execute(
-        "INSERT INTO federation_queue (target_domain, envelope, via, hop_count) VALUES (?, ?, ?, ?)",
-        (target_domain, json.dumps(envelope_dict), json.dumps([from_relay]), 1),
-    )
-    await db.commit()
+    await enqueue_federation(session, target_domain, json.dumps(envelope_dict), json.dumps([from_relay]), 1, commit=commit)
+
+
+def _parse_expires(expires_str: str | None) -> datetime | None:
+    """Convert an ISO 8601 expiry string to a datetime, or None."""
+    if expires_str is None:
+        return None
+    try:
+        return datetime.fromisoformat(expires_str.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
 
 
 @router.post("/send", response_model=SendResponse)
@@ -41,6 +58,7 @@ async def send_message(
     body: SendRequest,
     request: Request,
     agent: dict = Depends(verify_token_http),
+    session: AsyncSession = Depends(get_session),
 ) -> SendResponse:
     """Send a signed message envelope via REST.
 
@@ -57,7 +75,6 @@ async def send_message(
     10. Signature verification (expensive -- LAST)
     11. Route or store
     """
-    db = request.app.state.db
     manager = request.app.state.manager
     sender_limiter = request.app.state.sender_limiter
     recipient_limiter = request.app.state.recipient_limiter
@@ -103,105 +120,127 @@ async def send_message(
             detail=f"Sender mismatch: envelope from '{envelope.from_address}' but authenticated as '{agent['address']}'",
         )
 
-    # Dedup check (MSG-03) -- before expensive delivery chain
-    is_new = await record_message_id(db, envelope.message_id, agent["address"])
-    if not is_new:
-        # Silently accept duplicate -- idempotent for the sender
-        return SendResponse(message_id=envelope.message_id, delivered=True)
-
-    # Expiry check (MSG-04) -- reject if expires timestamp is in the past
-    expires_str: str | None = envelope.expires
-    if expires_str is not None:
-        try:
-            # Parse ISO 8601 timestamp (handle both "Z" and "+00:00" suffixes)
-            exp_ts = datetime.fromisoformat(expires_str.replace("Z", "+00:00"))
-            now = datetime.now(timezone.utc)
-            if exp_ts + timedelta(seconds=_EXPIRY_GRACE_SECONDS) < now:
-                raise HTTPException(status_code=400, detail="Message has expired")
-        except (ValueError, TypeError):
-            # Malformed expires = no expiry (don't reject)
-            expires_str = None
-
-    # Domain rate limit (SPAM-03) -- by sender domain, relay domain exempt; receipt types exempt
-    if not is_receipt:
-        sender_domain = agent["address"].split("::")[1] if "::" in agent["address"] else ""
-        if sender_domain and sender_domain != settings.relay_domain and not is_allowlisted:
-            if not domain_limiter.check(sender_domain):
-                raise HTTPException(status_code=429, detail="Domain rate limit exceeded")
-
-    # Rate limit: recipient (RELAY-05) -- receipt types exempt
-    if not is_receipt and not recipient_limiter.check(envelope.to_address):
-        raise HTTPException(status_code=429, detail="Recipient rate limit exceeded (100/min)")
-
-    # Reputation check (SPAM-06) -- receipt types exempt
-    if not is_receipt and not is_allowlisted:
-        score = reputation_manager.get_score(agent["address"])
-        if score < 20:
-            raise HTTPException(status_code=403, detail="Sender reputation too low")
-
-    # Verify signature (expensive -- only after cheap checks pass)
+    # --- Transaction-wrapped DB section (RES-01) ---
+    # All DB mutations (dedup + store/enqueue) use commit=False so they
+    # live in a single implicit transaction.  A failure at any step
+    # rolls back all changes atomically.
     try:
-        sender_vk = deserialize_verify_key(agent["public_key"])
-        verify_envelope(envelope, sender_vk)
-    except SignatureVerificationError as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid signature: {exc}") from exc
+        # Dedup check (MSG-03) -- before expensive delivery chain
+        is_new = await record_message_id(session, envelope.message_id, agent["address"], commit=False)
+        if not is_new:
+            # Silently accept duplicate -- idempotent for the sender
+            return SendResponse(message_id=envelope.message_id, delivered=True)
 
-    # Three-tier delivery chain: WebSocket > webhook > store-and-forward (HOOK-02)
-    # Tier 1: WebSocket (real-time)
-    delivered = await manager.send_to(envelope.to_address, body.envelope)
-    delivery_method = "websocket" if delivered else None
+        # Expiry check (MSG-04) -- reject if expires timestamp is in the past
+        expires_str: str | None = envelope.expires
+        if expires_str is not None:
+            try:
+                # Parse ISO 8601 timestamp (handle both "Z" and "+00:00" suffixes)
+                exp_ts = datetime.fromisoformat(expires_str.replace("Z", "+00:00"))
+                now = datetime.now(timezone.utc)
+                if exp_ts + timedelta(seconds=_EXPIRY_GRACE_SECONDS) < now:
+                    raise HTTPException(status_code=400, detail="Message has expired")
+            except (ValueError, TypeError):
+                # Malformed expires = no expiry (don't reject)
+                expires_str = None
 
-    if not delivered:
-        # Tier 2: Webhook (near-real-time)
-        webhook_service = request.app.state.webhook_service
-        webhook_initiated = await webhook_service.try_deliver(
-            envelope.to_address, body.envelope
-        )
-        if webhook_initiated:
-            delivery_method = "webhook"
-            delivered = True  # webhook delivery initiated (async)
+        # Domain rate limit (SPAM-03) -- by sender domain, relay domain exempt; receipt types exempt
+        if not is_receipt:
+            sender_domain = agent["address"].split("::")[1] if "::" in agent["address"] else ""
+            if sender_domain and sender_domain != settings.relay_domain and not is_allowlisted:
+                if not domain_limiter.check(sender_domain):
+                    raise HTTPException(status_code=429, detail="Domain rate limit exceeded")
 
-    if delivery_method is None:
-        # Step 12: Federation forwarding for non-local recipients (FED-01)
-        recipient_domain = ""
-        if "::" in envelope.to_address:
-            recipient_domain = envelope.to_address.split("::")[1]
+        # Rate limit: recipient (RELAY-05) -- receipt types exempt
+        if not is_receipt and not recipient_limiter.check(envelope.to_address):
+            raise HTTPException(status_code=429, detail="Recipient rate limit exceeded (100/min)")
 
-        if recipient_domain and recipient_domain != settings.relay_domain:
-            # Non-local recipient -- forward via federation
-            federation_service = getattr(request.app.state, "federation_service", None)
-            if federation_service and settings.federation_enabled:
-                fed_result = await federation_service.forward(
-                    envelope_dict=body.envelope,
-                    from_relay=settings.relay_domain,
-                )
-                if fed_result.delivered:
-                    delivery_method = "federated"
-                elif fed_result.queued:
-                    delivery_method = "federation_queued"
-                else:
-                    # Federation failed -- queue for retry
-                    await _queue_federation(
-                        request.app.state.db,
-                        recipient_domain,
-                        body.envelope,
-                        settings.relay_domain,
+        # Reputation check (SPAM-06) -- receipt types exempt
+        if not is_receipt and not is_allowlisted:
+            score = reputation_manager.get_score(agent["address"])
+            if score < 20:
+                raise HTTPException(status_code=403, detail="Sender reputation too low")
+
+        # Verify signature (expensive -- only after cheap checks pass)
+        try:
+            sender_vk = deserialize_verify_key(agent["public_key"])
+            verify_envelope(envelope, sender_vk)
+        except SignatureVerificationError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid signature: {exc}") from exc
+
+        # Three-tier delivery chain: WebSocket > webhook > store-and-forward (HOOK-02)
+        # Tier 1: WebSocket (real-time)
+        delivered = await manager.send_to(envelope.to_address, body.envelope)
+        delivery_method = "websocket" if delivered else None
+
+        if not delivered:
+            # Tier 2: Webhook (near-real-time)
+            webhook_service = request.app.state.webhook_service
+            webhook_initiated = await webhook_service.try_deliver(
+                envelope.to_address, body.envelope
+            )
+            if webhook_initiated:
+                delivery_method = "webhook"
+                delivered = True  # webhook delivery initiated (async)
+
+        if delivery_method is None:
+            # Step 12: Federation forwarding for non-local recipients (FED-01)
+            recipient_domain = ""
+            if "::" in envelope.to_address:
+                recipient_domain = envelope.to_address.split("::")[1]
+
+            if recipient_domain and recipient_domain != settings.relay_domain:
+                # Non-local recipient -- forward via federation
+                federation_service = getattr(request.app.state, "federation_service", None)
+                if federation_service and settings.federation_enabled:
+                    fed_result = await federation_service.forward(
+                        envelope_dict=body.envelope,
+                        from_relay=settings.relay_domain,
                     )
-                    delivery_method = "federation_queued"
+                    if fed_result.delivered:
+                        delivery_method = "federated"
+                    elif fed_result.queued:
+                        delivery_method = "federation_queued"
+                    else:
+                        # Federation failed -- queue for retry
+                        await _queue_federation(
+                            session,
+                            recipient_domain,
+                            body.envelope,
+                            settings.relay_domain,
+                            commit=False,
+                        )
+                        delivery_method = "federation_queued"
+                else:
+                    # Federation not available -- store locally as fallback
+                    expires_dt = _parse_expires(expires_str)
+                    await store_message(
+                        session, envelope.message_id, envelope.from_address,
+                        envelope.to_address, json.dumps(body.envelope),
+                        expires_at=expires_dt,
+                        commit=False,
+                    )
+                    delivery_method = "stored"
             else:
-                # Federation not available -- store locally as fallback
+                # Local recipient not online -- store for pickup
+                expires_dt = _parse_expires(expires_str)
                 await store_message(
-                    db, envelope.from_address, envelope.to_address,
-                    json.dumps(body.envelope), expires=expires_str,
+                    session, envelope.message_id, envelope.from_address,
+                    envelope.to_address, json.dumps(body.envelope),
+                    expires_at=expires_dt,
+                    commit=False,
                 )
                 delivery_method = "stored"
-        else:
-            # Local recipient not online -- store for pickup
-            await store_message(
-                db, envelope.from_address, envelope.to_address,
-                json.dumps(body.envelope), expires=expires_str,
-            )
-            delivery_method = "stored"
+
+        # Single commit for all DB mutations in this request
+        await session.commit()
+
+    except HTTPException:
+        await session.rollback()
+        raise
+    except Exception:
+        await session.rollback()
+        raise
 
     delivered_flag = delivery_method not in ("stored", "federation_queued")
 

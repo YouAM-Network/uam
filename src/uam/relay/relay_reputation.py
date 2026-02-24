@@ -8,7 +8,7 @@ federation rate limit tier:
 - **Throttled** (>=20): ``base_rate_limit / 10`` msg/min (default 100)
 - **Blocked** (<20): 0 msg/min -- effectively federation-blocklisted
 
-Scores are cached in memory with SQLite persistence.  New relays
+Scores are cached in memory with SQLAlchemy/SQLModel persistence.  New relays
 default to score 50 (neutral trust -- higher than agent default of 30
 because relays are more accountable infrastructure).
 """
@@ -18,7 +18,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import aiosqlite
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlmodel import select
+
+from uam.db.models import RelayReputation
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +35,8 @@ class RelayReputationManager:
     TIER_NORMAL = 50
     TIER_THROTTLED = 20
 
-    def __init__(self, db: aiosqlite.Connection, base_rate_limit: int = 1000) -> None:
-        self._db = db
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession], base_rate_limit: int = 1000) -> None:
+        self._session_factory = session_factory
         self._cache: dict[str, int] = {}
         self._base_rate_limit = base_rate_limit
 
@@ -42,14 +46,13 @@ class RelayReputationManager:
 
     async def load_cache(self) -> None:
         """Load all relay reputation scores from DB into the in-memory cache."""
-        cursor = await self._db.execute("SELECT domain, score FROM relay_reputation")
-        rows = await cursor.fetchall()
-        self._cache.clear()
-        for row in rows:
-            domain = row["domain"] if isinstance(row, dict) else row[0]
-            score = row["score"] if isinstance(row, dict) else row[1]
-            self._cache[domain] = score
-        logger.info("Loaded %d relay reputation scores into cache", len(self._cache))
+        async with self._session_factory() as session:
+            result = await session.execute(select(RelayReputation))
+            rows = result.scalars().all()
+            self._cache.clear()
+            for row in rows:
+                self._cache[row.domain] = row.score
+            logger.info("Loaded %d relay reputation scores into cache", len(self._cache))
 
     # ------------------------------------------------------------------
     # O(1) lookups (memory only)
@@ -91,28 +94,31 @@ class RelayReputationManager:
         Increments ``messages_forwarded``, updates ``last_success``,
         and bumps score by +1 (capped at 100).
         """
-        # Ensure row exists with default score 50
-        await self._db.execute(
-            "INSERT OR IGNORE INTO relay_reputation (domain) VALUES (?)",
-            (domain,),
-        )
-        await self._db.execute(
-            "UPDATE relay_reputation SET "
-            "messages_forwarded = messages_forwarded + 1, "
-            "score = MIN(100, score + 1), "
-            "last_success = datetime('now'), "
-            "updated_at = datetime('now') "
-            "WHERE domain = ?",
-            (domain,),
-        )
-        await self._db.commit()
+        async with self._session_factory() as session:
+            # Ensure row exists with default score 50
+            await session.execute(
+                text("INSERT OR IGNORE INTO relay_reputation (domain) VALUES (:domain)"),
+                {"domain": domain},
+            )
+            await session.execute(
+                text(
+                    "UPDATE relay_reputation SET "
+                    "messages_forwarded = messages_forwarded + 1, "
+                    "score = MIN(100, score + 1), "
+                    "last_success = datetime('now'), "
+                    "updated_at = datetime('now') "
+                    "WHERE domain = :domain"
+                ),
+                {"domain": domain},
+            )
+            await session.commit()
 
-        # Read back actual clamped value
-        cursor = await self._db.execute(
-            "SELECT score FROM relay_reputation WHERE domain = ?", (domain,)
-        )
-        row = await cursor.fetchone()
-        new_score: int = row["score"] if isinstance(row, dict) else row[0]  # type: ignore[index]
+            # Read back actual clamped value
+            result = await session.execute(
+                select(RelayReputation.score).where(RelayReputation.domain == domain)
+            )
+            new_score: int = result.scalar_one()
+
         old_score = self._cache.get(domain, 50)
         self._cache[domain] = new_score
 
@@ -136,28 +142,31 @@ class RelayReputationManager:
         Increments ``messages_rejected``, updates ``last_failure``,
         and decrements score by -5 (floor at 0).
         """
-        # Ensure row exists with default score 50
-        await self._db.execute(
-            "INSERT OR IGNORE INTO relay_reputation (domain) VALUES (?)",
-            (domain,),
-        )
-        await self._db.execute(
-            "UPDATE relay_reputation SET "
-            "messages_rejected = messages_rejected + 1, "
-            "score = MAX(0, score - 5), "
-            "last_failure = datetime('now'), "
-            "updated_at = datetime('now') "
-            "WHERE domain = ?",
-            (domain,),
-        )
-        await self._db.commit()
+        async with self._session_factory() as session:
+            # Ensure row exists with default score 50
+            await session.execute(
+                text("INSERT OR IGNORE INTO relay_reputation (domain) VALUES (:domain)"),
+                {"domain": domain},
+            )
+            await session.execute(
+                text(
+                    "UPDATE relay_reputation SET "
+                    "messages_rejected = messages_rejected + 1, "
+                    "score = MAX(0, score - 5), "
+                    "last_failure = datetime('now'), "
+                    "updated_at = datetime('now') "
+                    "WHERE domain = :domain"
+                ),
+                {"domain": domain},
+            )
+            await session.commit()
 
-        # Read back actual clamped value
-        cursor = await self._db.execute(
-            "SELECT score FROM relay_reputation WHERE domain = ?", (domain,)
-        )
-        row = await cursor.fetchone()
-        new_score: int = row["score"] if isinstance(row, dict) else row[0]  # type: ignore[index]
+            # Read back actual clamped value
+            result = await session.execute(
+                select(RelayReputation.score).where(RelayReputation.domain == domain)
+            )
+            new_score: int = result.scalar_one()
+
         old_score = self._cache.get(domain, 50)
         self._cache[domain] = new_score
 
@@ -181,24 +190,23 @@ class RelayReputationManager:
 
     async def get_info(self, domain: str) -> dict[str, Any] | None:
         """Return the full reputation row for admin inspection, or None."""
-        columns = (
-            "domain", "score", "messages_forwarded", "messages_rejected",
-            "last_success", "last_failure", "created_at", "updated_at",
-        )
-        cursor = await self._db.execute(
-            "SELECT domain, score, messages_forwarded, messages_rejected, "
-            "last_success, last_failure, created_at, updated_at "
-            "FROM relay_reputation WHERE domain = ?",
-            (domain,),
-        )
-        row = await cursor.fetchone()
-        if row is None:
-            return None
-        # Handle both aiosqlite.Row (dict-able) and plain tuples
-        try:
-            return dict(row)
-        except (ValueError, TypeError):
-            return dict(zip(columns, row))
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(RelayReputation).where(RelayReputation.domain == domain)
+            )
+            row = result.scalar_one_or_none()
+            if row is None:
+                return None
+            return {
+                "domain": row.domain,
+                "score": row.score,
+                "messages_forwarded": row.messages_forwarded,
+                "messages_rejected": row.messages_rejected,
+                "last_success": str(row.last_success) if row.last_success else None,
+                "last_failure": str(row.last_failure) if row.last_failure else None,
+                "created_at": str(row.created_at),
+                "updated_at": str(row.updated_at),
+            }
 
     # ------------------------------------------------------------------
     # Internal helpers

@@ -84,6 +84,151 @@
         }
       }
     },
+    "/api/v1/agents/{address}": {
+      "patch": {
+        "summary": "Patch Agent",
+        "description": "Update agent fields (display_name, contact_card, public_key).\n\nRequires Bearer token auth.  Agent can only update their own record.\nIf ``public_key`` is provided, it must be a valid Ed25519 key.",
+        "operationId": "patch_agent_api_v1_agents__address__patch",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Address"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateAgentRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete Agent",
+        "description": "Soft-deactivate an agent.\n\nRequires Bearer token auth.  Agent can only deactivate themselves.",
+        "operationId": "delete_agent_api_v1_agents__address__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Address"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Delete Agent Api V1 Agents  Address  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agents/{address}/reactivate": {
+      "post": {
+        "summary": "Reactivate Agent Endpoint",
+        "description": "Reactivate a soft-deleted agent.\n\nRequires Bearer token auth.  The token must match the original agent's\ntoken (auth does not filter by deleted_at so soft-deleted agents can\nstill authenticate for reactivation).",
+        "operationId": "reactivate_agent_endpoint_api_v1_agents__address__reactivate_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Address"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/send": {
       "post": {
         "summary": "Send Message",
@@ -185,17 +330,151 @@
         }
       }
     },
-    "/api/v1/federation/deliver": {
-      "post": {
-        "summary": "Federation Deliver",
-        "description": "Stub endpoint for relay-to-relay federation.",
-        "operationId": "federation_deliver_api_v1_federation_deliver_post",
+    "/api/v1/messages/thread/{thread_id}": {
+      "get": {
+        "summary": "Get Thread Messages",
+        "description": "Retrieve messages in a thread.\n\nRequires Bearer token auth.  The authenticated agent must be a\nparticipant (from_addr or to_addr) in at least one message in the\nthread.  Returns 403 if not a participant or if thread is empty.",
+        "operationId": "get_thread_messages_api_v1_messages_thread__thread_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "thread_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Thread Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 500,
+              "minimum": 1,
+              "default": 100,
+              "title": "Limit"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/messages/{message_id}/receipt": {
+      "post": {
+        "summary": "Submit Receipt",
+        "description": "Submit a receipt (e.g. ``receipt.read``) for a received message.\n\nRequires Bearer token auth.  The authenticated agent must be the\nrecipient of the message.  Routes the receipt envelope to the\noriginal sender via the connection manager.",
+        "operationId": "submit_receipt_api_v1_messages__message_id__receipt_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "message_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Message Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReceiptRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReceiptResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/federation/deliver": {
+      "post": {
+        "summary": "Federation Deliver",
+        "description": "Accept an inbound federated envelope from a remote relay.\n\nValidation order (DoS-resistant, cheapest checks first):\n1.  Federation enabled check\n2.  Parse request fields\n3.  Timestamp freshness\n4.  Loop prevention (hop_count + via chain)\n5.  Destination domain verification\n6.  Relay signature verification (with key rotation retry)\n7.  Agent envelope signature verification\n8.  Dedup check\n9.  Deliver (WebSocket > webhook > store)\n10. Log to federation_log",
+        "operationId": "federation_deliver_api_v1_federation_deliver_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FederationDeliverRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FederationDeliverResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
               }
             }
           }
@@ -898,6 +1177,415 @@
         }
       }
     },
+    "/api/v1/admin/agents": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Admin List Agents",
+        "description": "List all agents (including soft-deleted) for admin inspection.",
+        "operationId": "admin_list_agents_api_v1_admin_agents_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000,
+              "minimum": 1,
+              "default": 100,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminAgentListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/agents/{address}/suspend": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Admin Suspend Agent",
+        "description": "Suspend an agent (admin action).",
+        "operationId": "admin_suspend_agent_api_v1_admin_agents__address__suspend_post",
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Address"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminAgentResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/audit": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Admin Audit Log",
+        "description": "Query the audit log with optional filters.",
+        "operationId": "admin_audit_log_api_v1_admin_audit_get",
+        "parameters": [
+          {
+            "name": "action",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Action"
+            }
+          },
+          {
+            "name": "entity_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Entity Type"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000,
+              "minimum": 1,
+              "default": 100,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditLogResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/messages/expired": {
+      "delete": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Admin Purge Expired Messages",
+        "description": "Purge expired and old delivered/soft-deleted messages.",
+        "operationId": "admin_purge_expired_messages_api_v1_admin_messages_expired_delete",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurgeExpiredResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agents/{address}/presence": {
+      "get": {
+        "summary": "Get Presence",
+        "description": "Check whether an agent is currently online.\n\nReturns the agent's online status (based on active WebSocket connection)\nand their last_seen timestamp from the database.\n\nRequires Bearer token authentication.",
+        "operationId": "get_presence_api_v1_agents__address__presence_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Address"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PresenceResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/handshakes/send": {
+      "post": {
+        "tags": [
+          "handshakes"
+        ],
+        "summary": "Send Handshake",
+        "description": "Initiate a relay-mediated handshake with another agent.\n\nCreates a pending handshake request from the authenticated agent\nto the target address.  Optionally includes a contact card.",
+        "operationId": "send_handshake_api_v1_handshakes_send_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HandshakeSendRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HandshakeResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/handshakes/pending/{address}": {
+      "get": {
+        "tags": [
+          "handshakes"
+        ],
+        "summary": "List Pending Handshakes",
+        "description": "List pending handshakes for the authenticated agent.\n\nAgent can only view their own pending handshakes (incoming).",
+        "operationId": "list_pending_handshakes_api_v1_handshakes_pending__address__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Address"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HandshakeListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/handshakes/{handshake_id}/respond": {
+      "post": {
+        "tags": [
+          "handshakes"
+        ],
+        "summary": "Respond To Handshake",
+        "description": "Respond to a pending handshake (approve or deny).\n\nThe authenticated agent must be the ``to_addr`` of the handshake.",
+        "operationId": "respond_to_handshake_api_v1_handshakes__handshake_id__respond_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "handshake_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Handshake Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HandshakeRespondRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HandshakeResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/health": {
       "get": {
         "summary": "Health",
@@ -916,10 +1604,251 @@
           }
         }
       }
+    },
+    "/admin/health": {
+      "get": {
+        "summary": "Admin Health",
+        "description": "Return comprehensive relay diagnostics. Requires admin key auth.",
+        "operationId": "admin_health_admin_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminHealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/.well-known/uam-relay.json": {
+      "get": {
+        "summary": "Well Known Relay",
+        "description": "Serve this relay's identity for federation discovery.",
+        "operationId": "well_known_relay__well_known_uam_relay_json_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WellKnownRelayResponse"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
     "schemas": {
+      "AdminAgentListResponse": {
+        "properties": {
+          "agents": {
+            "items": {
+              "$ref": "#/components/schemas/AdminAgentResponse"
+            },
+            "type": "array",
+            "title": "Agents"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "agents",
+          "count"
+        ],
+        "title": "AdminAgentListResponse"
+      },
+      "AdminAgentResponse": {
+        "properties": {
+          "address": {
+            "type": "string",
+            "title": "Address"
+          },
+          "public_key": {
+            "type": "string",
+            "title": "Public Key"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "webhook_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhook Url"
+          },
+          "last_seen": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Seen"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "title": "Updated At"
+          },
+          "deleted_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deleted At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "address",
+          "public_key",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "AdminAgentResponse"
+      },
+      "AdminHealthResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "db_ok": {
+            "type": "boolean",
+            "title": "Db Ok"
+          },
+          "queue_depth": {
+            "type": "integer",
+            "title": "Queue Depth"
+          },
+          "ws_connections": {
+            "type": "integer",
+            "title": "Ws Connections"
+          },
+          "uptime_seconds": {
+            "type": "number",
+            "title": "Uptime Seconds"
+          },
+          "migration_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Migration Version"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "db_ok",
+          "queue_depth",
+          "ws_connections",
+          "uptime_seconds"
+        ],
+        "title": "AdminHealthResponse"
+      },
+      "AgentResponse": {
+        "properties": {
+          "address": {
+            "type": "string",
+            "title": "Address"
+          },
+          "public_key": {
+            "type": "string",
+            "title": "Public Key"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "webhook_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhook Url"
+          },
+          "last_seen": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Seen"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "address",
+          "public_key",
+          "status",
+          "created_at"
+        ],
+        "title": "AgentResponse"
+      },
       "AllowlistEntry": {
         "properties": {
           "id": {
@@ -998,6 +1927,94 @@
           "pattern"
         ],
         "title": "AllowlistRequest"
+      },
+      "AuditLogEntry": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "action": {
+            "type": "string",
+            "title": "Action"
+          },
+          "entity_type": {
+            "type": "string",
+            "title": "Entity Type"
+          },
+          "entity_id": {
+            "type": "string",
+            "title": "Entity Id"
+          },
+          "actor_address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor Address"
+          },
+          "timestamp": {
+            "type": "string",
+            "title": "Timestamp"
+          },
+          "details": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Details"
+          },
+          "ip_address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ip Address"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "action",
+          "entity_type",
+          "entity_id",
+          "timestamp"
+        ],
+        "title": "AuditLogEntry"
+      },
+      "AuditLogResponse": {
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/AuditLogEntry"
+            },
+            "type": "array",
+            "title": "Entries"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "entries",
+          "count"
+        ],
+        "title": "AuditLogResponse"
       },
       "BlocklistEntry": {
         "properties": {
@@ -1176,6 +2193,67 @@
         ],
         "title": "DemoSendResponse"
       },
+      "FederationDeliverRequest": {
+        "properties": {
+          "envelope": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Envelope"
+          },
+          "via": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Via",
+            "default": []
+          },
+          "hop_count": {
+            "type": "integer",
+            "title": "Hop Count",
+            "default": 0
+          },
+          "timestamp": {
+            "type": "string",
+            "title": "Timestamp"
+          },
+          "from_relay": {
+            "type": "string",
+            "title": "From Relay"
+          }
+        },
+        "type": "object",
+        "required": [
+          "envelope",
+          "timestamp",
+          "from_relay"
+        ],
+        "title": "FederationDeliverRequest"
+      },
+      "FederationDeliverResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "FederationDeliverResponse"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -1188,6 +2266,93 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "HandshakeListResponse": {
+        "properties": {
+          "handshakes": {
+            "items": {
+              "$ref": "#/components/schemas/HandshakeResponse"
+            },
+            "type": "array",
+            "title": "Handshakes"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "handshakes",
+          "count"
+        ],
+        "title": "HandshakeListResponse"
+      },
+      "HandshakeRespondRequest": {
+        "properties": {
+          "response": {
+            "type": "string",
+            "title": "Response"
+          }
+        },
+        "type": "object",
+        "required": [
+          "response"
+        ],
+        "title": "HandshakeRespondRequest"
+      },
+      "HandshakeResponse": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "from_addr": {
+            "type": "string",
+            "title": "From Addr"
+          },
+          "to_addr": {
+            "type": "string",
+            "title": "To Addr"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "status",
+          "from_addr",
+          "to_addr"
+        ],
+        "title": "HandshakeResponse"
+      },
+      "HandshakeSendRequest": {
+        "properties": {
+          "to_address": {
+            "type": "string",
+            "title": "To Address"
+          },
+          "contact_card": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contact Card"
+          }
+        },
+        "type": "object",
+        "required": [
+          "to_address"
+        ],
+        "title": "HandshakeSendRequest"
       },
       "HealthResponse": {
         "properties": {
@@ -1239,6 +2404,35 @@
         ],
         "title": "InboxResponse"
       },
+      "PresenceResponse": {
+        "properties": {
+          "address": {
+            "type": "string",
+            "title": "Address"
+          },
+          "online": {
+            "type": "boolean",
+            "title": "Online"
+          },
+          "last_seen": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Seen"
+          }
+        },
+        "type": "object",
+        "required": [
+          "address",
+          "online"
+        ],
+        "title": "PresenceResponse"
+      },
       "PublicKeyResponse": {
         "properties": {
           "address": {
@@ -1272,6 +2466,61 @@
           "public_key"
         ],
         "title": "PublicKeyResponse"
+      },
+      "PurgeExpiredResponse": {
+        "properties": {
+          "purged": {
+            "type": "integer",
+            "title": "Purged"
+          }
+        },
+        "type": "object",
+        "required": [
+          "purged"
+        ],
+        "title": "PurgeExpiredResponse"
+      },
+      "ReceiptRequest": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "timestamp": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timestamp"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "title": "ReceiptRequest"
+      },
+      "ReceiptResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "message_id": {
+            "type": "string",
+            "title": "Message Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "message_id"
+        ],
+        "title": "ReceiptResponse"
       },
       "RegisterRequest": {
         "properties": {
@@ -1412,6 +2661,73 @@
           "score"
         ],
         "title": "SetReputationRequest"
+      },
+      "ThreadResponse": {
+        "properties": {
+          "thread_id": {
+            "type": "string",
+            "title": "Thread Id"
+          },
+          "messages": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Messages"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "thread_id",
+          "messages",
+          "count"
+        ],
+        "title": "ThreadResponse"
+      },
+      "UpdateAgentRequest": {
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "contact_card": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contact Card"
+          },
+          "public_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Public Key"
+          }
+        },
+        "type": "object",
+        "title": "UpdateAgentRequest"
       },
       "ValidationError": {
         "properties": {
@@ -1629,6 +2945,34 @@
           "webhook_url"
         ],
         "title": "WebhookUrlResponse"
+      },
+      "WellKnownRelayResponse": {
+        "properties": {
+          "relay_domain": {
+            "type": "string",
+            "title": "Relay Domain"
+          },
+          "federation_endpoint": {
+            "type": "string",
+            "title": "Federation Endpoint"
+          },
+          "public_key": {
+            "type": "string",
+            "title": "Public Key"
+          },
+          "version": {
+            "type": "string",
+            "title": "Version",
+            "default": "0.1"
+          }
+        },
+        "type": "object",
+        "required": [
+          "relay_domain",
+          "federation_endpoint",
+          "public_key"
+        ],
+        "title": "WellKnownRelayResponse"
       }
     },
     "securitySchemes": {

@@ -7,13 +7,12 @@ verification status (public, unauthenticated).
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from uam.db.crud.agents import get_agent_by_address
+from uam.db.crud.domain_verification import get_verification, upsert_verification
+from uam.db.session import get_session
 from uam.relay.auth import verify_token_http
-from uam.relay.database import (
-    get_agent_by_address,
-    get_domain_verification,
-    upsert_domain_verification,
-)
 from uam.relay.models import VerifyDomainRequest, VerifyDomainResponse
 from uam.relay.verification import verify_domain_ownership
 
@@ -25,6 +24,7 @@ async def verify_domain(
     body: VerifyDomainRequest,
     request: Request,
     agent: dict = Depends(verify_token_http),
+    session: AsyncSession = Depends(get_session),
 ) -> VerifyDomainResponse:
     """Verify domain ownership for Tier 2 status (DNS-04).
 
@@ -32,7 +32,6 @@ async def verify_domain(
     verifies that the agent's public key appears in the domain's DNS
     TXT record or HTTPS ``.well-known/uam.json`` file.
     """
-    db = request.app.state.db
     settings = request.app.state.settings
 
     success, method, detail = await verify_domain_ownership(
@@ -40,8 +39,8 @@ async def verify_domain(
     )
 
     if success:
-        await upsert_domain_verification(
-            db,
+        await upsert_verification(
+            session,
             agent_address=agent["address"],
             domain=body.domain,
             public_key=agent["public_key"],
@@ -64,24 +63,23 @@ async def verify_domain(
 async def get_verification_status(
     address: str,
     request: Request,
+    session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Return verification status for an agent (public, no auth required).
 
     Returns ``{"address": ..., "tier": 1|2, "domain": ...}``
     or 404 if the agent is not registered.
     """
-    db = request.app.state.db
-
-    agent = await get_agent_by_address(db, address)
+    agent = await get_agent_by_address(session, address)
     if agent is None:
         raise HTTPException(status_code=404, detail=f"Agent not found: {address}")
 
-    verification = await get_domain_verification(db, address)
+    verification = await get_verification(session, address)
     if verification:
         return {
             "address": address,
             "tier": 2,
-            "domain": verification["domain"],
+            "domain": verification.domain,
         }
 
     return {"address": address, "tier": 1, "domain": None}

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from uam.db.crud.agents import get_agent_by_address
+from uam.db.session import get_session
 from uam.relay.auth import verify_token_http
-from uam.relay.database import get_agent_by_address
 from uam.relay.models import PresenceResponse
 
 router = APIRouter()
@@ -16,6 +18,7 @@ async def get_presence(
     address: str,
     request: Request,
     agent: dict = Depends(verify_token_http),
+    session: AsyncSession = Depends(get_session),
 ) -> PresenceResponse:
     """Check whether an agent is currently online.
 
@@ -24,11 +27,10 @@ async def get_presence(
 
     Requires Bearer token authentication.
     """
-    db = request.app.state.db
     manager = request.app.state.manager
 
     # Look up the target agent
-    target = await get_agent_by_address(db, address)
+    target = await get_agent_by_address(session, address)
     if target is None:
         raise HTTPException(status_code=404, detail="Agent not found")
 
@@ -37,5 +39,5 @@ async def get_presence(
     return PresenceResponse(
         address=address,
         online=online,
-        last_seen=target.get("last_seen"),
+        last_seen=target.last_seen,
     )

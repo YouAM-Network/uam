@@ -8,8 +8,7 @@ Covers:
 - Grace period borderline (within 30s grace)
 - Expired stored messages filtered from inbox
 - Unexpired stored messages returned from inbox
-- cleanup_expired_messages sweep
-- Migration v2 adds expires column
+- cleanup (mark_expired) sweep
 """
 
 from __future__ import annotations
@@ -19,18 +18,18 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlmodel import select, SQLModel
+
+from uam.db.crud.messages import get_inbox, mark_expired, store_message
+from uam.db.models import Message
 from uam.protocol import (
     MessageType,
     create_envelope,
     generate_keypair,
     serialize_verify_key,
     to_wire_dict,
-)
-from uam.relay.database import (
-    cleanup_expired_messages,
-    get_stored_messages,
-    init_db,
-    store_message,
 )
 
 
@@ -153,10 +152,7 @@ class TestRestExpiry:
         )
         # Should succeed (malformed = no expiry, but signature won't match
         # because we changed the wire dict). The real test is that it doesn't
-        # fail with "expired" error. It may fail with signature error.
-        # Actually the envelope was created without expires, then we add it
-        # to the wire dict -- so signature check will fail. Let's verify it
-        # doesn't fail with "expired" specifically.
+        # fail with "expired" error.
         if resp.status_code != 200:
             # Should be signature error, not expiry error
             assert "expired" not in resp.json().get("detail", "").lower()
@@ -198,129 +194,81 @@ class TestWebSocketExpiry:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture()
+async def db_session():
+    """Create an in-memory async engine with SQLModel tables and yield a session."""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(SQLModel.metadata.create_all)
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with factory() as sess:
+        yield sess
+    await engine.dispose()
+
+
 class TestStoredMessageExpiry:
     """Unit tests: expired stored messages filtered from inbox and swept."""
 
-    @pytest.fixture(autouse=True)
-    async def _setup_db(self, tmp_path):
-        self.db = await init_db(str(tmp_path / "expiry.db"))
-        yield
-        await self.db.close()
-
     @pytest.mark.asyncio
-    async def test_expired_stored_message_filtered_from_inbox(self):
-        """Expired stored messages should NOT appear in get_stored_messages."""
-        past = _utc_iso(datetime.now(timezone.utc) - timedelta(hours=1))
+    async def test_expired_stored_message_filtered_from_inbox(self, db_session):
+        """Expired stored messages should NOT appear in get_inbox."""
+        past = datetime.utcnow() - timedelta(hours=1)
         await store_message(
-            self.db, "alice::test.local", "bob::test.local",
-            '{"test": "expired"}', expires=past,
+            db_session, "msg-expired", "alice::test.local", "bob::test.local",
+            '{"test": "expired"}', expires_at=past,
         )
-        msgs = await get_stored_messages(self.db, "bob::test.local")
+        msgs = await get_inbox(db_session, "bob::test.local")
         assert len(msgs) == 0
 
     @pytest.mark.asyncio
-    async def test_unexpired_stored_message_returned(self):
-        """Unexpired stored messages should appear in get_stored_messages."""
-        future = _utc_iso(datetime.now(timezone.utc) + timedelta(hours=1))
+    async def test_unexpired_stored_message_returned(self, db_session):
+        """Unexpired stored messages should appear in get_inbox."""
+        future = datetime.utcnow() + timedelta(hours=1)
         await store_message(
-            self.db, "alice::test.local", "bob::test.local",
-            '{"test": "unexpired"}', expires=future,
+            db_session, "msg-unexpired", "alice::test.local", "bob::test.local",
+            '{"test": "unexpired"}', expires_at=future,
         )
-        msgs = await get_stored_messages(self.db, "bob::test.local")
+        msgs = await get_inbox(db_session, "bob::test.local")
         assert len(msgs) == 1
-        assert msgs[0]["envelope"]["test"] == "unexpired"
+        assert json.loads(msgs[0].envelope)["test"] == "unexpired"
 
     @pytest.mark.asyncio
-    async def test_no_expires_stored_message_returned(self):
+    async def test_no_expires_stored_message_returned(self, db_session):
         """Messages with no expires field should always be returned."""
         await store_message(
-            self.db, "alice::test.local", "bob::test.local",
+            db_session, "msg-noexp", "alice::test.local", "bob::test.local",
             '{"test": "no-expiry"}',
         )
-        msgs = await get_stored_messages(self.db, "bob::test.local")
+        msgs = await get_inbox(db_session, "bob::test.local")
         assert len(msgs) == 1
 
     @pytest.mark.asyncio
-    async def test_cleanup_expired_messages_sweep(self):
-        """cleanup_expired_messages should delete expired undelivered messages."""
-        past = _utc_iso(datetime.now(timezone.utc) - timedelta(hours=1))
-        future = _utc_iso(datetime.now(timezone.utc) + timedelta(hours=1))
+    async def test_mark_expired_sweep(self, db_session):
+        """mark_expired should expire queued messages whose expires_at is in the past."""
+        past = datetime.utcnow() - timedelta(hours=1)
+        future = datetime.utcnow() + timedelta(hours=1)
 
         # One expired, one unexpired, one no-expiry
         await store_message(
-            self.db, "alice::test.local", "bob::test.local",
-            '{"test": "expired"}', expires=past,
+            db_session, "msg-exp1", "alice::test.local", "bob::test.local",
+            '{"test": "expired"}', expires_at=past,
         )
         await store_message(
-            self.db, "alice::test.local", "bob::test.local",
-            '{"test": "unexpired"}', expires=future,
+            db_session, "msg-unexp1", "alice::test.local", "bob::test.local",
+            '{"test": "unexpired"}', expires_at=future,
         )
         await store_message(
-            self.db, "alice::test.local", "bob::test.local",
+            db_session, "msg-noexp1", "alice::test.local", "bob::test.local",
             '{"test": "no-expiry"}',
         )
 
-        deleted = await cleanup_expired_messages(self.db)
-        assert deleted == 1
+        expired_count = await mark_expired(db_session)
+        assert expired_count == 1
 
-        # Only unexpired and no-expiry remain
-        msgs = await get_stored_messages(self.db, "bob::test.local")
+        # Only unexpired and no-expiry remain in inbox
+        msgs = await get_inbox(db_session, "bob::test.local")
         assert len(msgs) == 2
-        bodies = [m["envelope"]["test"] for m in msgs]
+        bodies = [json.loads(m.envelope)["test"] for m in msgs]
         assert "expired" not in bodies
         assert "unexpired" in bodies
         assert "no-expiry" in bodies
-
-
-# ---------------------------------------------------------------------------
-# Unit tests: migration v2
-# ---------------------------------------------------------------------------
-
-
-class TestMigrationV2:
-    """Tests for migration v2 (expires column)."""
-
-    @pytest.mark.asyncio
-    async def test_migration_v2_adds_expires_column(self, tmp_path):
-        """init_db should apply migration v2 (expires column) and reach latest version."""
-        db = await init_db(str(tmp_path / "v2.db"))
-
-        # Verify user_version is at least 2 (v3 adds last_seen)
-        cursor = await db.execute("PRAGMA user_version")
-        row = await cursor.fetchone()
-        assert row[0] >= 2
-
-        # Verify expires column exists by inserting with it
-        await store_message(
-            db, "alice::test.local", "bob::test.local",
-            '{"test": true}', expires="2099-01-01T00:00:00Z",
-        )
-
-        # Read back and check
-        cursor = await db.execute(
-            "SELECT expires FROM messages WHERE from_addr = 'alice::test.local'"
-        )
-        row = await cursor.fetchone()
-        assert row[0] == "2099-01-01T00:00:00Z"
-        await db.close()
-
-    @pytest.mark.asyncio
-    async def test_migration_v2_is_idempotent(self, tmp_path):
-        """Running init_db twice on the same DB should not error."""
-        db_path = str(tmp_path / "v2.db")
-        db1 = await init_db(db_path)
-        await store_message(
-            db1, "alice::test.local", "bob::test.local",
-            '{"test": true}', expires="2099-01-01T00:00:00Z",
-        )
-        await db1.close()
-
-        db2 = await init_db(db_path)
-        cursor = await db2.execute("PRAGMA user_version")
-        row = await cursor.fetchone()
-        assert row[0] >= 2  # v3 adds last_seen column
-
-        # Data survived
-        msgs = await get_stored_messages(db2, "bob::test.local")
-        assert len(msgs) == 1
-        await db2.close()

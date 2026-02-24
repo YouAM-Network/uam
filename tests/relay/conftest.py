@@ -20,12 +20,27 @@ from uam.relay.app import create_app
 @pytest.fixture()
 def app(tmp_path):
     """Create a relay app backed by a temporary database."""
-    os.environ["UAM_DB_PATH"] = str(tmp_path / "test.db")
+    db_path = str(tmp_path / "test.db")
+    os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{db_path}"
+    os.environ["UAM_DB_PATH"] = db_path  # backward compat with Settings
     os.environ["UAM_RELAY_DOMAIN"] = "test.local"
+
+    # Reset engine/session singletons so each test gets a fresh DB
+    import uam.db.engine as _eng
+    import uam.db.session as _sess
+    _eng._engine = None
+    _sess._session_factory = None
+
     yield create_app()
+
     # Cleanup env
+    os.environ.pop("DATABASE_URL", None)
     os.environ.pop("UAM_DB_PATH", None)
     os.environ.pop("UAM_RELAY_DOMAIN", None)
+
+    # Reset singletons for next test
+    _eng._engine = None
+    _sess._session_factory = None
 
 
 @pytest.fixture()

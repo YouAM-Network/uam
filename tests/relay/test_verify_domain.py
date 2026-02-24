@@ -11,11 +11,23 @@ Covers:
 
 from __future__ import annotations
 
-import asyncio
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlmodel import SQLModel
+
+from uam.db.crud.agents import create_agent
+from uam.db.crud.domain_verification import (
+    downgrade_verification,
+    get_verification,
+    list_expired,
+    upsert_verification,
+)
+from uam.db.models import Agent, DomainVerification
 from uam.relay.verification import (
     extract_public_key,
     parse_uam_txt,
@@ -406,135 +418,90 @@ class TestPublicKeyTier:
 
 
 # ---------------------------------------------------------------------------
-# Database helper tests
+# Database helper tests (using CRUD functions with in-memory SQLModel DB)
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+async def db_session():
+    """Create an in-memory async engine with SQLModel tables and yield a session."""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(SQLModel.metadata.create_all)
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with factory() as sess:
+        yield sess
+    await engine.dispose()
 
 
 class TestDatabaseHelpers:
     """Domain verification database helpers."""
 
     @pytest.mark.asyncio
-    async def test_upsert_and_get(self, app):
+    async def test_upsert_and_get(self, db_session):
         """Upsert creates a record, get retrieves it."""
-        from uam.relay.database import (
-            get_domain_verification,
-            init_db,
-            register_agent,
-            upsert_domain_verification,
+        # Register agent first (for referential integrity)
+        await create_agent(db_session, "bot::test.local", "PUBKEY", "token123")
+
+        await upsert_verification(
+            db_session, "bot::test.local", "test.local", "PUBKEY", "dns", 24
         )
-        import os
 
-        db = await init_db(os.environ.get("UAM_DB_PATH", ":memory:"))
-        try:
-            # Register agent first (foreign key constraint)
-            await register_agent(db, "bot::test.local", "PUBKEY", "token123")
-
-            await upsert_domain_verification(
-                db, "bot::test.local", "test.local", "PUBKEY", "dns", 24
-            )
-
-            result = await get_domain_verification(db, "bot::test.local")
-            assert result is not None
-            assert result["domain"] == "test.local"
-            assert result["method"] == "dns"
-            assert result["status"] == "verified"
-        finally:
-            await db.close()
+        result = await get_verification(db_session, "bot::test.local")
+        assert result is not None
+        assert result.domain == "test.local"
+        assert result.method == "dns"
+        assert result.status == "verified"
 
     @pytest.mark.asyncio
-    async def test_upsert_update(self, app):
+    async def test_upsert_update(self, db_session):
         """Second upsert updates existing record."""
-        from uam.relay.database import (
-            get_domain_verification,
-            init_db,
-            register_agent,
-            upsert_domain_verification,
+        await create_agent(db_session, "bot::test.local", "PUBKEY", "token123")
+
+        await upsert_verification(
+            db_session, "bot::test.local", "test.local", "PUBKEY", "dns", 24
         )
-        import os
+        # Update with different method
+        await upsert_verification(
+            db_session, "bot::test.local", "test.local", "PUBKEY", "https", 48
+        )
 
-        db = await init_db(os.environ.get("UAM_DB_PATH", ":memory:"))
-        try:
-            await register_agent(db, "bot::test.local", "PUBKEY", "token123")
-
-            await upsert_domain_verification(
-                db, "bot::test.local", "test.local", "PUBKEY", "dns", 24
-            )
-            # Update with different method
-            await upsert_domain_verification(
-                db, "bot::test.local", "test.local", "PUBKEY", "https", 48
-            )
-
-            result = await get_domain_verification(db, "bot::test.local")
-            assert result is not None
-            assert result["method"] == "https"
-        finally:
-            await db.close()
+        result = await get_verification(db_session, "bot::test.local")
+        assert result is not None
+        assert result.method == "https"
 
     @pytest.mark.asyncio
-    async def test_get_expired(self, app):
-        """get_expired_verifications returns only expired entries."""
-        from uam.relay.database import (
-            get_expired_verifications,
-            init_db,
-            register_agent,
+    async def test_get_expired(self, db_session):
+        """list_expired returns only expired entries."""
+        await create_agent(db_session, "bot::test.local", "PUBKEY", "token123")
+
+        # Insert a verification that's already expired (last_checked far in the past)
+        now = datetime.utcnow()
+        record = DomainVerification(
+            agent_address="bot::test.local",
+            domain="old.com",
+            public_key="PUBKEY",
+            method="dns",
+            ttl_hours=24,
+            verified_at=now - timedelta(hours=48),
+            last_checked=now - timedelta(hours=48),
+            status="verified",
         )
-        import os
+        db_session.add(record)
+        await db_session.commit()
 
-        db = await init_db(os.environ.get("UAM_DB_PATH", ":memory:"))
-        try:
-            await register_agent(db, "bot::test.local", "PUBKEY", "token123")
-
-            # Insert a verification that's already expired (last_checked far in the past)
-            await db.execute(
-                """INSERT INTO domain_verifications
-                   (agent_address, domain, public_key, method, ttl_hours,
-                    verified_at, last_checked, status)
-                   VALUES (?, ?, ?, ?, ?, datetime('now', '-48 hours'),
-                           datetime('now', '-48 hours'), 'verified')""",
-                ("bot::test.local", "old.com", "PUBKEY", "dns", 24),
-            )
-            await db.commit()
-
-            expired = await get_expired_verifications(db)
-            assert len(expired) == 1
-            assert expired[0]["domain"] == "old.com"
-        finally:
-            await db.close()
+        expired = await list_expired(db_session)
+        assert len(expired) == 1
+        assert expired[0].domain == "old.com"
 
     @pytest.mark.asyncio
-    async def test_downgrade(self, app):
+    async def test_downgrade(self, db_session):
         """downgrade_verification changes status to expired."""
-        from uam.relay.database import (
-            downgrade_verification,
-            init_db,
-            register_agent,
-            upsert_domain_verification,
+        await create_agent(db_session, "bot::test.local", "PUBKEY", "token123")
+        record = await upsert_verification(
+            db_session, "bot::test.local", "test.local", "PUBKEY", "dns", 24
         )
-        import os
 
-        db = await init_db(os.environ.get("UAM_DB_PATH", ":memory:"))
-        try:
-            await register_agent(db, "bot::test.local", "PUBKEY", "token123")
-            await upsert_domain_verification(
-                db, "bot::test.local", "test.local", "PUBKEY", "dns", 24
-            )
-
-            # Get the ID
-            cursor = await db.execute(
-                "SELECT id FROM domain_verifications WHERE agent_address = ?",
-                ("bot::test.local",),
-            )
-            row = await cursor.fetchone()
-            assert row is not None
-
-            await downgrade_verification(db, row["id"])
-
-            # Verify it's expired
-            cursor = await db.execute(
-                "SELECT status FROM domain_verifications WHERE id = ?",
-                (row["id"],),
-            )
-            row = await cursor.fetchone()
-            assert row["status"] == "expired"
-        finally:
-            await db.close()
+        result = await downgrade_verification(db_session, record.id)
+        assert result is not None
+        assert result.status == "expired"

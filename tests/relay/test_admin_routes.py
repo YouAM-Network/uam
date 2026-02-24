@@ -28,13 +28,23 @@ ADMIN_KEY = "test-admin-key-secret"
 @pytest.fixture()
 def admin_app(tmp_path):
     """Create a relay app with UAM_ADMIN_API_KEY configured."""
-    os.environ["UAM_DB_PATH"] = str(tmp_path / "admin_test.db")
+    import uam.db.engine as _eng
+    import uam.db.session as _sess
+    _eng._engine = None
+    _sess._session_factory = None
+
+    db_path = str(tmp_path / "admin_test.db")
+    os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{db_path}"
+    os.environ["UAM_DB_PATH"] = db_path
     os.environ["UAM_RELAY_DOMAIN"] = "test.local"
     os.environ["UAM_ADMIN_API_KEY"] = ADMIN_KEY
     yield create_app()
+    os.environ.pop("DATABASE_URL", None)
     os.environ.pop("UAM_DB_PATH", None)
     os.environ.pop("UAM_RELAY_DOMAIN", None)
     os.environ.pop("UAM_ADMIN_API_KEY", None)
+    _eng._engine = None
+    _sess._session_factory = None
 
 
 @pytest.fixture()
@@ -47,12 +57,22 @@ def admin_client(admin_app):
 @pytest.fixture()
 def no_key_app(tmp_path):
     """Create a relay app WITHOUT UAM_ADMIN_API_KEY."""
-    os.environ["UAM_DB_PATH"] = str(tmp_path / "nokey_test.db")
+    import uam.db.engine as _eng
+    import uam.db.session as _sess
+    _eng._engine = None
+    _sess._session_factory = None
+
+    db_path = str(tmp_path / "nokey_test.db")
+    os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{db_path}"
+    os.environ["UAM_DB_PATH"] = db_path
     os.environ["UAM_RELAY_DOMAIN"] = "test.local"
     os.environ.pop("UAM_ADMIN_API_KEY", None)
     yield create_app()
+    os.environ.pop("DATABASE_URL", None)
     os.environ.pop("UAM_DB_PATH", None)
     os.environ.pop("UAM_RELAY_DOMAIN", None)
+    _eng._engine = None
+    _sess._session_factory = None
 
 
 @pytest.fixture()

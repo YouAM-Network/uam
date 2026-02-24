@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import time
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -15,7 +17,6 @@ from starlette.responses import JSONResponse
 
 from uam.relay.config import Settings
 from uam.relay.connections import ConnectionManager
-from uam.relay.database import cleanup_expired_dedup, cleanup_expired_messages, close_db, init_db
 from uam.relay.demo_sessions import SessionManager
 from uam.relay.heartbeat import HeartbeatManager
 from uam.relay.rate_limit import SlidingWindowCounter
@@ -33,6 +34,12 @@ _DEDUP_CLEANUP_INTERVAL: float = 3600.0  # 1 hour
 
 # How often to sweep expired stored messages (seconds)
 _EXPIRED_MESSAGE_SWEEP_INTERVAL: float = 300.0  # 5 minutes
+
+# How often to run the retention purge (seconds)
+_RETENTION_PURGE_INTERVAL: float = 3600.0  # 1 hour
+
+# Default retention window in days (configurable via MESSAGE_RETENTION_DAYS env var)
+_DEFAULT_RETENTION_DAYS: int = 90
 
 
 async def _rate_limiter_cleanup_loop(app: FastAPI) -> None:
@@ -64,20 +71,79 @@ async def _demo_session_cleanup_loop(app: FastAPI) -> None:
 
 async def _dedup_cleanup_loop(app: FastAPI) -> None:
     """Periodically sweep expired dedup entries (older than 7 days)."""
+    from uam.db.crud.dedup import cleanup_expired
+    from uam.db.retry import is_transient_error
+    from uam.db.session import async_session_factory
+    from uam.db.engine import get_engine
+
     while True:
         await asyncio.sleep(_DEDUP_CLEANUP_INTERVAL)
-        count = await cleanup_expired_dedup(app.state.db)
-        if count:
-            logger.info("Cleaned up %d expired dedup entries", count)
+        try:
+            factory = async_session_factory(get_engine())
+            async with factory() as session:
+                count = await cleanup_expired(session)
+            if count:
+                logger.info("Cleaned up %d expired dedup entries", count)
+        except Exception as exc:
+            if is_transient_error(exc):
+                logger.warning("Transient DB error in dedup cleanup, will retry next cycle: %s", exc)
+            else:
+                logger.exception("Error in dedup cleanup loop")
 
 
 async def _expired_message_sweep_loop(app: FastAPI) -> None:
-    """Periodically delete stored messages whose expires timestamp has passed."""
+    """Periodically mark stored messages whose expires timestamp has passed."""
+    from uam.db.crud.messages import mark_expired
+    from uam.db.retry import is_transient_error
+    from uam.db.session import async_session_factory
+    from uam.db.engine import get_engine
+
     while True:
         await asyncio.sleep(_EXPIRED_MESSAGE_SWEEP_INTERVAL)
-        count = await cleanup_expired_messages(app.state.db)
-        if count:
-            logger.info("Swept %d expired stored messages", count)
+        try:
+            factory = async_session_factory(get_engine())
+            async with factory() as session:
+                count = await mark_expired(session)
+            if count:
+                logger.info("Swept %d expired stored messages", count)
+        except Exception as exc:
+            if is_transient_error(exc):
+                logger.warning("Transient DB error in expired message sweep, will retry next cycle: %s", exc)
+            else:
+                logger.exception("Error in expired message sweep")
+
+
+async def _retention_worker_loop(app: FastAPI) -> None:
+    """Periodically hard-purge soft-deleted and expired/delivered messages past retention window.
+
+    Two-step lifecycle:
+    1. mark_expired() catches messages whose expires_at has passed (status -> 'expired')
+    2. purge_expired() hard-deletes messages that have been expired/delivered/soft-deleted
+       for longer than the retention window (default 90 days)
+
+    Step 1 is handled by _expired_message_sweep_loop (every 5 min).
+    This worker handles step 2 (every 1 hour).
+    """
+    from uam.db.crud.messages import purge_expired
+    from uam.db.retry import is_transient_error
+    from uam.db.session import async_session_factory
+    from uam.db.engine import get_engine
+
+    retention_days = int(os.environ.get("MESSAGE_RETENTION_DAYS", str(_DEFAULT_RETENTION_DAYS)))
+
+    while True:
+        await asyncio.sleep(_RETENTION_PURGE_INTERVAL)
+        try:
+            factory = async_session_factory(get_engine())
+            async with factory() as session:
+                count = await purge_expired(session, retention_days=retention_days)
+            if count:
+                logger.info("Retention worker purged %d old records (retention=%d days)", count, retention_days)
+        except Exception as exc:
+            if is_transient_error(exc):
+                logger.warning("Transient DB error in retention worker, will retry next cycle: %s", exc)
+            else:
+                logger.exception("Error in retention worker loop")
 
 
 async def _federation_retry_loop(app: FastAPI) -> None:
@@ -89,91 +155,127 @@ async def _federation_retry_loop(app: FastAPI) -> None:
     marks status='failed' if all retries exhausted.
     """
     import json
+    from datetime import datetime as dt, timedelta
+
+    from uam.db.crud.federation import get_pending_queue, update_queue_entry
+    from uam.db.retry import is_transient_error
+    from uam.db.session import async_session_factory
+    from uam.db.engine import get_engine
 
     while True:
         await asyncio.sleep(_FEDERATION_RETRY_INTERVAL)
         try:
-            db = app.state.db
             federation_service = getattr(app.state, "federation_service", None)
             settings = app.state.settings
             if not federation_service or not settings.federation_enabled:
                 continue
 
+            factory = async_session_factory(get_engine())
+
             # Get pending messages ready for retry
-            cursor = await db.execute(
-                "SELECT id, target_domain, envelope, via, hop_count, attempt_count "
-                "FROM federation_queue "
-                "WHERE status = 'pending' AND datetime(next_retry) <= datetime('now') "
-                "ORDER BY next_retry ASC LIMIT 50"
-            )
-            rows = await cursor.fetchall()
+            async with factory() as session:
+                pending = await get_pending_queue(session, limit=50)
 
-            for row in rows:
-                queue_id = row[0] if isinstance(row, tuple) else row["id"]
-                target_domain = row[1] if isinstance(row, tuple) else row["target_domain"]
-                envelope_json = row[2] if isinstance(row, tuple) else row["envelope"]
-                via_json = row[3] if isinstance(row, tuple) else row["via"]
-                hop_count = row[4] if isinstance(row, tuple) else row["hop_count"]
-                attempt_count = row[5] if isinstance(row, tuple) else row["attempt_count"]
-
-                envelope_dict = json.loads(envelope_json)
-                via_list = json.loads(via_json)
+            for entry in pending:
+                envelope_dict = json.loads(entry.envelope)
+                via_list = json.loads(entry.via)
 
                 result = await federation_service.forward(
                     envelope_dict=envelope_dict,
                     from_relay=settings.relay_domain,
                     via=via_list,
-                    hop_count=hop_count,
+                    hop_count=entry.hop_count,
                 )
 
                 if result.delivered:
-                    await db.execute(
-                        "UPDATE federation_queue SET status = 'delivered' WHERE id = ?",
-                        (queue_id,),
-                    )
-                    await db.commit()
-                    logger.info("Federation retry delivered: queue_id=%d to %s", queue_id, target_domain)
+                    async with factory() as session:
+                        await update_queue_entry(session, entry.id, status="delivered")
+                    logger.info("Federation retry delivered: queue_id=%d to %s", entry.id, entry.target_domain)
                 else:
-                    new_attempt = attempt_count + 1
+                    new_attempt = entry.attempt_count + 1
                     retry_delays = settings.federation_retry_delays
                     if new_attempt >= len(retry_delays):
-                        # All retries exhausted
-                        await db.execute(
-                            "UPDATE federation_queue SET status = 'failed', error = ?, attempt_count = ? WHERE id = ?",
-                            (result.error or "max retries", new_attempt, queue_id),
-                        )
-                        await db.commit()
-                        logger.warning("Federation retry exhausted: queue_id=%d to %s after %d attempts", queue_id, target_domain, new_attempt)
+                        async with factory() as session:
+                            await update_queue_entry(
+                                session, entry.id,
+                                status="failed",
+                                error=result.error or "max retries",
+                            )
+                        logger.warning("Federation retry exhausted: queue_id=%d to %s after %d attempts", entry.id, entry.target_domain, new_attempt)
                     else:
                         delay = retry_delays[new_attempt]
-                        await db.execute(
-                            "UPDATE federation_queue SET attempt_count = ?, next_retry = datetime('now', '+' || ? || ' seconds'), error = ? WHERE id = ?",
-                            (new_attempt, str(delay), result.error, queue_id),
-                        )
-                        await db.commit()
-                        logger.info("Federation retry scheduled: queue_id=%d to %s, attempt %d, next in %ds", queue_id, target_domain, new_attempt, delay)
-        except Exception:
-            logger.exception("Error in federation retry loop")
+                        next_retry = dt.utcnow() + timedelta(seconds=delay)
+                        async with factory() as session:
+                            await update_queue_entry(
+                                session, entry.id,
+                                status="pending",
+                                error=result.error,
+                                next_retry=next_retry,
+                            )
+                        logger.info("Federation retry scheduled: queue_id=%d to %s, attempt %d, next in %ds", entry.id, entry.target_domain, new_attempt, delay)
+        except Exception as exc:
+            if is_transient_error(exc):
+                logger.warning("Transient DB error in federation retry loop, will retry next cycle: %s", exc)
+            else:
+                logger.exception("Error in federation retry loop")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Manage database and connection resources across app lifetime."""
     settings = app.state.settings
-    app.state.db = await init_db(settings.database_path)
+
+    # ---------------------------------------------------------------
+    # Database: async engine + session factory (Phase 33/34 infra)
+    # ---------------------------------------------------------------
+    # Construct DATABASE_URL from settings if not set in environment
+    if not os.environ.get("DATABASE_URL"):
+        db_path = os.path.abspath(settings.database_path)
+        os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{db_path}"
+
+    from uam.db.engine import init_engine, dispose_engine
+    from uam.db.session import init_session_factory, create_tables
+
+    engine = init_engine()
+    session_factory = init_session_factory(engine)
+
+    # Enable WAL mode for SQLite to allow concurrent reads during writes
+    database_url = os.environ.get("DATABASE_URL", "")
+    if "sqlite" in database_url:
+        async with engine.begin() as conn:
+            await conn.exec_driver_sql("PRAGMA journal_mode=WAL")
+            await conn.exec_driver_sql("PRAGMA busy_timeout=5000")
+
+    # Run Alembic migrations if available, fall back to create_tables for dev/test
+    try:
+        import asyncio as _asyncio
+
+        from alembic.command import upgrade as alembic_upgrade
+        from uam.cli.main import _get_alembic_config
+
+        alembic_cfg = _get_alembic_config(os.environ["DATABASE_URL"])
+        # Run sync Alembic in a thread — env.py uses asyncio.run() which
+        # cannot nest inside the already-running lifespan event loop.
+        await _asyncio.to_thread(alembic_upgrade, alembic_cfg, "head")
+        logger.info("Alembic migrations applied successfully")
+    except Exception as exc:
+        logger.warning("Alembic migration unavailable (%s), falling back to create_tables", exc)
+        await create_tables(engine)
+
     app.state.manager = ConnectionManager()
 
     # Spam defense: allow/block list (SPAM-01) -- loaded BEFORE accepting requests
     from uam.relay.spam_filter import AllowBlockList
 
     spam_filter = AllowBlockList()
-    await spam_filter.load(app.state.db)
+    async with session_factory() as session:
+        await spam_filter.load(session)
     app.state.spam_filter = spam_filter
 
     # Spam defense: reputation manager (SPAM-02) -- cache warmed BEFORE accepting requests
     from uam.relay.reputation import ReputationManager
 
-    reputation_manager = ReputationManager(app.state.db)
+    reputation_manager = ReputationManager(session_factory)
     await reputation_manager.load_cache()
     app.state.reputation_manager = reputation_manager
 
@@ -195,7 +297,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from uam.relay.webhook import WebhookCircuitBreaker, WebhookDeliveryService
 
     circuit_breaker = WebhookCircuitBreaker(settings=settings)
-    webhook_service = WebhookDeliveryService(app.state.db, circuit_breaker, app.state.manager)
+    webhook_service = WebhookDeliveryService(circuit_breaker, app.state.manager)
     await webhook_service.start()
     app.state.webhook_service = webhook_service
 
@@ -212,17 +314,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.info("Relay keypair loaded from %s", settings.relay_key_path)
 
         # Federation service (FED-01, FED-02)
-        federation_service = FederationService(app.state.db, settings, relay_sk, relay_vk)
+        federation_service = FederationService(settings, relay_sk, relay_vk)
         app.state.federation_service = federation_service
 
         # Relay-level blocklist/allowlist (FED-07)
         relay_blocklist = RelayAllowBlockList()
-        await relay_blocklist.load(app.state.db)
+        async with session_factory() as session:
+            await relay_blocklist.load(session)
         app.state.relay_blocklist = relay_blocklist
 
         # Relay-level reputation (FED-08)
         relay_reputation = RelayReputationManager(
-            app.state.db,
+            session_factory,
             base_rate_limit=settings.federation_relay_rate_limit,
         )
         await relay_reputation.load_cache()
@@ -261,8 +364,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Background sweep for expired stored messages (MSG-04)
     expired_msg_task = asyncio.create_task(_expired_message_sweep_loop(app))
 
+    # Background retention worker -- hard-purge old records (RES-04)
+    retention_task = asyncio.create_task(_retention_worker_loop(app))
+
     # Federation retry loop (FED-10)
     federation_retry_task = asyncio.create_task(_federation_retry_loop(app)) if settings.federation_enabled else None
+
+    # Record startup time for uptime calculation (RES-03)
+    app.state.startup_time = time.monotonic()
 
     yield
 
@@ -273,6 +382,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await federation_retry_task
         except asyncio.CancelledError:
             pass
+
+    # Cancel retention worker (RES-04)
+    retention_task.cancel()
+    try:
+        await retention_task
+    except asyncio.CancelledError:
+        pass
 
     expired_msg_task.cancel()
     try:
@@ -308,7 +424,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     await webhook_service.stop()
     await heartbeat.stop()
-    await close_db(app.state.db)
+
+    # Dispose async engine
+    await dispose_engine()
 
 
 def create_app() -> FastAPI:
@@ -390,6 +508,7 @@ def create_app() -> FastAPI:
     from uam.relay.routes.webhook_admin import router as webhook_admin_router
     from uam.relay.routes.admin import router as admin_router
     from uam.relay.routes.presence import router as presence_router
+    from uam.relay.routes.handshakes import router as handshakes_router
 
     app.include_router(register_router, prefix="/api/v1")
     app.include_router(agents_router, prefix="/api/v1")
@@ -401,6 +520,7 @@ def create_app() -> FastAPI:
     app.include_router(webhook_admin_router, prefix="/api/v1")
     app.include_router(admin_router, prefix="/api/v1")
     app.include_router(presence_router, prefix="/api/v1")
+    app.include_router(handshakes_router, prefix="/api/v1")
 
     # Health, WebSocket, and .well-known (no prefix)
     from uam.relay.routes.health import router as health_router

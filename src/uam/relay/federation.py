@@ -18,8 +18,11 @@ import dns.exception
 import httpx
 
 from uam.protocol.types import utc_timestamp
-from uam.relay.database import get_known_relay, log_federation, upsert_known_relay
 from uam.relay.relay_auth import sign_federation_request
+
+from uam.db.crud.federation import get_known_relay, log_federation, upsert_known_relay
+from uam.db.session import async_session_factory
+from uam.db.engine import get_engine
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +41,6 @@ class FederationService:
 
     Parameters
     ----------
-    db:
-        An open ``aiosqlite.Connection``.
     settings:
         The relay :class:`~uam.relay.config.Settings` instance.
     signing_key:
@@ -48,8 +49,7 @@ class FederationService:
         The relay's Ed25519 ``VerifyKey`` (for identity advertisement).
     """
 
-    def __init__(self, db, settings, signing_key, verify_key):  # noqa: ANN001
-        self._db = db
+    def __init__(self, settings, signing_key, verify_key):  # noqa: ANN001
         self._settings = settings
         self._signing_key = signing_key
         self._verify_key = verify_key
@@ -76,21 +76,26 @@ class FederationService:
         or ``None`` on total failure.  Never raises.
         """
         # 1. Cache check
-        cached = await get_known_relay(self._db, domain)
-        if cached and cached.get("status") == "active":
-            last_verified = cached.get("last_verified", "")
-            ttl_hours = cached.get("ttl_hours", 1)
+        factory = async_session_factory(get_engine())
+        async with factory() as session:
+            cached = await get_known_relay(session, domain)
+        if cached and cached.status == "active":
+            last_verified = cached.last_verified
+            ttl_hours = cached.ttl_hours or 1
             try:
-                lv_dt = datetime.fromisoformat(last_verified)
+                if isinstance(last_verified, str):
+                    lv_dt = datetime.fromisoformat(last_verified)
+                else:
+                    lv_dt = last_verified
                 if lv_dt.tzinfo is None:
                     lv_dt = lv_dt.replace(tzinfo=timezone.utc)
                 now = datetime.now(timezone.utc)
                 age_hours = (now - lv_dt).total_seconds() / 3600
                 if age_hours < ttl_hours:
                     return {
-                        "domain": cached["domain"],
-                        "federation_url": cached["federation_url"],
-                        "public_key": cached["public_key"],
+                        "domain": cached.domain,
+                        "federation_url": cached.federation_url,
+                        "public_key": cached.public_key,
                     }
             except (ValueError, TypeError):
                 pass  # Stale or unparseable -- re-discover
@@ -104,9 +109,10 @@ class FederationService:
             public_key = await self._fetch_well_known_key(target, port)
             if public_key is not None:
                 ttl = self._settings.federation_discovery_ttl_hours
-                await upsert_known_relay(
-                    self._db, domain, federation_url, public_key, "dns-srv", ttl
-                )
+                async with factory() as session:
+                    await upsert_known_relay(
+                        session, domain, federation_url, public_key, "dns-srv", ttl
+                    )
                 return {
                     "domain": domain,
                     "federation_url": federation_url,
@@ -117,14 +123,15 @@ class FederationService:
         well_known = await self._discover_via_well_known(domain)
         if well_known is not None:
             ttl = self._settings.federation_discovery_ttl_hours
-            await upsert_known_relay(
-                self._db,
-                domain,
-                well_known["federation_endpoint"],
-                well_known["public_key"],
-                "well-known",
-                ttl,
-            )
+            async with factory() as session:
+                await upsert_known_relay(
+                    session,
+                    domain,
+                    well_known["federation_endpoint"],
+                    well_known["public_key"],
+                    "well-known",
+                    ttl,
+                )
             return {
                 "domain": domain,
                 "federation_url": well_known["federation_endpoint"],
@@ -267,6 +274,7 @@ class FederationService:
             "Content-Type": "application/json",
         }
 
+        factory = async_session_factory(get_engine())
         try:
             resp = await self._client.post(
                 relay_info["federation_url"],
@@ -275,20 +283,38 @@ class FederationService:
                 timeout=30.0,
             )
             if resp.status_code in (200, 201):
-                await log_federation(
-                    self._db,
-                    message_id,
-                    from_relay,
-                    target_domain,
-                    "outbound",
-                    hop_count + 1,
-                    "delivered",
-                )
+                async with factory() as session:
+                    await log_federation(
+                        session,
+                        message_id,
+                        from_relay,
+                        target_domain,
+                        "outbound",
+                        hop_count + 1,
+                        "delivered",
+                    )
                 return ForwardResult(delivered=True)
             else:
                 error_detail = f"HTTP {resp.status_code}: {resp.text[:200]}"
+                async with factory() as session:
+                    await log_federation(
+                        session,
+                        message_id,
+                        from_relay,
+                        target_domain,
+                        "outbound",
+                        hop_count + 1,
+                        "failed",
+                        error=error_detail,
+                    )
+                return ForwardResult(
+                    delivered=False, queued=False, error=error_detail
+                )
+        except httpx.TimeoutException as exc:
+            error_detail = f"Timeout: {exc}"
+            async with factory() as session:
                 await log_federation(
-                    self._db,
+                    session,
                     message_id,
                     from_relay,
                     target_domain,
@@ -297,36 +323,22 @@ class FederationService:
                     "failed",
                     error=error_detail,
                 )
-                return ForwardResult(
-                    delivered=False, queued=False, error=error_detail
-                )
-        except httpx.TimeoutException as exc:
-            error_detail = f"Timeout: {exc}"
-            await log_federation(
-                self._db,
-                message_id,
-                from_relay,
-                target_domain,
-                "outbound",
-                hop_count + 1,
-                "failed",
-                error=error_detail,
-            )
             return ForwardResult(
                 delivered=False, queued=False, error=error_detail
             )
         except Exception as exc:
             error_detail = f"Request error: {exc}"
-            await log_federation(
-                self._db,
-                message_id,
-                from_relay,
-                target_domain,
-                "outbound",
-                hop_count + 1,
-                "failed",
-                error=error_detail,
-            )
+            async with factory() as session:
+                await log_federation(
+                    session,
+                    message_id,
+                    from_relay,
+                    target_domain,
+                    "outbound",
+                    hop_count + 1,
+                    "failed",
+                    error=error_detail,
+                )
             return ForwardResult(
                 delivered=False, queued=False, error=error_detail
             )

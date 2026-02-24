@@ -700,6 +700,125 @@ async def _do_a2a_import(book: ContactBook, card) -> None:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# uam db (MIG-05) -- database management subcommands
+# ---------------------------------------------------------------------------
+
+
+def _get_alembic_config(database_url: str) -> "Config":
+    """Build an Alembic Config, setting DATABASE_URL in env.
+
+    Searches for alembic.ini in:
+      1. Current working directory
+      2. Three levels above this file (src/uam/cli -> project root)
+
+    Raises SystemExit via _error() if not found.
+    """
+    import os
+    from pathlib import Path
+
+    from alembic.config import Config
+
+    ini_candidates = [
+        Path.cwd() / "alembic.ini",
+        Path(__file__).resolve().parents[3] / "alembic.ini",
+    ]
+    ini_path = None
+    for candidate in ini_candidates:
+        if candidate.exists():
+            ini_path = candidate
+            break
+
+    if ini_path is None:
+        _error(
+            "Could not find alembic.ini. "
+            "Run this command from the project root or install the package properly."
+        )
+
+    os.environ["DATABASE_URL"] = database_url
+    return Config(str(ini_path))
+
+
+@cli.group()
+def db():
+    """Database management commands."""
+    pass
+
+
+@db.command()
+@click.option(
+    "--database-url",
+    envvar="DATABASE_URL",
+    default=None,
+    help="Database URL (default: $DATABASE_URL).",
+)
+@click.option("--revision", default="head", help="Target revision (default: head).")
+def upgrade(database_url: str | None, revision: str) -> None:
+    """Run database migrations to the target revision."""
+    if not database_url:
+        _error("DATABASE_URL environment variable is required.")
+
+    from alembic import command
+
+    alembic_cfg = _get_alembic_config(database_url)
+    try:
+        command.upgrade(alembic_cfg, revision)
+        click.echo(f"Database migrated to: {revision}")
+    except Exception as exc:
+        _error(f"Migration failed: {exc}")
+
+
+@db.command()
+@click.option(
+    "--database-url",
+    envvar="DATABASE_URL",
+    default=None,
+    help="Database URL (default: $DATABASE_URL).",
+)
+def current(database_url: str | None) -> None:
+    """Show the current migration revision."""
+    if not database_url:
+        _error("DATABASE_URL environment variable is required.")
+
+    from alembic import command
+
+    alembic_cfg = _get_alembic_config(database_url)
+    try:
+        command.current(alembic_cfg, verbose=True)
+    except Exception as exc:
+        _error(f"Error: {exc}")
+
+
+@db.command()
+@click.option(
+    "--database-url",
+    envvar="DATABASE_URL",
+    default=None,
+    help="Database URL (default: $DATABASE_URL).",
+)
+@click.option(
+    "--revision", default="-1", help="Target revision (default: -1, one step back)."
+)
+def downgrade(database_url: str | None, revision: str) -> None:
+    """Downgrade database to a previous migration revision."""
+    if not database_url:
+        _error("DATABASE_URL environment variable is required.")
+
+    from alembic import command
+
+    alembic_cfg = _get_alembic_config(database_url)
+    try:
+        command.downgrade(alembic_cfg, revision)
+        click.echo(f"Database downgraded to: {revision}")
+    except Exception as exc:
+        _error(f"Downgrade failed: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# uam register (REG-06/07)
+# ---------------------------------------------------------------------------
+
+
 @cli.command("register")
 @click.argument("name")
 @click.option("--relay", "-r", default=None, help="Relay URL for the namespace.")

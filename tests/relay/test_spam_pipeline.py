@@ -17,9 +17,13 @@ from __future__ import annotations
 
 import pytest
 
-from tests.relay.conftest import _make_envelope
-
-from uam.protocol import generate_keypair, serialize_verify_key
+from uam.protocol import (
+    MessageType,
+    create_envelope,
+    generate_keypair,
+    serialize_verify_key,
+    to_wire_dict,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -44,6 +48,19 @@ def _register(client, name: str = "testbot") -> dict:
         "verify_key": vk,
         "public_key_str": pk_str,
     }
+
+
+def _make_envelope(from_agent: dict, to_agent: dict) -> dict:
+    """Create a signed envelope as a wire dict."""
+    envelope = create_envelope(
+        from_address=from_agent["address"],
+        to_address=to_agent["address"],
+        message_type=MessageType.MESSAGE,
+        payload_plaintext=b"Hello from tests!",
+        signing_key=from_agent["signing_key"],
+        recipient_verify_key=to_agent["verify_key"],
+    )
+    return to_wire_dict(envelope)
 
 
 def _boost(client, address: str, score: int = 80) -> None:

@@ -63,6 +63,8 @@ class TestOfflineDelivery:
 
     def test_stored_messages_cleared_after_delivery(self, client, registered_agent_pair, make_envelope):
         """Stored messages are not re-delivered on a second WebSocket connection."""
+        import time
+
         alice, bob = registered_agent_pair
         wire = make_envelope(alice, bob)
 
@@ -78,10 +80,15 @@ class TestOfflineDelivery:
             msg = ws.receive_json()
             assert msg["from"] == alice["address"]
 
-        # Second connection: no messages should be delivered
-        # Also verify inbox is empty
-        inbox_resp = client.get(
-            f"/api/v1/inbox/{bob['address']}",
-            headers={"Authorization": f"Bearer {bob['token']}"},
-        )
+        # Poll until mark_delivered completes (async finally in WS handler)
+        headers = {"Authorization": f"Bearer {bob['token']}"}
+        for _ in range(50):
+            inbox_resp = client.get(
+                f"/api/v1/inbox/{bob['address']}",
+                headers=headers,
+            )
+            if inbox_resp.json()["count"] == 0:
+                break
+            time.sleep(0.02)
+
         assert inbox_resp.json()["count"] == 0

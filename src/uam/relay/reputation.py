@@ -8,22 +8,26 @@ their tier and associated rate limits:
 - **Throttled** (>=20): 10 msg/min -- probationary
 - **Blocked** (<20): 0 msg/min -- effectively silenced
 
-Scores are cached in memory with SQLite persistence.  New agents
+Scores are cached in memory with SQLAlchemy/SQLModel persistence.  New agents
 default to score 30 (Tier 1); DNS-verified agents start at 60.
 """
 
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any
 
-import aiosqlite
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlmodel import select
+
+from uam.db.models import Reputation
 
 logger = logging.getLogger(__name__)
 
 
 class ReputationManager:
-    """In-memory cached reputation scores backed by SQLite."""
+    """In-memory cached reputation scores backed by async DB sessions."""
 
     # Tier thresholds (score >= threshold)
     TIER_FULL = 80
@@ -38,8 +42,8 @@ class ReputationManager:
         "blocked": {"send_limit": 0},
     }
 
-    def __init__(self, db: aiosqlite.Connection) -> None:
-        self._db = db
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
         self._cache: dict[str, int] = {}
         self._dirty: set[str] = set()
 
@@ -49,14 +53,13 @@ class ReputationManager:
 
     async def load_cache(self) -> None:
         """Load all reputation scores from DB into the in-memory cache."""
-        cursor = await self._db.execute("SELECT address, score FROM reputation")
-        rows = await cursor.fetchall()
-        self._cache.clear()
-        for row in rows:
-            self._cache[row["address"] if isinstance(row, dict) else row[0]] = (
-                row["score"] if isinstance(row, dict) else row[1]
-            )
-        logger.info("Loaded %d reputation scores into cache", len(self._cache))
+        async with self._session_factory() as session:
+            result = await session.execute(select(Reputation))
+            rows = result.scalars().all()
+            self._cache.clear()
+            for row in rows:
+                self._cache[row.address] = row.score
+            logger.info("Loaded %d reputation scores into cache", len(self._cache))
 
     # ------------------------------------------------------------------
     # O(1) lookups (memory only)
@@ -89,15 +92,20 @@ class ReputationManager:
         """Initialize reputation for a newly registered agent.
 
         DNS-verified agents start at 60; others at 30.
-        Uses ``INSERT OR IGNORE`` so existing scores are not overwritten.
+        Skips insert if a row already exists (INSERT OR IGNORE semantics).
         """
         score = 60 if dns_verified else 30
-        await self._db.execute(
-            "INSERT OR IGNORE INTO reputation (address, score) VALUES (?, ?)",
-            (address, score),
-        )
-        await self._db.commit()
-        # Only update cache if not already present (matches INSERT OR IGNORE)
+        async with self._session_factory() as session:
+            # Check if row already exists
+            result = await session.execute(
+                select(Reputation).where(Reputation.address == address)
+            )
+            if result.scalar_one_or_none() is not None:
+                return  # already exists, don't overwrite
+            entry = Reputation(address=address, score=score)
+            session.add(entry)
+            await session.commit()
+        # Only update cache if not already present
         if address not in self._cache:
             self._cache[address] = score
             logger.info(
@@ -111,24 +119,25 @@ class ReputationManager:
         If the address has no reputation row yet, one is created with
         default score 30 before applying the delta.  Returns the new score.
         """
-        # Ensure row exists
-        await self._db.execute(
-            "INSERT OR IGNORE INTO reputation (address, score) VALUES (?, 30)",
-            (address,),
-        )
-        await self._db.execute(
-            "UPDATE reputation SET score = MAX(0, MIN(100, score + ?)), "
-            "updated_at = datetime('now') WHERE address = ?",
-            (delta, address),
-        )
-        await self._db.commit()
+        async with self._session_factory() as session:
+            # Ensure row exists
+            result = await session.execute(
+                select(Reputation).where(Reputation.address == address)
+            )
+            row = result.scalar_one_or_none()
+            if row is None:
+                row = Reputation(address=address, score=30)
+                session.add(row)
+                await session.flush()
 
-        # Read back the actual clamped value
-        cursor = await self._db.execute(
-            "SELECT score FROM reputation WHERE address = ?", (address,)
-        )
-        row = await cursor.fetchone()
-        new_score: int = row["score"] if isinstance(row, dict) else row[0]  # type: ignore[index]
+            # Apply delta with clamping
+            row.score = max(0, min(100, row.score + delta))
+            row.updated_at = datetime.utcnow()
+            session.add(row)
+            await session.commit()
+            await session.refresh(row)
+            new_score = row.score
+
         old_score = self._cache.get(address, 30)
         self._cache[address] = new_score
 
@@ -150,12 +159,18 @@ class ReputationManager:
     async def set_score(self, address: str, score: int) -> None:
         """Admin override -- directly set a score (clamped 0-100)."""
         clamped = max(0, min(100, score))
-        await self._db.execute(
-            "INSERT INTO reputation (address, score) VALUES (?, ?) "
-            "ON CONFLICT(address) DO UPDATE SET score = ?, updated_at = datetime('now')",
-            (address, clamped, clamped),
-        )
-        await self._db.commit()
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(Reputation).where(Reputation.address == address)
+            )
+            row = result.scalar_one_or_none()
+            if row is None:
+                row = Reputation(address=address, score=clamped)
+            else:
+                row.score = clamped
+                row.updated_at = datetime.utcnow()
+            session.add(row)
+            await session.commit()
         old_score = self._cache.get(address, 30)
         self._cache[address] = clamped
         logger.warning(
@@ -168,21 +183,29 @@ class ReputationManager:
 
     async def record_message_sent(self, address: str) -> None:
         """Increment the messages_sent counter for *address*."""
-        await self._db.execute(
-            "UPDATE reputation SET messages_sent = messages_sent + 1, "
-            "updated_at = datetime('now') WHERE address = ?",
-            (address,),
-        )
-        await self._db.commit()
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(Reputation).where(Reputation.address == address)
+            )
+            row = result.scalar_one_or_none()
+            if row is not None:
+                row.messages_sent += 1
+                row.updated_at = datetime.utcnow()
+                session.add(row)
+                await session.commit()
 
     async def record_message_rejected(self, address: str) -> None:
         """Increment the messages_rejected counter for *address*."""
-        await self._db.execute(
-            "UPDATE reputation SET messages_rejected = messages_rejected + 1, "
-            "updated_at = datetime('now') WHERE address = ?",
-            (address,),
-        )
-        await self._db.commit()
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(Reputation).where(Reputation.address == address)
+            )
+            row = result.scalar_one_or_none()
+            if row is not None:
+                row.messages_rejected += 1
+                row.updated_at = datetime.utcnow()
+                session.add(row)
+                await session.commit()
 
     # ------------------------------------------------------------------
     # Admin inspection
@@ -190,15 +213,21 @@ class ReputationManager:
 
     async def get_reputation_info(self, address: str) -> dict[str, Any] | None:
         """Return the full reputation row for admin inspection, or None."""
-        cursor = await self._db.execute(
-            "SELECT address, score, messages_sent, messages_rejected, "
-            "created_at, updated_at FROM reputation WHERE address = ?",
-            (address,),
-        )
-        row = await cursor.fetchone()
-        if row is None:
-            return None
-        return dict(row)
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(Reputation).where(Reputation.address == address)
+            )
+            row = result.scalar_one_or_none()
+            if row is None:
+                return None
+            return {
+                "address": row.address,
+                "score": row.score,
+                "messages_sent": row.messages_sent,
+                "messages_rejected": row.messages_rejected,
+                "created_at": str(row.created_at),
+                "updated_at": str(row.updated_at),
+            }
 
     # ------------------------------------------------------------------
     # Internal helpers

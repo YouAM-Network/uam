@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import secrets
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from uam.db.crud.agents import create_agent, get_agent_by_address, update_agent
+from uam.db.session import get_session
 from uam.protocol import (
     InvalidAddressError,
     deserialize_verify_key,
     parse_address,
 )
-from uam.relay.database import get_agent_by_address, register_agent, update_agent_webhook_url
 from uam.relay.models import RegisterRequest, RegisterResponse
 from uam.relay.webhook_validator import validate_webhook_url
 
@@ -19,13 +21,12 @@ router = APIRouter()
 
 
 @router.post("/register", response_model=RegisterResponse)
-async def register(body: RegisterRequest, request: Request) -> RegisterResponse:
+async def register(body: RegisterRequest, request: Request, session: AsyncSession = Depends(get_session)) -> RegisterResponse:
     """Register a new agent with the relay.
 
     This is the only public (unauthenticated) endpoint besides /health.
     Rate limited to 5 registrations per minute per IP.
     """
-    db = request.app.state.db
     settings = request.app.state.settings
 
     # Rate limit by client IP (5/min)
@@ -58,31 +59,44 @@ async def register(body: RegisterRequest, request: Request) -> RegisterResponse:
         )
 
     # Check uniqueness -- if same public key, return existing credentials
-    existing = await get_agent_by_address(db, address)
+    existing = await get_agent_by_address(session, address)
     if existing is not None:
-        if existing["public_key"] == body.public_key:
+        if existing.public_key == body.public_key:
             # Same agent re-registering (e.g., after restart) -- return existing credentials
             return RegisterResponse(
                 address=address,
-                token=existing["token"],
+                token=existing.token,
                 relay=settings.relay_ws_url,
             )
         raise HTTPException(status_code=409, detail=f"Agent address already registered: {address}")
 
-    # Generate token and register
+    # --- Transaction-wrapped DB section (RES-01) ---
+    # create_agent + optional update_agent (webhook URL) in a single commit.
     token = secrets.token_urlsafe(32)
-    await register_agent(db, address, body.public_key, token)
+    try:
+        await create_agent(session, address, body.public_key, token, commit=False)
 
-    # Initialize reputation score (SPAM-02)
+        # Optionally set webhook URL (HOOK-01)
+        if body.webhook_url is not None:
+            valid, reason = validate_webhook_url(body.webhook_url)
+            if not valid:
+                raise HTTPException(status_code=400, detail=f"Invalid webhook URL: {reason}")
+            await update_agent(session, address, commit=False, webhook_url=body.webhook_url)
+
+        # Single commit for agent creation + optional webhook update
+        await session.commit()
+
+    except HTTPException:
+        await session.rollback()
+        raise
+    except Exception:
+        await session.rollback()
+        raise
+
+    # Initialize reputation score (SPAM-02) -- outside transaction
+    # (reputation is managed by an in-memory service, not critical DB state)
     reputation_manager = request.app.state.reputation_manager
     await reputation_manager.init_score(address, dns_verified=False)
-
-    # Optionally set webhook URL (HOOK-01)
-    if body.webhook_url is not None:
-        valid, reason = validate_webhook_url(body.webhook_url)
-        if not valid:
-            raise HTTPException(status_code=400, detail=f"Invalid webhook URL: {reason}")
-        await update_agent_webhook_url(db, address, body.webhook_url)
 
     return RegisterResponse(
         address=address,

@@ -20,14 +20,12 @@ from uam.protocol import (
 )
 from uam.relay.auth import verify_token_ws
 from uam.relay.connections import ConnectionManager
-from uam.relay.database import (
-    get_agent_by_address,
-    get_stored_messages,
-    mark_messages_delivered,
-    record_message_id,
-    store_message,
-    update_agent_last_seen,
-)
+
+from uam.db.crud.agents import get_agent_by_address, update_agent
+from uam.db.crud.messages import get_inbox, mark_delivered, store_message
+from uam.db.crud.dedup import record_message_id
+from uam.db.session import init_session_factory
+from uam.db.engine import get_engine
 
 logger = logging.getLogger(__name__)
 
@@ -37,21 +35,22 @@ router = APIRouter()
 async def _deliver_stored_messages(
     websocket: WebSocket,
     address: str,
-    db: object,
+    factory: object,
     manager: ConnectionManager,
 ) -> None:
     """Send all stored offline messages to a freshly connected agent."""
-    stored = await get_stored_messages(db, address)
+    async with factory() as session:
+        stored = await get_inbox(session, address)
     if not stored:
         return
 
     ids: list[int] = []
     for msg in stored:
-        await websocket.send_json(msg["envelope"])
-        ids.append(msg["id"])
+        envelope_data = json.loads(msg.envelope)
+        await websocket.send_json(envelope_data)
+        ids.append(msg.id)
 
         # Send receipt.delivered to the original sender (MSG-05 anti-loop guard)
-        envelope_data = msg["envelope"]
         original_from = envelope_data.get("from", "")
         msg_type = str(envelope_data.get("type", ""))
         if original_from and not msg_type.startswith("receipt."):
@@ -63,7 +62,8 @@ async def _deliver_stored_messages(
             }
             await manager.send_to(original_from, receipt)
 
-    await mark_messages_delivered(db, ids)
+    async with factory() as session:
+        await mark_delivered(session, ids)
     logger.info("Delivered %d stored messages to %s", len(ids), address)
 
 
@@ -71,7 +71,7 @@ async def handle_inbound_message(
     websocket: WebSocket,
     raw: dict,
     sender_address: str,
-    db: object,
+    factory: object,
     manager: ConnectionManager,
 ) -> None:
     """Parse, verify, and route an inbound envelope from a WebSocket client.
@@ -141,7 +141,8 @@ async def handle_inbound_message(
         return
 
     # Dedup check (MSG-03) -- before expensive delivery chain
-    is_new = await record_message_id(db, envelope.message_id, sender_address)
+    async with factory() as session:
+        is_new = await record_message_id(session, envelope.message_id, sender_address)
     if not is_new:
         # Silently ACK duplicate -- idempotent for the sender
         await websocket.send_json({
@@ -191,7 +192,8 @@ async def handle_inbound_message(
             return
 
     # Look up sender's public key and verify signature (expensive)
-    sender_agent = await get_agent_by_address(db, sender_address)
+    async with factory() as session:
+        sender_agent = await get_agent_by_address(session, sender_address)
     if sender_agent is None:
         await websocket.send_json({
             "error": "sender_not_found",
@@ -200,7 +202,7 @@ async def handle_inbound_message(
         return
 
     try:
-        sender_vk = deserialize_verify_key(sender_agent["public_key"])
+        sender_vk = deserialize_verify_key(sender_agent.public_key)
         verify_envelope(envelope, sender_vk)
     except SignatureVerificationError as exc:
         await websocket.send_json({
@@ -224,10 +226,22 @@ async def handle_inbound_message(
 
     if not delivered:
         # Tier 3: Store-and-forward (eventual)
-        await store_message(
-            db, envelope.from_address, envelope.to_address,
-            json.dumps(raw), expires=expires_str,
-        )
+        # Convert expires string to datetime for CRUD layer
+        expires_dt = None
+        if expires_str is not None:
+            try:
+                expires_dt = datetime.fromisoformat(expires_str.replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                pass
+        async with factory() as session:
+            await store_message(
+                session,
+                message_id=envelope.message_id,
+                from_addr=envelope.from_address,
+                to_addr=envelope.to_address,
+                envelope=json.dumps(raw),
+                expires_at=expires_dt,
+            )
 
     # Send ACK first (always before receipt)
     await websocket.send_json({
@@ -257,12 +271,12 @@ async def websocket_endpoint(
     Auth flow: look up agent by token BEFORE accepting. Never accept
     unauthenticated connections.
     """
-    db = websocket.app.state.db
+    factory = init_session_factory(get_engine())
     manager: ConnectionManager = websocket.app.state.manager
     heartbeat = websocket.app.state.heartbeat
 
     # Auth: look up agent by token before accepting
-    agent = await verify_token_ws(db, token)
+    agent = await verify_token_ws(token)
     if agent is None:
         await websocket.close(code=1008, reason="invalid token")
         return
@@ -283,7 +297,7 @@ async def websocket_endpoint(
 
     try:
         # Deliver stored offline messages on reconnect (RELAY-03)
-        await _deliver_stored_messages(websocket, address, db, manager)
+        await _deliver_stored_messages(websocket, address, factory, manager)
 
         # Message loop
         while True:
@@ -296,7 +310,7 @@ async def websocket_endpoint(
 
             # Distinguish message types: envelopes have "uam_version" field
             if "uam_version" in raw:
-                await handle_inbound_message(websocket, raw, address, db, manager)
+                await handle_inbound_message(websocket, raw, address, factory, manager)
             else:
                 msg_type = raw.get("type", "<missing>") if isinstance(raw, dict) else "<invalid>"
                 logger.warning("Unknown message type from %s: %s", address, msg_type)
@@ -311,5 +325,9 @@ async def websocket_endpoint(
         logger.exception("WebSocket error for %s", address)
     finally:
         heartbeat.record_disconnect(address)
-        await update_agent_last_seen(db, address)
+        try:
+            async with factory() as session:
+                await update_agent(session, address, last_seen=datetime.now(timezone.utc))
+        except Exception:
+            logger.debug("Failed to update last_seen for %s on disconnect", address)
         await manager.disconnect(address)

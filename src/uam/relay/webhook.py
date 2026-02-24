@@ -22,13 +22,12 @@ import httpx
 
 from uam.relay.config import Settings
 from uam.relay.connections import ConnectionManager
-from uam.relay.database import (
-    complete_webhook_delivery,
-    create_webhook_delivery,
-    get_agent_with_webhook,
-    update_webhook_delivery_attempt,
-)
 from uam.relay.webhook_validator import async_validate_webhook_url
+
+from uam.db.crud.agents import get_agent_by_address
+from uam.db.crud.webhooks import create_delivery, record_attempt, complete_delivery
+from uam.db.session import async_session_factory
+from uam.db.engine import get_engine
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +147,7 @@ class WebhookDeliveryService:
     """Manages webhook delivery with retries and circuit breaking.
 
     Lifecycle:
-        service = WebhookDeliveryService(db, circuit_breaker)
+        service = WebhookDeliveryService(circuit_breaker)
         await service.start()
         ...
         await service.stop()
@@ -156,11 +155,9 @@ class WebhookDeliveryService:
 
     def __init__(
         self,
-        db: object,  # aiosqlite.Connection
         circuit_breaker: WebhookCircuitBreaker,
         manager: ConnectionManager | None = None,
     ) -> None:
-        self._db = db
         self._circuit_breaker = circuit_breaker
         self._manager = manager
         self._http_client: httpx.AsyncClient | None = None
@@ -206,19 +203,29 @@ class WebhookDeliveryService:
             logger.debug("Circuit open for %s, skipping webhook delivery", address)
             return False
 
-        agent = await get_agent_with_webhook(self._db, address)
-        if agent is None:
-            return False
+        factory = async_session_factory(get_engine())
+        # --- Transaction-wrapped DB section (RES-01) ---
+        # Agent lookup + delivery creation in a single session/commit.
+        async with factory() as session:
+            agent = await get_agent_by_address(session, address)
+            if agent is None or not agent.webhook_url:
+                return False
 
-        webhook_url: str = agent["webhook_url"]
-        token: str = agent["token"]
+            webhook_url: str = agent.webhook_url
+            token: str = agent.token
 
-        envelope_json = json.dumps(envelope_dict, separators=(",", ":"))
-        message_id = envelope_dict.get("id", "unknown")
+            envelope_json = json.dumps(envelope_dict, separators=(",", ":"))
+            message_id = envelope_dict.get("id", "unknown")
 
-        delivery_id = await create_webhook_delivery(
-            self._db, address, str(message_id), envelope_json
-        )
+            try:
+                delivery = await create_delivery(
+                    session, address, str(message_id), envelope_json, commit=False
+                )
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
+        delivery_id = delivery.id
 
         task = asyncio.create_task(
             self._deliver_with_retries(
@@ -246,10 +253,14 @@ class WebhookDeliveryService:
         """
         if self._http_client is None:
             logger.error("HTTP client not initialized -- call start() first")
-            await complete_webhook_delivery(
-                self._db, delivery_id, "failed", "HTTP client not initialized"
-            )
+            factory = async_session_factory(get_engine())
+            async with factory() as session:
+                await complete_delivery(
+                    session, delivery_id, "failed", "HTTP client not initialized"
+                )
             return
+
+        factory = async_session_factory(get_engine())
 
         payload_bytes = json.dumps(envelope_dict, separators=(",", ":")).encode("utf-8")
         signature = compute_webhook_signature(payload_bytes, token)
@@ -266,12 +277,13 @@ class WebhookDeliveryService:
                     address,
                     reason,
                 )
-                await complete_webhook_delivery(
-                    self._db,
-                    delivery_id,
-                    "failed",
-                    f"URL re-validation failed: {reason}",
-                )
+                async with factory() as session:
+                    await complete_delivery(
+                        session,
+                        delivery_id,
+                        "failed",
+                        f"URL re-validation failed: {reason}",
+                    )
                 return
 
             try:
@@ -295,14 +307,11 @@ class WebhookDeliveryService:
                     address,
                     error_msg,
                 )
-                await update_webhook_delivery_attempt(
-                    self._db, delivery_id, attempt, None, error_msg
-                )
+                async with factory() as session:
+                    await record_attempt(
+                        session, delivery_id, status_code=None, error=error_msg
+                    )
                 continue
-
-            await update_webhook_delivery_attempt(
-                self._db, delivery_id, attempt, status_code, None
-            )
 
             if 200 <= status_code < 300:
                 logger.info(
@@ -312,7 +321,17 @@ class WebhookDeliveryService:
                     len(RETRY_DELAYS),
                     status_code,
                 )
-                await complete_webhook_delivery(self._db, delivery_id, "succeeded")
+                # --- Transaction-wrapped: record_attempt + complete_delivery (RES-01) ---
+                async with factory() as session:
+                    try:
+                        await record_attempt(
+                            session, delivery_id, status_code=status_code, error=None, commit=False
+                        )
+                        await complete_delivery(session, delivery_id, "succeeded", commit=False)
+                        await session.commit()
+                    except Exception:
+                        await session.rollback()
+                        raise
                 self._circuit_breaker.record_success(address)
 
                 # Send receipt.delivered to original sender (MSG-05 anti-loop guard)
@@ -336,10 +355,26 @@ class WebhookDeliveryService:
                     address,
                     status_code,
                 )
-                await complete_webhook_delivery(
-                    self._db, delivery_id, "failed", error_msg
-                )
+                # --- Transaction-wrapped: record_attempt + complete_delivery (RES-01) ---
+                async with factory() as session:
+                    try:
+                        await record_attempt(
+                            session, delivery_id, status_code=status_code, error=None, commit=False
+                        )
+                        await complete_delivery(
+                            session, delivery_id, "failed", error_msg, commit=False
+                        )
+                        await session.commit()
+                    except Exception:
+                        await session.rollback()
+                        raise
                 return
+
+            # Retriable status code -- record attempt, then continue loop
+            async with factory() as session:
+                await record_attempt(
+                    session, delivery_id, status_code=status_code, error=None
+                )
 
             # Retriable status code (5xx, 408, 429) -- continue loop
             logger.debug(
@@ -356,7 +391,8 @@ class WebhookDeliveryService:
             address,
             len(RETRY_DELAYS),
         )
-        await complete_webhook_delivery(
-            self._db, delivery_id, "failed", "All retries exhausted"
-        )
+        async with factory() as session:
+            await complete_delivery(
+                session, delivery_id, "failed", "All retries exhausted"
+            )
         self._circuit_breaker.record_failure(address)

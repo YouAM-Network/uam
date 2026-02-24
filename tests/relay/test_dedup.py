@@ -5,31 +5,25 @@ Covers:
 - REST dedup (POST /send)
 - WebSocket dedup (ws:// inbound)
 - Different IDs both delivered
-- cleanup_expired_dedup
-- Migration creates table
-- Migration is idempotent
+- cleanup_expired
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
-
-import aiosqlite
 import pytest
-from fastapi.testclient import TestClient
 
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlmodel import SQLModel, select
+
+from uam.db.crud.dedup import cleanup_expired, record_message_id
+from uam.db.models import SeenMessageId
 from uam.protocol import (
     MessageType,
     create_envelope,
     generate_keypair,
     serialize_verify_key,
     to_wire_dict,
-)
-from uam.relay.database import (
-    cleanup_expired_dedup,
-    init_db,
-    record_message_id,
 )
 
 
@@ -38,118 +32,79 @@ from uam.relay.database import (
 # ---------------------------------------------------------------------------
 
 
-class TestRecordMessageId:
-    """Unit tests for the record_message_id helper."""
+@pytest.fixture()
+async def session():
+    """Create an in-memory async engine with SQLModel tables and yield a session."""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(SQLModel.metadata.create_all)
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with factory() as sess:
+        yield sess
+    await engine.dispose()
 
-    @pytest.fixture(autouse=True)
-    async def _setup_db(self, tmp_path):
-        self.db = await init_db(str(tmp_path / "dedup.db"))
-        yield
-        await self.db.close()
+
+class TestRecordMessageId:
+    """Unit tests for the record_message_id CRUD function."""
 
     @pytest.mark.asyncio
-    async def test_record_new_id_returns_true(self):
-        result = await record_message_id(self.db, "msg-001", "alice::test.local")
+    async def test_record_new_id_returns_true(self, session):
+        result = await record_message_id(session, "msg-001", "alice::test.local")
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_record_duplicate_returns_false(self):
-        await record_message_id(self.db, "msg-001", "alice::test.local")
-        result = await record_message_id(self.db, "msg-001", "alice::test.local")
+    async def test_record_duplicate_returns_false(self, session):
+        await record_message_id(session, "msg-001", "alice::test.local")
+        result = await record_message_id(session, "msg-001", "alice::test.local")
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_different_ids_both_succeed(self):
-        r1 = await record_message_id(self.db, "msg-001", "alice::test.local")
-        r2 = await record_message_id(self.db, "msg-002", "alice::test.local")
+    async def test_different_ids_both_succeed(self, session):
+        r1 = await record_message_id(session, "msg-001", "alice::test.local")
+        r2 = await record_message_id(session, "msg-002", "alice::test.local")
         assert r1 is True
         assert r2 is True
 
 
 # ---------------------------------------------------------------------------
-# Unit tests: cleanup_expired_dedup
+# Unit tests: cleanup_expired
 # ---------------------------------------------------------------------------
 
 
-class TestCleanupExpiredDedup:
-    """Unit tests for the cleanup_expired_dedup helper."""
-
-    @pytest.fixture(autouse=True)
-    async def _setup_db(self, tmp_path):
-        self.db = await init_db(str(tmp_path / "dedup.db"))
-        yield
-        await self.db.close()
+class TestCleanupExpired:
+    """Unit tests for the cleanup_expired CRUD function."""
 
     @pytest.mark.asyncio
-    async def test_cleanup_removes_old_entries(self):
-        # Insert an entry with seen_at 10 days ago
-        await self.db.execute(
-            "INSERT INTO seen_message_ids (message_id, from_addr, seen_at) "
-            "VALUES (?, ?, datetime('now', '-10 days'))",
-            ("old-msg", "alice::test.local"),
-        )
-        # Insert a fresh entry
-        await record_message_id(self.db, "new-msg", "alice::test.local")
-        await self.db.commit()
+    async def test_cleanup_removes_old_entries(self, session):
+        from datetime import datetime, timedelta
 
-        deleted = await cleanup_expired_dedup(self.db, max_age_days=7)
+        # Insert an entry with seen_at 10 days ago
+        old_entry = SeenMessageId(
+            message_id="old-msg",
+            from_addr="alice::test.local",
+            seen_at=datetime.utcnow() - timedelta(days=10),
+        )
+        session.add(old_entry)
+        await session.commit()
+
+        # Insert a fresh entry
+        await record_message_id(session, "new-msg", "alice::test.local")
+
+        deleted = await cleanup_expired(session, max_age_days=7)
         assert deleted == 1
 
         # Verify old one is gone, new one remains
-        cursor = await self.db.execute(
-            "SELECT message_id FROM seen_message_ids"
-        )
-        rows = await cursor.fetchall()
-        ids = [row[0] for row in rows]
+        result = await session.execute(select(SeenMessageId))
+        rows = list(result.scalars().all())
+        ids = [row.message_id for row in rows]
         assert "new-msg" in ids
         assert "old-msg" not in ids
 
     @pytest.mark.asyncio
-    async def test_cleanup_returns_zero_when_nothing_expired(self):
-        await record_message_id(self.db, "fresh-msg", "alice::test.local")
-        deleted = await cleanup_expired_dedup(self.db, max_age_days=7)
+    async def test_cleanup_returns_zero_when_nothing_expired(self, session):
+        await record_message_id(session, "fresh-msg", "alice::test.local")
+        deleted = await cleanup_expired(session, max_age_days=7)
         assert deleted == 0
-
-
-# ---------------------------------------------------------------------------
-# Unit tests: migration
-# ---------------------------------------------------------------------------
-
-
-class TestMigration:
-    """Tests for the PRAGMA user_version migration framework."""
-
-    @pytest.mark.asyncio
-    async def test_migration_creates_table(self, tmp_path):
-        db = await init_db(str(tmp_path / "migrate.db"))
-        # Verify table exists by inserting
-        result = await record_message_id(db, "test-id", "alice::test.local")
-        assert result is True
-        # Verify user_version is at latest migration (v2 = expires column)
-        cursor = await db.execute("PRAGMA user_version")
-        row = await cursor.fetchone()
-        assert row[0] >= 1  # At least migration v1 applied
-        await db.close()
-
-    @pytest.mark.asyncio
-    async def test_migration_is_idempotent(self, tmp_path):
-        db_path = str(tmp_path / "migrate.db")
-        # Run init_db twice on same file
-        db1 = await init_db(db_path)
-        await record_message_id(db1, "test-id", "alice::test.local")
-        version1_cursor = await db1.execute("PRAGMA user_version")
-        version1 = (await version1_cursor.fetchone())[0]
-        await db1.close()
-
-        db2 = await init_db(db_path)
-        # Original entry should still exist
-        result = await record_message_id(db2, "test-id", "alice::test.local")
-        assert result is False  # duplicate, data survived
-        # Version unchanged after second init
-        cursor = await db2.execute("PRAGMA user_version")
-        row = await cursor.fetchone()
-        assert row[0] == version1
-        await db2.close()
 
 
 # ---------------------------------------------------------------------------

@@ -1,17 +1,31 @@
-"""GET /agents/{address}/public-key -- public key lookup endpoint.
+"""Agent endpoints: public-key lookup (unauthenticated) and
+agent management (PATCH/DELETE/reactivate, authenticated).
 
-This endpoint is **unauthenticated** by design.  An agent sending its
+Public-key lookup is **unauthenticated** by design -- an agent sending its
 very first message (``handshake.request``) needs the recipient's public
 key for SealedBox encryption *before* it has exchanged credentials.
-Making this public closes the encryption-for-handshake loop.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
+import logging
 
-from uam.relay.database import get_agent_by_address, get_domain_verification
-from uam.relay.models import PublicKeyResponse
+from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from uam.db.crud.agents import (
+    deactivate_agent,
+    get_agent_by_address,
+    reactivate_agent,
+    update_agent,
+)
+from uam.db.crud.domain_verification import get_verification
+from uam.db.session import get_session
+from uam.protocol.crypto import deserialize_verify_key
+from uam.relay.auth import verify_token_http
+from uam.relay.models import AgentResponse, PublicKeyResponse, UpdateAgentRequest
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -20,6 +34,7 @@ router = APIRouter()
 async def get_public_key(
     address: str,
     request: Request,
+    session: AsyncSession = Depends(get_session),
 ) -> PublicKeyResponse:
     """Return the public key for a registered agent.
 
@@ -27,20 +42,144 @@ async def get_public_key(
     This is required for encrypting the first message (handshake.request)
     when the sender has no prior relationship with the recipient.
     """
-    db = request.app.state.db
-
-    target = await get_agent_by_address(db, address)
+    target = await get_agent_by_address(session, address)
     if target is None:
         raise HTTPException(status_code=404, detail=f"Agent not found: {address}")
 
     # Check for Tier 2 domain verification
-    verification = await get_domain_verification(db, address)
+    verification = await get_verification(session, address)
     if verification:
         return PublicKeyResponse(
             address=address,
-            public_key=target["public_key"],
+            public_key=target.public_key,
             tier=2,
-            verified_domain=verification["domain"],
+            verified_domain=verification.domain,
         )
 
-    return PublicKeyResponse(address=address, public_key=target["public_key"])
+    return PublicKeyResponse(address=address, public_key=target.public_key)
+
+
+# ---------------------------------------------------------------------------
+# Helper: convert Agent model to AgentResponse
+# ---------------------------------------------------------------------------
+
+
+def _agent_to_response(agent: object) -> AgentResponse:
+    """Convert a SQLModel Agent to an AgentResponse."""
+    return AgentResponse(
+        address=agent.address,  # type: ignore[union-attr]
+        public_key=agent.public_key,  # type: ignore[union-attr]
+        status=agent.status,  # type: ignore[union-attr]
+        display_name=getattr(agent, "display_name", None),
+        webhook_url=getattr(agent, "webhook_url", None),
+        last_seen=str(agent.last_seen) if getattr(agent, "last_seen", None) else None,  # type: ignore[union-attr]
+        created_at=str(agent.created_at),  # type: ignore[union-attr]
+    )
+
+
+# ---------------------------------------------------------------------------
+# RELAY-08: PATCH /agents/{address} -- update agent fields
+# ---------------------------------------------------------------------------
+
+
+@router.patch("/agents/{address}", response_model=AgentResponse)
+async def patch_agent(
+    address: str,
+    body: UpdateAgentRequest,
+    session: AsyncSession = Depends(get_session),
+    agent: dict = Depends(verify_token_http),
+) -> AgentResponse:
+    """Update agent fields (display_name, contact_card, public_key).
+
+    Requires Bearer token auth.  Agent can only update their own record.
+    If ``public_key`` is provided, it must be a valid Ed25519 key.
+    """
+    if agent["address"] != address:
+        raise HTTPException(
+            status_code=403,
+            detail="Cannot update another agent's record",
+        )
+
+    updates = body.model_dump(exclude_none=True)
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    # Validate public key if provided
+    if "public_key" in updates:
+        try:
+            deserialize_verify_key(updates["public_key"])
+        except Exception:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid Ed25519 public key",
+            )
+
+    updated = await update_agent(session, address, **updates)
+    if updated is None:
+        raise HTTPException(status_code=404, detail=f"Agent not found: {address}")
+
+    return _agent_to_response(updated)
+
+
+# ---------------------------------------------------------------------------
+# RELAY-09: DELETE /agents/{address} -- soft-deactivate agent
+# ---------------------------------------------------------------------------
+
+
+@router.delete("/agents/{address}")
+async def delete_agent(
+    address: str,
+    session: AsyncSession = Depends(get_session),
+    agent: dict = Depends(verify_token_http),
+) -> dict:
+    """Soft-deactivate an agent.
+
+    Requires Bearer token auth.  Agent can only deactivate themselves.
+    """
+    if agent["address"] != address:
+        raise HTTPException(
+            status_code=403,
+            detail="Cannot deactivate another agent",
+        )
+
+    result = await deactivate_agent(session, address)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Agent not found: {address}")
+
+    return {"status": "deactivated", "address": address}
+
+
+# ---------------------------------------------------------------------------
+# RELAY-15: POST /agents/{address}/reactivate -- restore soft-deleted agent
+# ---------------------------------------------------------------------------
+
+
+@router.post("/agents/{address}/reactivate", response_model=AgentResponse)
+async def reactivate_agent_endpoint(
+    address: str,
+    session: AsyncSession = Depends(get_session),
+    agent: dict = Depends(verify_token_http),
+) -> AgentResponse:
+    """Reactivate a soft-deleted agent.
+
+    Requires Bearer token auth.  The token must match the original agent's
+    token (auth does not filter by deleted_at so soft-deleted agents can
+    still authenticate for reactivation).
+    """
+    if agent["address"] != address:
+        raise HTTPException(
+            status_code=403,
+            detail="Cannot reactivate another agent",
+        )
+
+    result = await reactivate_agent(session, address)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Agent not found: {address}")
+
+    if result.status != "active":
+        raise HTTPException(
+            status_code=409,
+            detail="Agent was not deactivated",
+        )
+
+    return _agent_to_response(result)

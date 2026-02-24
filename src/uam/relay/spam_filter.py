@@ -5,7 +5,7 @@ Two-form pattern matching consistent with SDK Phase 8 ContactBook:
 - Domain wildcard: ``*::evil.com``
 
 All lookups are O(1) via in-memory set membership.  Persistence is
-handled through aiosqlite queries against the ``blocklist`` and
+handled through AsyncSession queries against the ``blocklist`` and
 ``allowlist`` tables.
 """
 
@@ -14,7 +14,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import aiosqlite
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import select
+
+from uam.db.models import AllowlistEntry, BlocklistEntry
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +40,7 @@ def _classify_pattern(pattern: str) -> tuple[str, str]:
 
 
 class AllowBlockList:
-    """In-memory allow/block list backed by SQLite persistence.
+    """In-memory allow/block list backed by async DB persistence.
 
     Four sets provide O(1) lookup:
     - ``_blocked_exact``: exact address matches
@@ -80,26 +83,24 @@ class AllowBlockList:
     # Load from DB (startup)
     # ------------------------------------------------------------------
 
-    async def load(self, db: aiosqlite.Connection) -> None:
+    async def load(self, session: AsyncSession) -> None:
         """Load all patterns from blocklist/allowlist tables into memory."""
         self._blocked_exact.clear()
         self._blocked_domains.clear()
         self._allowed_exact.clear()
         self._allowed_domains.clear()
 
-        cursor = await db.execute("SELECT pattern FROM blocklist")
-        rows = await cursor.fetchall()
-        for row in rows:
-            kind, value = _classify_pattern(row[0] if isinstance(row, tuple) else row["pattern"])
+        result = await session.execute(select(BlocklistEntry))
+        for row in result.scalars().all():
+            kind, value = _classify_pattern(row.pattern)
             if kind == "domain":
                 self._blocked_domains.add(value)
             else:
                 self._blocked_exact.add(value)
 
-        cursor = await db.execute("SELECT pattern FROM allowlist")
-        rows = await cursor.fetchall()
-        for row in rows:
-            kind, value = _classify_pattern(row[0] if isinstance(row, tuple) else row["pattern"])
+        result = await session.execute(select(AllowlistEntry))
+        for row in result.scalars().all():
+            kind, value = _classify_pattern(row.pattern)
             if kind == "domain":
                 self._allowed_domains.add(value)
             else:
@@ -120,85 +121,110 @@ class AllowBlockList:
     # ------------------------------------------------------------------
 
     async def add_blocked(
-        self, db: aiosqlite.Connection, pattern: str, reason: str | None = None
+        self, session: AsyncSession, pattern: str, reason: str | None = None
     ) -> None:
         """Add a pattern to the blocklist (DB + in-memory)."""
         kind, value = _classify_pattern(pattern)
-        await db.execute(
-            "INSERT OR IGNORE INTO blocklist (pattern, reason) VALUES (?, ?)",
-            (pattern, reason),
-        )
-        await db.commit()
+        entry = BlocklistEntry(pattern=pattern, reason=reason)
+        session.add(entry)
+        try:
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            # Already exists (unique constraint) -- ignore
+            return
         if kind == "domain":
             self._blocked_domains.add(value)
         else:
             self._blocked_exact.add(value)
         logger.info("Blocked pattern %r (reason: %s)", pattern, reason)
 
-    async def remove_blocked(self, db: aiosqlite.Connection, pattern: str) -> bool:
+    async def remove_blocked(self, session: AsyncSession, pattern: str) -> bool:
         """Remove a pattern from the blocklist. Returns True if it existed."""
         kind, value = _classify_pattern(pattern)
-        cursor = await db.execute(
-            "DELETE FROM blocklist WHERE pattern = ?", (pattern,)
+        result = await session.execute(
+            select(BlocklistEntry).where(BlocklistEntry.pattern == pattern)
         )
-        await db.commit()
-        removed = cursor.rowcount > 0  # type: ignore[operator]
+        entry = result.scalar_one_or_none()
+        if entry is None:
+            return False
+        await session.delete(entry)
+        await session.commit()
         if kind == "domain":
             self._blocked_domains.discard(value)
         else:
             self._blocked_exact.discard(value)
-        if removed:
-            logger.info("Unblocked pattern %r", pattern)
-        return removed
+        logger.info("Unblocked pattern %r", pattern)
+        return True
 
-    async def list_blocked(self, db: aiosqlite.Connection) -> list[dict[str, Any]]:
+    async def list_blocked(self, session: AsyncSession) -> list[dict[str, Any]]:
         """Return all blocklist entries from DB."""
-        cursor = await db.execute(
-            "SELECT id, pattern, reason, created_at FROM blocklist ORDER BY id"
+        result = await session.execute(
+            select(BlocklistEntry).order_by(BlocklistEntry.id)
         )
-        rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
+        rows = result.scalars().all()
+        return [
+            {
+                "id": row.id,
+                "pattern": row.pattern,
+                "reason": row.reason,
+                "created_at": str(row.created_at),
+            }
+            for row in rows
+        ]
 
     # ------------------------------------------------------------------
     # Allowlist CRUD
     # ------------------------------------------------------------------
 
     async def add_allowed(
-        self, db: aiosqlite.Connection, pattern: str, reason: str | None = None
+        self, session: AsyncSession, pattern: str, reason: str | None = None
     ) -> None:
         """Add a pattern to the allowlist (DB + in-memory)."""
         kind, value = _classify_pattern(pattern)
-        await db.execute(
-            "INSERT OR IGNORE INTO allowlist (pattern, reason) VALUES (?, ?)",
-            (pattern, reason),
-        )
-        await db.commit()
+        entry = AllowlistEntry(pattern=pattern, reason=reason)
+        session.add(entry)
+        try:
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            return
         if kind == "domain":
             self._allowed_domains.add(value)
         else:
             self._allowed_exact.add(value)
         logger.info("Allowed pattern %r (reason: %s)", pattern, reason)
 
-    async def remove_allowed(self, db: aiosqlite.Connection, pattern: str) -> bool:
+    async def remove_allowed(self, session: AsyncSession, pattern: str) -> bool:
         """Remove a pattern from the allowlist. Returns True if it existed."""
         kind, value = _classify_pattern(pattern)
-        cursor = await db.execute(
-            "DELETE FROM allowlist WHERE pattern = ?", (pattern,)
+        result = await session.execute(
+            select(AllowlistEntry).where(AllowlistEntry.pattern == pattern)
         )
-        await db.commit()
-        removed = cursor.rowcount > 0  # type: ignore[operator]
+        entry = result.scalar_one_or_none()
+        if entry is None:
+            return False
+        await session.delete(entry)
+        await session.commit()
         if kind == "domain":
             self._allowed_domains.discard(value)
         else:
             self._allowed_exact.discard(value)
-        if removed:
-            logger.info("Removed allow pattern %r", pattern)
-        return removed
+        logger.info("Removed allow pattern %r", pattern)
+        return True
 
-    async def list_allowed(self, db: aiosqlite.Connection) -> list[dict[str, Any]]:
+    async def list_allowed(self, session: AsyncSession) -> list[dict[str, Any]]:
         """Return all allowlist entries from DB."""
-        cursor = await db.execute(
-            "SELECT id, pattern, reason, created_at FROM allowlist ORDER BY id"
+        result = await session.execute(
+            select(AllowlistEntry).order_by(AllowlistEntry.id)
         )
-        rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
+        rows = result.scalars().all()
+        return [
+            {
+                "id": row.id,
+                "pattern": row.pattern,
+                "reason": row.reason,
+                "created_at": str(row.created_at),
+            }
+            for row in rows
+        ]

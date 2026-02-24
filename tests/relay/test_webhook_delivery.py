@@ -139,64 +139,90 @@ class TestWebhookCircuitBreaker:
 # ---------------------------------------------------------------------------
 
 
+def _mock_agent(address: str = "agent::test.local", webhook_url: str | None = "https://example.com/hook", token: str = "test-key"):
+    """Create a mock Agent object with attribute access."""
+    agent = MagicMock()
+    agent.address = address
+    agent.webhook_url = webhook_url
+    agent.token = token
+    return agent
+
+
+def _mock_delivery(delivery_id: int = 1):
+    """Create a mock delivery object."""
+    delivery = MagicMock()
+    delivery.id = delivery_id
+    return delivery
+
+
 class TestWebhookDeliveryServiceTryDeliver:
     """WebhookDeliveryService.try_deliver() -- high-level dispatch tests."""
 
     @pytest.mark.asyncio
     async def test_try_deliver_returns_false_no_webhook(self):
         """Agent without webhook_url returns False."""
-        mock_db = MagicMock()
         cb = WebhookCircuitBreaker()
-        service = WebhookDeliveryService(mock_db, cb)
+        service = WebhookDeliveryService(cb)
 
-        with patch(
-            "uam.relay.webhook.get_agent_with_webhook",
-            new_callable=AsyncMock,
-            return_value=None,
+        with (
+            patch(
+                "uam.relay.webhook.get_agent_by_address",
+                new_callable=AsyncMock,
+                return_value=_mock_agent(webhook_url=None),
+            ),
+            patch("uam.relay.webhook.get_engine", return_value=MagicMock()),
+            patch("uam.relay.webhook.async_session_factory") as mock_factory,
         ):
+            mock_session = AsyncMock()
+            mock_ctx = MagicMock()
+            mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_ctx.__aexit__ = AsyncMock(return_value=None)
+            mock_factory.return_value = mock_ctx
             result = await service.try_deliver("nope::test.local", {"id": "m1"})
         assert result is False
 
     @pytest.mark.asyncio
     async def test_try_deliver_returns_false_circuit_open(self):
         """Open circuit breaker returns False without querying DB."""
-        mock_db = MagicMock()
         cb = WebhookCircuitBreaker()
         addr = "agent::test.local"
         # Open the circuit
         for _ in range(5):
             cb.record_failure(addr)
 
-        service = WebhookDeliveryService(mock_db, cb)
+        service = WebhookDeliveryService(cb)
         result = await service.try_deliver(addr, {"id": "m1"})
         assert result is False
 
     @pytest.mark.asyncio
     async def test_try_deliver_starts_background_task(self):
         """Successful try_deliver creates an asyncio background task."""
-        mock_db = MagicMock()
         cb = WebhookCircuitBreaker()
-        service = WebhookDeliveryService(mock_db, cb)
+        service = WebhookDeliveryService(cb)
 
-        agent_record = {
-            "address": "agent::test.local",
-            "webhook_url": "https://example.com/hook",
-            "token": "test-key",
-        }
+        agent = _mock_agent()
+        delivery = _mock_delivery(delivery_id=1)
 
         with (
             patch(
-                "uam.relay.webhook.get_agent_with_webhook",
+                "uam.relay.webhook.get_agent_by_address",
                 new_callable=AsyncMock,
-                return_value=agent_record,
+                return_value=agent,
             ),
             patch(
-                "uam.relay.webhook.create_webhook_delivery",
+                "uam.relay.webhook.create_delivery",
                 new_callable=AsyncMock,
-                return_value=1,
+                return_value=delivery,
             ),
+            patch("uam.relay.webhook.get_engine", return_value=MagicMock()),
+            patch("uam.relay.webhook.async_session_factory") as mock_factory,
             patch("asyncio.create_task") as mock_create_task,
         ):
+            mock_session = AsyncMock()
+            mock_ctx = MagicMock()
+            mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_ctx.__aexit__ = AsyncMock(return_value=None)
+            mock_factory.return_value = mock_ctx
             mock_task = MagicMock()
             mock_create_task.return_value = mock_task
             result = await service.try_deliver("agent::test.local", {"id": "m1"})
@@ -207,9 +233,8 @@ class TestWebhookDeliveryServiceTryDeliver:
     @pytest.mark.asyncio
     async def test_stop_cancels_active_tasks(self):
         """stop() cancels all active background tasks."""
-        mock_db = MagicMock()
         cb = WebhookCircuitBreaker()
-        service = WebhookDeliveryService(mock_db, cb)
+        service = WebhookDeliveryService(cb)
 
         # Create a mock HTTP client
         service._http_client = AsyncMock()
@@ -236,9 +261,8 @@ class TestDeliverWithRetries:
     @pytest.mark.asyncio
     async def test_retry_stops_on_success(self):
         """Delivery succeeds on attempt 2 -- only 2 attempts made."""
-        mock_db = MagicMock()
         cb = WebhookCircuitBreaker()
-        service = WebhookDeliveryService(mock_db, cb)
+        service = WebhookDeliveryService(cb)
 
         # Mock httpx responses: fail, then succeed
         mock_response_500 = MagicMock()
@@ -257,15 +281,23 @@ class TestDeliverWithRetries:
                 return_value=(True, ""),
             ),
             patch(
-                "uam.relay.webhook.update_webhook_delivery_attempt",
+                "uam.relay.webhook.record_attempt",
                 new_callable=AsyncMock,
             ),
             patch(
-                "uam.relay.webhook.complete_webhook_delivery",
+                "uam.relay.webhook.complete_delivery",
                 new_callable=AsyncMock,
             ) as mock_complete,
+            patch("uam.relay.webhook.get_engine", return_value=MagicMock()),
+            patch("uam.relay.webhook.async_session_factory") as mock_factory,
             patch("asyncio.sleep", new_callable=AsyncMock),
         ):
+            mock_session = AsyncMock()
+            mock_ctx = MagicMock()
+            mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_ctx.__aexit__ = AsyncMock(return_value=None)
+            mock_factory.return_value = mock_ctx
+
             await service._deliver_with_retries(
                 "agent::test.local",
                 {"id": "msg1"},
@@ -277,14 +309,16 @@ class TestDeliverWithRetries:
         # Should have called post exactly 2 times
         assert mock_client.post.call_count == 2
         # Final completion should be success
-        mock_complete.assert_called_once_with(mock_db, 1, "succeeded")
+        mock_complete.assert_called_once()
+        args = mock_complete.call_args[0]
+        assert args[1] == 1  # delivery_id
+        assert args[2] == "succeeded"  # status
 
     @pytest.mark.asyncio
     async def test_retry_stops_on_non_retriable_4xx(self):
         """Non-retriable 400 stops retries immediately (1 attempt)."""
-        mock_db = MagicMock()
         cb = WebhookCircuitBreaker()
-        service = WebhookDeliveryService(mock_db, cb)
+        service = WebhookDeliveryService(cb)
 
         mock_response = MagicMock()
         mock_response.status_code = 400
@@ -300,15 +334,23 @@ class TestDeliverWithRetries:
                 return_value=(True, ""),
             ),
             patch(
-                "uam.relay.webhook.update_webhook_delivery_attempt",
+                "uam.relay.webhook.record_attempt",
                 new_callable=AsyncMock,
             ),
             patch(
-                "uam.relay.webhook.complete_webhook_delivery",
+                "uam.relay.webhook.complete_delivery",
                 new_callable=AsyncMock,
             ) as mock_complete,
+            patch("uam.relay.webhook.get_engine", return_value=MagicMock()),
+            patch("uam.relay.webhook.async_session_factory") as mock_factory,
             patch("asyncio.sleep", new_callable=AsyncMock),
         ):
+            mock_session = AsyncMock()
+            mock_ctx = MagicMock()
+            mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_ctx.__aexit__ = AsyncMock(return_value=None)
+            mock_factory.return_value = mock_ctx
+
             await service._deliver_with_retries(
                 "agent::test.local",
                 {"id": "msg1"},
@@ -326,9 +368,8 @@ class TestDeliverWithRetries:
     @pytest.mark.asyncio
     async def test_408_and_429_are_retriable(self):
         """408 (timeout) and 429 (rate-limited) are retriable status codes."""
-        mock_db = MagicMock()
         cb = WebhookCircuitBreaker()
-        service = WebhookDeliveryService(mock_db, cb)
+        service = WebhookDeliveryService(cb)
 
         mock_408 = MagicMock()
         mock_408.status_code = 408
@@ -348,15 +389,23 @@ class TestDeliverWithRetries:
                 return_value=(True, ""),
             ),
             patch(
-                "uam.relay.webhook.update_webhook_delivery_attempt",
+                "uam.relay.webhook.record_attempt",
                 new_callable=AsyncMock,
             ),
             patch(
-                "uam.relay.webhook.complete_webhook_delivery",
+                "uam.relay.webhook.complete_delivery",
                 new_callable=AsyncMock,
             ) as mock_complete,
+            patch("uam.relay.webhook.get_engine", return_value=MagicMock()),
+            patch("uam.relay.webhook.async_session_factory") as mock_factory,
             patch("asyncio.sleep", new_callable=AsyncMock),
         ):
+            mock_session = AsyncMock()
+            mock_ctx = MagicMock()
+            mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_ctx.__aexit__ = AsyncMock(return_value=None)
+            mock_factory.return_value = mock_ctx
+
             await service._deliver_with_retries(
                 "agent::test.local",
                 {"id": "msg1"},
@@ -367,14 +416,16 @@ class TestDeliverWithRetries:
 
         # 408, 429, 200 = 3 attempts
         assert mock_client.post.call_count == 3
-        mock_complete.assert_called_once_with(mock_db, 1, "succeeded")
+        mock_complete.assert_called_once()
+        args = mock_complete.call_args[0]
+        assert args[1] == 1  # delivery_id
+        assert args[2] == "succeeded"  # status
 
     @pytest.mark.asyncio
     async def test_all_retries_exhausted(self):
         """All 5 retries fail with 500 -- circuit breaker records failure."""
-        mock_db = MagicMock()
         cb = WebhookCircuitBreaker()
-        service = WebhookDeliveryService(mock_db, cb)
+        service = WebhookDeliveryService(cb)
 
         mock_response = MagicMock()
         mock_response.status_code = 500
@@ -390,15 +441,23 @@ class TestDeliverWithRetries:
                 return_value=(True, ""),
             ),
             patch(
-                "uam.relay.webhook.update_webhook_delivery_attempt",
+                "uam.relay.webhook.record_attempt",
                 new_callable=AsyncMock,
             ),
             patch(
-                "uam.relay.webhook.complete_webhook_delivery",
+                "uam.relay.webhook.complete_delivery",
                 new_callable=AsyncMock,
             ) as mock_complete,
+            patch("uam.relay.webhook.get_engine", return_value=MagicMock()),
+            patch("uam.relay.webhook.async_session_factory") as mock_factory,
             patch("asyncio.sleep", new_callable=AsyncMock),
         ):
+            mock_session = AsyncMock()
+            mock_ctx = MagicMock()
+            mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_ctx.__aexit__ = AsyncMock(return_value=None)
+            mock_factory.return_value = mock_ctx
+
             await service._deliver_with_retries(
                 "agent::test.local",
                 {"id": "msg1"},

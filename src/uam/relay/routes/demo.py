@@ -13,8 +13,12 @@ from __future__ import annotations
 import json
 import logging
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from uam.db.crud.agents import create_agent, get_agent_by_address
+from uam.db.crud.messages import get_inbox, mark_delivered, store_message
+from uam.db.session import get_session
 from uam.protocol import (
     MessageType,
     create_envelope,
@@ -25,13 +29,6 @@ from uam.protocol import (
 from uam.protocol.crypto import (
     deserialize_signing_key,
     deserialize_verify_key,
-)
-from uam.relay.database import (
-    get_agent_by_address,
-    get_stored_messages,
-    mark_messages_delivered,
-    register_agent,
-    store_message,
 )
 from uam.relay.models import (
     CreateSessionResponse,
@@ -46,14 +43,13 @@ router = APIRouter()
 
 
 @router.post("/demo/session", response_model=CreateSessionResponse)
-async def create_demo_session(request: Request) -> CreateSessionResponse:
+async def create_demo_session(request: Request, db_session: AsyncSession = Depends(get_session)) -> CreateSessionResponse:
     """Create an ephemeral demo agent with a real Ed25519 keypair.
 
     The keypair is held server-side; the browser only receives a session
     token and the agent address.
     """
     session_mgr = request.app.state.demo_sessions
-    db = request.app.state.db
     settings = request.app.state.settings
 
     # Rate limit session creation (reuse register limiter -- 5/min per IP)
@@ -65,20 +61,19 @@ async def create_demo_session(request: Request) -> CreateSessionResponse:
 
     # Register the ephemeral agent in the relay database so other agents
     # can look up its public key and route messages to it.
-    await register_agent(db, session.address, session.verify_key_b64, session.token)
+    await create_agent(db_session, session.address, session.verify_key_b64, session.token)
 
     return CreateSessionResponse(session_id=session.session_id, address=session.address)
 
 
 @router.post("/demo/send", response_model=DemoSendResponse)
-async def demo_send(body: DemoSendRequest, request: Request) -> DemoSendResponse:
+async def demo_send(body: DemoSendRequest, request: Request, db_session: AsyncSession = Depends(get_session)) -> DemoSendResponse:
     """Send a message from the demo session to any registered agent.
 
     The relay signs and encrypts the envelope on behalf of the ephemeral
     agent using the server-held private key.
     """
     session_mgr = request.app.state.demo_sessions
-    db = request.app.state.db
     manager = request.app.state.manager
 
     # Validate session
@@ -91,13 +86,13 @@ async def demo_send(body: DemoSendRequest, request: Request) -> DemoSendResponse
         raise HTTPException(status_code=429, detail="Send rate limit exceeded")
 
     # Resolve recipient public key
-    recipient = await get_agent_by_address(db, body.to_address)
+    recipient = await get_agent_by_address(db_session, body.to_address)
     if recipient is None:
         raise HTTPException(status_code=404, detail="Recipient not found")
 
     # Deserialize keys
     signing_key = deserialize_signing_key(session.signing_key_b64)
-    recipient_vk = deserialize_verify_key(recipient["public_key"])
+    recipient_vk = deserialize_verify_key(recipient.public_key)
 
     # Create signed, encrypted envelope
     envelope = create_envelope(
@@ -114,7 +109,7 @@ async def demo_send(body: DemoSendRequest, request: Request) -> DemoSendResponse
     # Route: try live delivery first, fall back to offline storage
     delivered = await manager.send_to(body.to_address, wire)
     if not delivered:
-        await store_message(db, session.address, body.to_address, json.dumps(wire))
+        await store_message(db_session, envelope.message_id, session.address, body.to_address, json.dumps(wire))
 
     return DemoSendResponse(message_id=envelope.message_id)
 
@@ -123,6 +118,7 @@ async def demo_send(body: DemoSendRequest, request: Request) -> DemoSendResponse
 async def demo_inbox(
     request: Request,
     session_id: str = Query(..., description="Demo session ID"),
+    db_session: AsyncSession = Depends(get_session),
 ) -> DemoInboxResponse:
     """Return decrypted plaintext messages for the demo session.
 
@@ -130,7 +126,6 @@ async def demo_inbox(
     key, so the browser receives plaintext content.
     """
     session_mgr = request.app.state.demo_sessions
-    db = request.app.state.db
 
     # Validate session
     session = await session_mgr.get(session_id)
@@ -138,7 +133,7 @@ async def demo_inbox(
         raise HTTPException(status_code=404, detail="Session not found or expired")
 
     # Fetch undelivered messages addressed to this ephemeral agent
-    stored = await get_stored_messages(db, session.address, limit=50)
+    stored = await get_inbox(db_session, session.address, limit=50)
 
     signing_key = deserialize_signing_key(session.signing_key_b64)
 
@@ -147,32 +142,32 @@ async def demo_inbox(
 
     for msg in stored:
         try:
-            envelope = from_wire_dict(msg["envelope"])
+            envelope = from_wire_dict(json.loads(msg.envelope))
         except Exception:
-            logger.debug("Skipping unparseable envelope id=%s", msg["id"])
-            ids_to_mark.append(msg["id"])
+            logger.debug("Skipping unparseable envelope id=%s", msg.id)
+            ids_to_mark.append(msg.id)
             continue
 
         # Filter out non-message types (handshakes, receipts, etc.)
         if envelope.type != MessageType.MESSAGE:
-            ids_to_mark.append(msg["id"])
+            ids_to_mark.append(msg.id)
             continue
 
         # Resolve sender public key for decryption
-        sender = await get_agent_by_address(db, envelope.from_address)
+        sender = await get_agent_by_address(db_session, envelope.from_address)
         if sender is None:
             logger.debug("Skipping message from unknown sender %s", envelope.from_address)
-            ids_to_mark.append(msg["id"])
+            ids_to_mark.append(msg.id)
             continue
 
         # Decrypt the payload using the ephemeral agent's private key
         try:
-            sender_vk = deserialize_verify_key(sender["public_key"])
+            sender_vk = deserialize_verify_key(sender.public_key)
             plaintext = decrypt_payload(envelope.payload, signing_key, sender_vk)
             content = plaintext.decode("utf-8")
         except Exception:
-            logger.debug("Failed to decrypt message id=%s", msg["id"])
-            ids_to_mark.append(msg["id"])
+            logger.debug("Failed to decrypt message id=%s", msg.id)
+            ids_to_mark.append(msg.id)
             continue
 
         messages.append({
@@ -181,10 +176,10 @@ async def demo_inbox(
             "timestamp": envelope.timestamp,
             "message_id": envelope.message_id,
         })
-        ids_to_mark.append(msg["id"])
+        ids_to_mark.append(msg.id)
 
     # Mark all processed messages as delivered
     if ids_to_mark:
-        await mark_messages_delivered(db, ids_to_mark)
+        await mark_delivered(db_session, ids_to_mark)
 
     return DemoInboxResponse(messages=messages)

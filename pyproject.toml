@@ -36,9 +36,21 @@ uam-mcp = "uam.mcp.server:main"
 chain = [
     "web3[async]>=7.0",
 ]
+db = [
+    "sqlmodel>=0.0.22",
+    "sqlalchemy[asyncio]>=2.0.0",
+    "asyncpg>=0.30.0",
+    "aiosqlite>=0.21",
+    "alembic>=1.14.0",
+]
 relay = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.34",
+    "sqlmodel>=0.0.22",
+    "sqlalchemy[asyncio]>=2.0.0",
+    "asyncpg>=0.30.0",
+    "aiosqlite>=0.21",
+    "alembic>=1.14.0",
 ]
 mcp = [
     "mcp>=1.0",
@@ -61,6 +73,11 @@ all = [
     "web3[async]>=7.0",
     "mcp>=1.0",
     "litellm>=1.30",
+    "sqlmodel>=0.0.22",
+    "sqlalchemy[asyncio]>=2.0.0",
+    "asyncpg>=0.30.0",
+    "aiosqlite>=0.21",
+    "alembic>=1.14.0",
     "mkdocs-material>=9.5",
     "mkdocstrings[python]>=0.27",
     "mkdocs-click>=0.8",

@@ -194,6 +194,130 @@ class PresenceResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Agent management models (RELAY-08, RELAY-09, RELAY-15)
+# ---------------------------------------------------------------------------
+
+
+class UpdateAgentRequest(BaseModel):
+    display_name: str | None = None
+    contact_card: dict[str, Any] | None = None
+    public_key: str | None = None
+
+
+class AgentResponse(BaseModel):
+    address: str
+    public_key: str
+    status: str
+    display_name: str | None = None
+    webhook_url: str | None = None
+    last_seen: str | None = None
+    created_at: str
+
+
+# ---------------------------------------------------------------------------
+# Thread / receipt models (RELAY-10, RELAY-16)
+# ---------------------------------------------------------------------------
+
+
+class ThreadResponse(BaseModel):
+    thread_id: str
+    messages: list[dict[str, Any]]
+    count: int
+
+
+class ReceiptRequest(BaseModel):
+    type: str  # e.g. "receipt.read"
+    timestamp: str | None = None
+
+
+class ReceiptResponse(BaseModel):
+    status: str
+    message_id: str
+
+
+# ---------------------------------------------------------------------------
+# Handshake models (RELAY-11)
+# ---------------------------------------------------------------------------
+
+
+class HandshakeSendRequest(BaseModel):
+    to_address: str
+    contact_card: dict[str, Any] | None = None
+
+
+class HandshakeResponse(BaseModel):
+    id: int
+    status: str
+    from_addr: str
+    to_addr: str
+
+
+class HandshakeRespondRequest(BaseModel):
+    response: str  # "approved" | "denied"
+
+
+class HandshakeListResponse(BaseModel):
+    handshakes: list[HandshakeResponse]
+    count: int
+
+
+# ---------------------------------------------------------------------------
+# Expanded admin models (RELAY-12)
+# ---------------------------------------------------------------------------
+
+
+class AdminAgentResponse(BaseModel):
+    address: str
+    public_key: str
+    status: str
+    display_name: str | None = None
+    webhook_url: str | None = None
+    last_seen: str | None = None
+    created_at: str
+    updated_at: str
+    deleted_at: str | None = None
+
+
+class AdminAgentListResponse(BaseModel):
+    agents: list[AdminAgentResponse]
+    count: int
+
+
+class AuditLogEntry(BaseModel):
+    id: int
+    action: str
+    entity_type: str
+    entity_id: str
+    actor_address: str | None = None
+    timestamp: str
+    details: dict[str, Any] | None = None
+    ip_address: str | None = None
+
+
+class AuditLogResponse(BaseModel):
+    entries: list[AuditLogEntry]
+    count: int
+
+
+class PurgeExpiredResponse(BaseModel):
+    purged: int
+
+
+class AdminHealthResponse(BaseModel):
+    status: str  # "healthy" or "degraded"
+    db_ok: bool
+    queue_depth: int
+    ws_connections: int
+    uptime_seconds: float
+    migration_version: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Federation models (FED-01)
+# ---------------------------------------------------------------------------
+
+
 class FederationDeliverRequest(BaseModel):
     envelope: dict[str, Any]
     via: list[str] = []

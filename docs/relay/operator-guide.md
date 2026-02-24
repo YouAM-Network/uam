@@ -13,8 +13,9 @@ After following this guide, you will have a running relay that agents can regist
 | Disk | 100 MB + DB growth | 1 GB |
 | CPU | 1 core | 2 cores |
 | Network | Public IP or reverse proxy | Static IP with DNS |
+| Database | SQLite (built-in) | PostgreSQL 14+ |
 
-The relay uses SQLite for storage, so no external database is required. Disk usage grows with the number of registered agents and stored messages.
+The relay supports two database backends: **SQLite** (zero-config, built-in) and **PostgreSQL** (recommended for production). SQLite is the default and requires no external services. See the [Database](#database) section for details.
 
 ## Quick Start
 
@@ -30,9 +31,10 @@ PYTHONPATH=src uvicorn uam.relay.app:create_app --factory --host 0.0.0.0 --port 
 
 The relay will:
 
-1. Create a SQLite database at `./relay.db` (configurable via `UAM_DB_PATH`)
-2. Generate a relay keypair at `./relay_key.pem` (configurable via `UAM_RELAY_KEY_PATH`)
-3. Start accepting connections on port 8000
+1. Create a SQLite database at `./relay.db` (or connect to PostgreSQL if `DATABASE_URL` is set)
+2. Run any pending database migrations via Alembic
+3. Generate a relay keypair at `./relay_key.pem` (configurable via `UAM_RELAY_KEY_PATH`)
+4. Start accepting connections on port 8000
 
 ### Option 2: From source
 
@@ -83,7 +85,8 @@ Key settings to configure for production:
 | `UAM_RELAY_HTTP_URL` | Full public URL (e.g., `https://relay.example.com`) |
 | `UAM_RELAY_WS_URL` | WebSocket URL (e.g., `wss://relay.example.com/ws`) |
 | `UAM_ADMIN_API_KEY` | Enables admin endpoints for blocklist/allowlist management |
-| `UAM_DB_PATH` | Path to SQLite database file |
+| `DATABASE_URL` | Database connection URL (PostgreSQL or SQLite) |
+| `UAM_DB_PATH` | SQLite database path (fallback when `DATABASE_URL` is not set) |
 
 ## Docker Deployment
 
@@ -122,24 +125,78 @@ The script checks prerequisites, creates a `.env` file from the template, and st
 
 ## Database
 
-The relay uses SQLite for all persistent storage. The database file is created automatically on first startup.
+The relay supports two database backends:
 
-### Location
+- **SQLite** (default) — zero-config, single-file, ideal for development and low-traffic deployments
+- **PostgreSQL** — recommended for production, supports connection pooling and concurrent writes
 
-Controlled by `UAM_DB_PATH` (default: `relay.db` in the working directory).
+### Choosing a backend
+
+Set `DATABASE_URL` to select the backend:
 
 ```bash
-# Custom database location
-UAM_DB_PATH=/var/lib/uam/relay.db uvicorn uam.relay.app:create_app --factory
+# PostgreSQL (recommended for production)
+DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/uam_relay
+
+# SQLite (default if DATABASE_URL is not set)
+DATABASE_URL=sqlite+aiosqlite:///path/to/relay.db
+
+# Or omit DATABASE_URL entirely — the relay constructs a SQLite URL from UAM_DB_PATH
+UAM_DB_PATH=/var/lib/uam/relay.db
 ```
+
+!!! tip "PostgreSQL URL format"
+    If your hosting provider gives you a URL starting with `postgres://`, the relay automatically rewrites it to `postgresql+asyncpg://` for SQLAlchemy compatibility.
+
+### Connection pooling (PostgreSQL)
+
+PostgreSQL connections are managed by an async connection pool. Tune via environment variables:
+
+```bash
+DB_POOL_SIZE=10       # Persistent connections (default: 5)
+DB_MAX_OVERFLOW=20    # Burst connections (default: 10)
+DB_POOL_TIMEOUT=30    # Wait timeout in seconds (default: 30)
+DB_POOL_RECYCLE=1800  # Recycle connections after seconds (default: 1800)
+```
+
+SQLite uses `NullPool`/`StaticPool` and ignores these settings.
 
 ### Migrations
 
-Database schema migrations run automatically on startup. The relay checks the current schema version and applies any pending migrations before accepting connections.
+The relay uses [Alembic](https://alembic.sqlalchemy.org/) for database migrations. Migrations run **automatically on startup** — the relay applies any pending migrations before accepting connections.
+
+To check the current migration version:
+
+```bash
+# Via the admin health endpoint
+curl http://localhost:8000/admin/health -H "X-Admin-Key: your-key"
+# Returns: {"migration_version": "abc123", ...}
+
+# Or via the Alembic CLI
+cd uam && alembic current
+```
+
+To manually run migrations (e.g., during troubleshooting):
+
+```bash
+# Apply all pending migrations
+DATABASE_URL=postgresql+asyncpg://... alembic upgrade head
+
+# Downgrade one step
+DATABASE_URL=postgresql+asyncpg://... alembic downgrade -1
+```
+
+### SQLite configuration
+
+When using SQLite, the relay automatically enables:
+
+- **WAL mode** — allows concurrent readers while writing
+- **busy_timeout=5000** — waits up to 5 seconds for database locks instead of failing immediately
+- **pool_pre_ping=True** — detects stale connections before use
 
 ### Backup
 
-Since the database is a single SQLite file, backup is straightforward:
+**SQLite:**
 
 ```bash
 # Hot backup using SQLite's built-in backup
@@ -148,6 +205,23 @@ sqlite3 /path/to/relay.db ".backup /path/to/backup.db"
 # Or simply copy (stop the relay first for consistency)
 cp /path/to/relay.db /path/to/relay.db.bak
 ```
+
+**PostgreSQL:**
+
+```bash
+pg_dump -Fc uam_relay > uam_relay_backup.dump
+
+# Restore
+pg_restore -d uam_relay uam_relay_backup.dump
+```
+
+### Message retention
+
+The relay runs a background retention worker that automatically purges old messages:
+
+- **Sweep interval:** Every 5 minutes, expired messages (undelivered for 5+ minutes) are marked expired
+- **Purge interval:** Every hour, messages older than `MESSAGE_RETENTION_DAYS` (default: 30) are permanently deleted
+- Set `MESSAGE_RETENTION_DAYS=0` to disable purging
 
 ## TLS / HTTPS
 
@@ -207,18 +281,48 @@ web: PYTHONPATH=src uvicorn uam.relay.app:create_app --factory --host 0.0.0.0 --
 
 ## Health Check
 
-The relay exposes a health endpoint at `GET /health`:
+The relay exposes two health endpoints:
+
+### Basic health (`GET /health`)
+
+No authentication required. Use for load balancer and uptime checks.
 
 ```bash
 curl http://localhost:8000/health
-# {"status":"ok"}
+# {"status": "ok", "agents_online": 5, "version": "0.1.0"}
 ```
 
-Use this for:
+### Admin health (`GET /admin/health`)
 
-- Load balancer health checks
-- Docker HEALTHCHECK instructions
+Requires admin key. Returns comprehensive diagnostics.
+
+```bash
+curl http://localhost:8000/admin/health -H "X-Admin-Key: your-key"
+# {
+#   "status": "healthy",
+#   "db_ok": true,
+#   "queue_depth": 12,
+#   "ws_connections": 5,
+#   "uptime_seconds": 3600.5,
+#   "migration_version": "abc123def456"
+# }
+```
+
+| Field | Description |
+|-------|-------------|
+| `status` | `healthy` or `degraded` (degraded when DB is unreachable) |
+| `db_ok` | Database connectivity check |
+| `queue_depth` | Number of queued (undelivered) messages |
+| `ws_connections` | Active WebSocket connections |
+| `uptime_seconds` | Seconds since relay startup |
+| `migration_version` | Current Alembic migration revision |
+
+Use these for:
+
+- Load balancer health checks (basic endpoint)
+- Docker HEALTHCHECK instructions (basic endpoint)
 - Uptime monitoring (Uptime Robot, Pingdom, etc.)
+- Operational dashboards and alerting (admin endpoint)
 
 ## Admin API
 
@@ -260,6 +364,34 @@ curl -X PUT http://localhost:8000/api/v1/admin/reputation/agent::example.com \
   -H "X-Admin-Key: your-secret-key" \
   -H "Content-Type: application/json" \
   -d '{"score": 80}'
+```
+
+### Agent Management
+
+```bash
+# List all agents (including soft-deleted)
+curl http://localhost:8000/api/v1/admin/agents \
+  -H "X-Admin-Key: your-secret-key"
+
+# Suspend an agent (soft delete)
+curl -X POST http://localhost:8000/api/v1/admin/agents/spammer::evil.com/suspend \
+  -H "X-Admin-Key: your-secret-key"
+```
+
+### Audit Log
+
+```bash
+# View recent audit entries
+curl "http://localhost:8000/api/v1/admin/audit?limit=50" \
+  -H "X-Admin-Key: your-secret-key"
+```
+
+### Message Purge
+
+```bash
+# Purge expired messages on demand
+curl -X DELETE http://localhost:8000/api/v1/admin/messages/expired \
+  -H "X-Admin-Key: your-secret-key"
 ```
 
 ### Relay Blocklist (Federation)
@@ -309,17 +441,12 @@ Enable `UAM_DEBUG=true` for maximum verbosity -- all `uam.*` loggers set to DEBU
 
 ## Upgrading
 
-1. Stop the relay (or perform rolling restart if behind a load balancer)
-2. Update the package: `pip install --upgrade youam[relay]`
-3. Restart the relay
+1. **Backup your database** (see [Backup](#backup) above)
+2. Stop the relay (or perform rolling restart if behind a load balancer)
+3. Update the package: `pip install --upgrade youam[relay]`
+4. Restart the relay
 
-Database migrations run automatically on startup. No manual migration steps are required.
-
-### Backup before upgrading
-
-```bash
-sqlite3 /path/to/relay.db ".backup /path/to/relay.db.pre-upgrade"
-```
+Alembic migrations run automatically on startup. The relay applies any pending schema changes before accepting connections. No manual migration steps are required.
 
 ## Federation
 
@@ -352,8 +479,10 @@ Federation allows your relay to exchange messages with other UAM relays. It is e
 
 ### Database errors
 
-- **Locked database:** SQLite allows one writer at a time. Under high load, consider deploying multiple relay instances behind a load balancer with separate databases, connected via federation.
-- **Disk full:** Monitor `UAM_DB_PATH` disk usage. The dedup and expired message sweeps run automatically but may not keep up under extreme load.
+- **Locked database (SQLite):** SQLite allows one writer at a time. The relay enables WAL mode and busy_timeout to mitigate this. Under sustained high load, switch to PostgreSQL via `DATABASE_URL`.
+- **Connection pool exhausted (PostgreSQL):** Increase `DB_POOL_SIZE` and `DB_MAX_OVERFLOW`, or check for connection leaks.
+- **Transient errors:** The relay includes automatic retry logic with exponential backoff for transient database errors (connection refused, deadlock, timeout). Check logs for `WARNING` entries indicating retried operations.
+- **Disk full:** Monitor database disk usage. The retention worker automatically purges old messages based on `MESSAGE_RETENTION_DAYS`.
 
 ---
 

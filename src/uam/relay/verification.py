@@ -21,11 +21,13 @@ import httpx
 
 from uam.protocol.address import parse_address
 
-from uam.relay.database import (
+from uam.db.crud.domain_verification import (
+    list_expired,
     downgrade_verification,
-    get_expired_verifications,
     update_verification_timestamp,
 )
+from uam.db.session import async_session_factory
+from uam.db.engine import get_engine
 
 logger = logging.getLogger(__name__)
 
@@ -212,32 +214,35 @@ async def reverification_loop(app: object) -> None:
     try:
         while True:
             await asyncio.sleep(3600)  # check every hour
-            db = app.state.db  # type: ignore[union-attr]
-            expired = await get_expired_verifications(db)
-            for verification in expired:
+            factory = async_session_factory(get_engine())
+            async with factory() as session:
+                expired = await list_expired(session)
+            for v in expired:
                 success, _method, detail = await verify_domain_ownership(
-                    verification["domain"],
-                    verification["public_key"],
-                    verification["agent_address"],
+                    v.domain,
+                    v.public_key,
+                    v.agent_address,
                 )
                 if success:
-                    await update_verification_timestamp(db, verification["id"])
+                    async with factory() as session:
+                        await update_verification_timestamp(session, v.id)
                     logger.info(
                         "Re-verification succeeded for %s on %s",
-                        verification["agent_address"],
-                        verification["domain"],
+                        v.agent_address,
+                        v.domain,
                     )
                 else:
-                    await downgrade_verification(db, verification["id"])
+                    async with factory() as session:
+                        await downgrade_verification(session, v.id)
                     # Downgrade reputation back to default (SPAM-02)
                     reputation_manager = app.state.reputation_manager  # type: ignore[union-attr]
                     await reputation_manager.set_score(
-                        verification["agent_address"], 30
+                        v.agent_address, 30
                     )
                     logger.warning(
                         "Re-verification failed for %s on %s (%s), downgraded to Tier 1",
-                        verification["agent_address"],
-                        verification["domain"],
+                        v.agent_address,
+                        v.domain,
                         detail,
                     )
     except asyncio.CancelledError:

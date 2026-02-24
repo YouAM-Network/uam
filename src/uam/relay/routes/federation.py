@@ -11,8 +11,14 @@ import logging
 from datetime import datetime, timezone
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from uam.db.crud.agents import get_agent_by_address
+from uam.db.crud.dedup import record_message_id
+from uam.db.crud.federation import get_known_relay, log_federation, upsert_known_relay
+from uam.db.crud.messages import store_message
+from uam.db.session import get_session
 from uam.protocol import (
     InvalidEnvelopeError,
     SignatureVerificationError,
@@ -20,14 +26,6 @@ from uam.protocol import (
     from_wire_dict,
     serialize_verify_key,
     verify_envelope,
-)
-from uam.relay.database import (
-    get_agent_by_address,
-    get_known_relay,
-    log_federation,
-    record_message_id,
-    store_message,
-    upsert_known_relay,
 )
 from uam.relay.models import (
     FederationDeliverRequest,
@@ -48,6 +46,7 @@ well_known_router = APIRouter()
 async def federation_deliver(
     body: FederationDeliverRequest,
     request: Request,
+    session: AsyncSession = Depends(get_session),
 ) -> FederationDeliverResponse:
     """Accept an inbound federated envelope from a remote relay.
 
@@ -63,7 +62,6 @@ async def federation_deliver(
     9.  Deliver (WebSocket > webhook > store)
     10. Log to federation_log
     """
-    db = request.app.state.db
     manager = request.app.state.manager
     settings = request.app.state.settings
 
@@ -82,7 +80,7 @@ async def federation_deliver(
     relay_blocklist = getattr(request.app.state, "relay_blocklist", None)
     if relay_blocklist and relay_blocklist.is_blocked(from_relay):
         envelope_msg_id = envelope_dict.get("message_id", "")
-        await log_federation(db, envelope_msg_id, from_relay, settings.relay_domain, "inbound", hop_count, "rejected", "blocklisted")
+        await log_federation(session, envelope_msg_id, from_relay, settings.relay_domain, "inbound", hop_count, "rejected", "blocklisted")
         raise HTTPException(status_code=403, detail="Source relay is blocked")
 
     # Relay allowlist check (FED-07) -- sets skip flag for reputation-based limits
@@ -162,7 +160,7 @@ async def federation_deliver(
             "from_relay": body.from_relay,
         }
 
-        relay_public_key = await _get_relay_public_key(db, from_relay)
+        relay_public_key = await _get_relay_public_key(session, from_relay)
 
         sig_valid = False
         if relay_public_key:
@@ -172,7 +170,7 @@ async def federation_deliver(
 
         # Key rotation retry: re-discover and try once more
         if not sig_valid:
-            fresh_key = await _rediscover_relay_key(db, from_relay)
+            fresh_key = await _rediscover_relay_key(session, from_relay)
             if fresh_key and fresh_key != relay_public_key:
                 sig_valid = verify_federation_signature(
                     verify_dict, signature_header, fresh_key
@@ -204,10 +202,10 @@ async def federation_deliver(
                 ) from exc
         else:
             # Try looking up the sender locally (if registered on this relay)
-            sender_agent = await get_agent_by_address(db, envelope.from_address)
+            sender_agent = await get_agent_by_address(session, envelope.from_address)
             if sender_agent:
                 try:
-                    sender_vk = deserialize_verify_key(sender_agent["public_key"])
+                    sender_vk = deserialize_verify_key(sender_agent.public_key)
                     verify_envelope(envelope, sender_vk)
                 except SignatureVerificationError as exc:
                     raise HTTPException(
@@ -224,7 +222,7 @@ async def federation_deliver(
                 )
 
         # ---- Step 8: Dedup check ----
-        is_new = await record_message_id(db, envelope.message_id, envelope.from_address)
+        is_new = await record_message_id(session, envelope.message_id, envelope.from_address, commit=False)
         if not is_new:
             return FederationDeliverResponse(status="duplicate", detail="Message already delivered")
 
@@ -234,40 +232,53 @@ async def federation_deliver(
             await relay_reputation.record_failure(from_relay, "validation_error")
         raise
 
-    # ---- Step 9: Deliver (WebSocket > webhook > store) ----
-    delivered = await manager.send_to(envelope.to_address, envelope_dict)
-    delivery_method = "websocket" if delivered else None
+    # --- Transaction-wrapped DB section (RES-01) ---
+    # dedup (flushed above) + store + federation log in a single commit.
+    try:
+        # ---- Step 9: Deliver (WebSocket > webhook > store) ----
+        delivered = await manager.send_to(envelope.to_address, envelope_dict)
+        delivery_method = "websocket" if delivered else None
 
-    if not delivered:
-        # Try webhook
-        webhook_service = request.app.state.webhook_service
-        webhook_initiated = await webhook_service.try_deliver(
-            envelope.to_address, envelope_dict
+        if not delivered:
+            # Try webhook
+            webhook_service = request.app.state.webhook_service
+            webhook_initiated = await webhook_service.try_deliver(
+                envelope.to_address, envelope_dict
+            )
+            if webhook_initiated:
+                delivery_method = "webhook"
+                delivered = True
+
+        if delivery_method is None:
+            # Store for later pickup
+            await store_message(
+                session,
+                envelope.message_id,
+                envelope.from_address,
+                envelope.to_address,
+                json.dumps(envelope_dict),
+                commit=False,
+            )
+            delivery_method = "stored"
+
+        # ---- Step 10: Log to federation_log ----
+        await log_federation(
+            session,
+            envelope.message_id,
+            from_relay,
+            settings.relay_domain,
+            "inbound",
+            hop_count,
+            "delivered",
+            commit=False,
         )
-        if webhook_initiated:
-            delivery_method = "webhook"
-            delivered = True
 
-    if delivery_method is None:
-        # Store for later pickup
-        await store_message(
-            db,
-            envelope.from_address,
-            envelope.to_address,
-            json.dumps(envelope_dict),
-        )
-        delivery_method = "stored"
+        # Single commit for dedup + store + federation log
+        await session.commit()
 
-    # ---- Step 10: Log to federation_log ----
-    await log_federation(
-        db,
-        envelope.message_id,
-        from_relay,
-        settings.relay_domain,
-        "inbound",
-        hop_count,
-        "delivered",
-    )
+    except Exception:
+        await session.rollback()
+        raise
 
     # Update relay reputation on success (FED-08)
     if relay_reputation:
@@ -297,15 +308,15 @@ async def well_known_relay(request: Request) -> WellKnownRelayResponse:
 # ------------------------------------------------------------------
 
 
-async def _get_relay_public_key(db, from_relay: str) -> str | None:  # noqa: ANN001
+async def _get_relay_public_key(session: AsyncSession, from_relay: str) -> str | None:
     """Look up a relay's public key from the known_relays cache."""
-    cached = await get_known_relay(db, from_relay)
+    cached = await get_known_relay(session, from_relay)
     if cached:
-        return cached.get("public_key")
+        return cached.public_key
     return None
 
 
-async def _rediscover_relay_key(db, from_relay: str) -> str | None:  # noqa: ANN001
+async def _rediscover_relay_key(session: AsyncSession, from_relay: str) -> str | None:
     """Fetch the relay's .well-known to get a fresh public key (key rotation)."""
     url = f"https://{from_relay}/.well-known/uam-relay.json"
     try:
@@ -317,7 +328,7 @@ async def _rediscover_relay_key(db, from_relay: str) -> str | None:  # noqa: ANN
             federation_endpoint = data.get("federation_endpoint")
             if public_key and federation_endpoint:
                 await upsert_known_relay(
-                    db, from_relay, federation_endpoint, public_key, "well-known"
+                    session, from_relay, federation_endpoint, public_key, "well-known"
                 )
                 return public_key
     except Exception:
