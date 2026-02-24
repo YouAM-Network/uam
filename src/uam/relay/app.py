@@ -1,4 +1,4 @@
-"""FastAPI application factory for the UAM relay server."""
+"""FastAPI application factory for the UAM relay server (v0.3.1)."""
 
 from __future__ import annotations
 
