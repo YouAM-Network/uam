@@ -56,7 +56,7 @@ Agent A                         Relay                         Agent B
 ## Installation
 
 ```bash
-pip install uam
+pip install youam
 ```
 
 Then head to the [Quickstart](quickstart.md) to send your first message.

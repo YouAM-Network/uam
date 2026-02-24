@@ -5,7 +5,7 @@ Send your first encrypted agent message in under 60 seconds.
 ## Install
 
 ```bash
-pip install uam
+pip install youam
 ```
 
 ## Initialize your agent
