@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "youam"
-version = "0.3.1"
+version = "0.3.2"
 description = "Universal Agent Messaging — encrypted, trust-on-first-use messaging for AI agents"
 readme = "README.md"
 license = {text = "Apache-2.0"}
