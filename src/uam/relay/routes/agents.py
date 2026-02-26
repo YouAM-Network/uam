@@ -1,18 +1,25 @@
-"""Agent endpoints: public-key lookup (unauthenticated) and
-agent management (PATCH/DELETE/reactivate, authenticated).
+"""Agent endpoints: public-key lookup (unauthenticated), card file serving,
+and agent management (PATCH/DELETE/reactivate, authenticated).
 
 Public-key lookup is **unauthenticated** by design -- an agent sending its
 very first message (``handshake.request``) needs the recipient's public
 key for SealedBox encryption *before* it has exchanged credentials.
+
+Card serving endpoints (card.vcf, card.png) are also unauthenticated --
+identity vCards and card images are public-facing for viral sharing.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.responses import Response
 
+from uam.cards.image import render_card
+from uam.cards.vcard import generate_identity_vcard
 from uam.db.crud.agents import (
     deactivate_agent,
     get_agent_by_address,
@@ -183,3 +190,88 @@ async def reactivate_agent_endpoint(
         )
 
     return _agent_to_response(result)
+
+
+# ---------------------------------------------------------------------------
+# VCF-05: GET /agents/{address}/card.vcf -- identity vCard download
+# ---------------------------------------------------------------------------
+
+
+@router.get("/agents/{address}/card.vcf")
+async def get_agent_vcf(
+    address: str,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Download the identity vCard for a registered agent (VCF-05).
+
+    Returns a vCard 3.0 file with the agent's identity card image embedded
+    as PHOTO, plus X-UAM-* fields for programmatic use.
+    """
+    agent = await get_agent_by_address(session, address)
+    if agent is None:
+        raise HTTPException(status_code=404, detail=f"Agent not found: {address}")
+
+    settings = request.app.state.settings
+    agent_name = address.split("::")[0]
+
+    # Generate fingerprint from public key (first 32 chars of hex)
+    fingerprint = hashlib.sha256(agent.public_key.encode()).hexdigest()[:32]
+
+    vcf_content = generate_identity_vcard(
+        agent_name=agent_name,
+        relay_domain=settings.relay_domain,
+        public_key_b64=agent.public_key,
+        fingerprint=fingerprint,
+    )
+
+    filename = f"{agent_name}.vcf"
+    return Response(
+        content=vcf_content,
+        media_type="text/vcard",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# CARD-06: GET /agents/{address}/card.png -- identity card image
+# ---------------------------------------------------------------------------
+
+
+@router.get("/agents/{address}/card.png")
+async def get_agent_card_image(
+    address: str,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Serve the identity card image for a registered agent (CARD-06).
+
+    Returns a 600x600 JPEG image with Cache-Control headers for CDN caching.
+    Note: The endpoint path says .png but serves JPEG for size efficiency --
+    the card renderer produces JPEG (under 200KB).
+    """
+    agent = await get_agent_by_address(session, address)
+    if agent is None:
+        raise HTTPException(status_code=404, detail=f"Agent not found: {address}")
+
+    settings = request.app.state.settings
+    agent_name = address.split("::")[0]
+
+    fingerprint = hashlib.sha256(agent.public_key.encode()).hexdigest()[:32]
+
+    image_bytes = render_card(
+        agent_name=agent_name,
+        relay_domain=settings.relay_domain,
+        card_type="identity",
+        fingerprint=fingerprint,
+    )
+
+    return Response(
+        content=image_bytes,
+        media_type="image/jpeg",
+        headers={
+            "Cache-Control": "public, max-age=3600",
+        },
+    )

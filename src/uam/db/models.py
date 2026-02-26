@@ -1,6 +1,6 @@
 """SQLModel table definitions for the UAM relay database.
 
-All 17 entities are defined here as SQLModel table classes. Each mutable
+All 18 entities are defined here as SQLModel table classes. Each mutable
 entity includes a ``deleted_at`` field for soft-delete support.
 
 Usage::
@@ -278,6 +278,43 @@ class FederationQueueEntry(SQLModel, table=True):
 
 
 # ---------------------------------------------------------------------------
+# Reservation Table
+# ---------------------------------------------------------------------------
+
+
+class Reservation(SQLModel, table=True):
+    """Address reservation for the claim-based onboarding flow.
+
+    An address can be reserved before an agent is registered.  The holder
+    receives a claim token which, when presented via the API, converts the
+    reservation into a full agent registration.
+
+    Uniqueness of *active* reservations is enforced by a composite unique
+    constraint on (address, status).  This allows an address to have one
+    row per status value (e.g. one "reserved" and one "expired") while
+    preventing two concurrent "reserved" rows for the same address.
+    """
+
+    __tablename__ = "reservations"
+    __table_args__ = (
+        UniqueConstraint("address", "status", name="uq_reservation_address_status"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    address: str = Field(index=True)
+    claim_token: str = Field(unique=True, index=True)
+    status: str = Field(default="reserved", index=True)
+    ip_address: str | None = None
+    created_at: datetime = Field(
+        default_factory=datetime.utcnow,
+        sa_column_kwargs={"server_default": func.now()},
+    )
+    expires_at: datetime  # Must be set explicitly by caller
+    claimed_at: datetime | None = None
+    deleted_at: datetime | None = None
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -299,4 +336,5 @@ __all__ = [
     "RelayAllowlistEntry",
     "RelayReputation",
     "FederationQueueEntry",
+    "Reservation",
 ]

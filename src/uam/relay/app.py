@@ -146,6 +146,32 @@ async def _retention_worker_loop(app: FastAPI) -> None:
                 logger.exception("Error in retention worker loop")
 
 
+# How often to sweep expired reservations (seconds)
+_RESERVATION_EXPIRY_INTERVAL: float = 300.0  # 5 minutes
+
+
+async def _reservation_expiry_loop(app: FastAPI) -> None:
+    """Periodically expire reservations past their TTL deadline (RES-05)."""
+    from uam.db.crud.reservations import expire_reservations
+    from uam.db.retry import is_transient_error
+    from uam.db.session import async_session_factory
+    from uam.db.engine import get_engine
+
+    while True:
+        await asyncio.sleep(_RESERVATION_EXPIRY_INTERVAL)
+        try:
+            factory = async_session_factory(get_engine())
+            async with factory() as session:
+                count = await expire_reservations(session)
+            if count:
+                logger.info("Expired %d reservation(s)", count)
+        except Exception as exc:
+            if is_transient_error(exc):
+                logger.warning("Transient DB error in reservation expiry sweep, will retry next cycle: %s", exc)
+            else:
+                logger.exception("Error in reservation expiry sweep")
+
+
 async def _federation_retry_loop(app: FastAPI) -> None:
     """Process the federation_queue: retry failed/pending federation deliveries (FED-10).
 
@@ -370,6 +396,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Federation retry loop (FED-10)
     federation_retry_task = asyncio.create_task(_federation_retry_loop(app)) if settings.federation_enabled else None
 
+    # Background sweep for expired reservations (RES-05)
+    reservation_expiry_task = asyncio.create_task(_reservation_expiry_loop(app))
+
     # Record startup time for uptime calculation (RES-03)
     app.state.startup_time = time.monotonic()
 
@@ -382,6 +411,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await federation_retry_task
         except asyncio.CancelledError:
             pass
+
+    # Cancel reservation expiry sweep (RES-05)
+    reservation_expiry_task.cancel()
+    try:
+        await reservation_expiry_task
+    except asyncio.CancelledError:
+        pass
 
     # Cancel retention worker (RES-04)
     retention_task.cancel()
@@ -509,6 +545,7 @@ def create_app() -> FastAPI:
     from uam.relay.routes.admin import router as admin_router
     from uam.relay.routes.presence import router as presence_router
     from uam.relay.routes.handshakes import router as handshakes_router
+    from uam.relay.routes.reserve import router as reserve_router
 
     app.include_router(register_router, prefix="/api/v1")
     app.include_router(agents_router, prefix="/api/v1")
@@ -521,13 +558,17 @@ def create_app() -> FastAPI:
     app.include_router(admin_router, prefix="/api/v1")
     app.include_router(presence_router, prefix="/api/v1")
     app.include_router(handshakes_router, prefix="/api/v1")
+    app.include_router(reserve_router, prefix="/api/v1")
 
     # Health, WebSocket, and .well-known (no prefix)
     from uam.relay.routes.health import router as health_router
     from uam.relay.ws import router as ws_router
+    from uam.relay.routes.viral import router as viral_router
 
     app.include_router(health_router)
     app.include_router(ws_router)
     app.include_router(well_known_router)
+    # Viral onboarding (top-level /new, not /api/v1 -- used in curl domain/new | sh)
+    app.include_router(viral_router)
 
     return app

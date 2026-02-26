@@ -1,6 +1,6 @@
 """UAM database package.
 
-Re-exports all 17 SQLModel table classes, the async engine factory, and the
+Re-exports all 18 SQLModel table classes, the async engine factory, and the
 session management layer for convenient top-level imports::
 
     from uam.db import Agent, Message, get_session, init_engine
@@ -28,6 +28,7 @@ from uam.db.models import (
     RelayAllowlistEntry,
     RelayBlocklistEntry,
     RelayReputation,
+    Reservation,
     Reputation,
     SeenMessageId,
     WebhookDelivery,
@@ -70,6 +71,7 @@ __all__ = [
     "RelayAllowlistEntry",
     "RelayBlocklistEntry",
     "RelayReputation",
+    "Reservation",
     "Reputation",
     "SeenMessageId",
     "WebhookDelivery",

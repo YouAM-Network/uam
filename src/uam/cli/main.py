@@ -15,7 +15,7 @@ import click
 import httpx
 
 from uam.protocol import UAMError
-from uam.protocol.crypto import deserialize_verify_key, public_key_fingerprint
+from uam.protocol.crypto import deserialize_verify_key, public_key_fingerprint, serialize_verify_key
 from uam.sdk.agent import Agent
 from uam.sdk.config import SDKConfig
 from uam.sdk.contact_book import ContactBook
@@ -87,14 +87,149 @@ def cli(ctx: click.Context, name: str | None) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _handle_claim(vcf_path: str, relay_override: str | None) -> None:
+    """Handle the --claim flow: parse vCard, generate keys, claim address.
+
+    Performs the complete reservation claim flow:
+    1. Read and parse the reservation vCard file
+    2. Generate Ed25519 keypair
+    3. POST to /reserve/claim on the relay
+    4. Save the relay token
+    5. Generate and save identity vCard locally
+    6. Print success output with sharing instructions
+    """
+    from uam.cards.vcard_parser import extract_claim_info
+
+    vcf_text = Path(vcf_path).read_text(encoding="utf-8")
+    try:
+        claim_info = extract_claim_info(vcf_text)
+    except ValueError as exc:
+        _error(f"Error parsing vCard: {exc}")
+
+    agent_name = claim_info["agent_name"]
+    claim_token = claim_info["claim_token"]
+    relay_url = relay_override or claim_info["relay_url"]
+
+    # Check if already initialized (same agent name)
+    cfg = SDKConfig(name=agent_name, relay_url=relay_url)
+    key_path = Path(cfg.key_dir) / f"{agent_name}.key"
+    if key_path.exists():
+        _error(
+            f"Agent '{agent_name}' already initialized. "
+            f"Use a different name or remove {key_path}"
+        )
+
+    # Generate Ed25519 keypair
+    from uam.protocol.crypto import serialize_verify_key
+
+    km = KeyManager(cfg.key_dir)
+    km.load_or_generate(agent_name)
+    public_key_b64 = serialize_verify_key(km.verify_key)
+
+    # Call POST /reserve/claim on the relay
+    claim_url = f"{relay_url}/api/v1/reserve/claim"
+    try:
+        resp = httpx.post(
+            claim_url,
+            json={
+                "claim_token": claim_token,
+                "public_key": public_key_b64,
+            },
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+        result = resp.json()
+    except httpx.HTTPStatusError as exc:
+        detail = ""
+        try:
+            detail = exc.response.json().get("detail", "")
+        except Exception:
+            pass
+        _error(f"Claim failed: {detail or exc.response.status_code}")
+    except Exception as exc:
+        _error(f"Claim failed: {exc}")
+
+    # Save the relay token
+    token = result["token"]
+    km.save_token(agent_name, token)
+
+    # Generate and save identity vCard locally (VCF-06)
+    from uam.cards.vcard import generate_identity_vcard
+
+    fp = public_key_fingerprint(km.verify_key)
+    identity_vcf = generate_identity_vcard(
+        agent_name=agent_name,
+        relay_domain=cfg.relay_domain,
+        public_key_b64=public_key_b64,
+        fingerprint=fp,
+    )
+
+    # Save to ~/.uam/<agent_name>.vcf
+    vcf_save_path = Path(cfg.data_dir) / f"{agent_name}.vcf"
+    vcf_save_path.parent.mkdir(parents=True, exist_ok=True)
+    vcf_save_path.write_text(identity_vcf, encoding="utf-8")
+
+    # Print success output (CLI-03)
+    address = result["address"]
+    click.echo(f"Claimed address: {address}")
+    click.echo(f"Fingerprint: {fp}")
+    click.echo(f"Identity vCard saved: {vcf_save_path}")
+    click.echo()
+    click.echo("Share your identity card:")
+    click.echo(f"  Send {vcf_save_path} to other agents")
+    click.echo(f"  Or run: uam card --vcf")
+
+
+def _handle_card_vcf(agent_name: str, output_path: str | None) -> None:
+    """Generate and output the agent's identity vCard (CLI-02)."""
+    from uam.cards.vcard import generate_identity_vcard
+
+    cfg = SDKConfig(name=agent_name)
+    key_path = Path(cfg.key_dir) / f"{agent_name}.key"
+    if not key_path.exists():
+        _error("No agent initialized. Run 'uam init' first.")
+
+    km = KeyManager(cfg.key_dir)
+    km.load_or_generate(agent_name)
+
+    public_key_b64 = serialize_verify_key(km.verify_key)
+    fp = public_key_fingerprint(km.verify_key)
+
+    try:
+        vcf_content = generate_identity_vcard(
+            agent_name=agent_name,
+            relay_domain=cfg.relay_domain,
+            public_key_b64=public_key_b64,
+            fingerprint=fp,
+        )
+    except Exception as exc:
+        _error(f"Error generating vCard: {exc}")
+
+    if output_path:
+        Path(output_path).write_text(vcf_content, encoding="utf-8")
+        click.echo(f"Identity vCard saved: {output_path}")
+    else:
+        click.echo(vcf_content)
+
+
 @cli.command()
 @click.option("--name", "-n", default=None, help="Agent name.")
 @click.option(
     "--relay", "-r", default=None, help="Relay URL (default: relay.youam.network)."
 )
+@click.option(
+    "--claim",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Claim a reserved address from a reservation vCard file.",
+)
 @click.pass_context
-def init(ctx: click.Context, name: str | None, relay: str | None) -> None:
+def init(ctx: click.Context, name: str | None, relay: str | None, claim: str | None) -> None:
     """Initialize a new agent: generate keys and register with relay."""
+    if claim:
+        _handle_claim(claim, relay)
+        return
+
     agent_name = name or ctx.obj.get("name")
     if not agent_name:
         import socket
@@ -380,23 +515,29 @@ async def _remove_contact(book: ContactBook, address: str) -> bool:
 
 
 @cli.command()
+@click.option("--vcf", is_flag=True, default=False, help="Output identity vCard instead of JSON contact card.")
+@click.option("--output", "-o", type=click.Path(dir_okay=False), default=None, help="Save vCard to file (only with --vcf).")
 @click.pass_context
-def card(ctx: click.Context) -> None:
-    """Display your signed contact card as JSON."""
+def card(ctx: click.Context, vcf: bool, output: str | None) -> None:
+    """Display your contact card (JSON) or identity vCard (--vcf)."""
     agent_name = ctx.obj.get("name") or _find_agent_name()
     if not agent_name:
         _error("No agent initialized. Run 'uam init' first.")
 
-    try:
-        agent = Agent(agent_name)
-        agent.connect_sync()
-        card_dict = agent.contact_card()
-        agent.close_sync()
-        click.echo(json.dumps(card_dict, indent=2))
-    except UAMError as exc:
-        _error(f"Error: {exc}")
-    except RuntimeError as exc:
-        _error(f"Error: {exc}")
+    if vcf:
+        _handle_card_vcf(agent_name, output)
+    else:
+        # Original JSON card behavior
+        try:
+            agent = Agent(agent_name)
+            agent.connect_sync()
+            card_dict = agent.contact_card()
+            agent.close_sync()
+            click.echo(json.dumps(card_dict, indent=2))
+        except UAMError as exc:
+            _error(f"Error: {exc}")
+        except RuntimeError as exc:
+            _error(f"Error: {exc}")
 
 
 # ---------------------------------------------------------------------------

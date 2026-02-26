@@ -38,6 +38,12 @@ classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
 ]
+
+[project.urls]
+Homepage = "https://youam.network"
+Documentation = "https://docs.youam.network"
+Repository = "https://github.com/youam-network/uam"
+Changelog = "https://github.com/youam-network/uam/releases"
 dependencies = [
     "pynacl>=1.6.2",
     "uuid6>=2025.0.1",
@@ -55,12 +61,6 @@ dependencies = [
     "asyncpg>=0.30.0",
     "alembic>=1.14.0",
 ]
-
-[project.urls]
-Homepage = "https://youam.network"
-Documentation = "https://docs.youam.network"
-Repository = "https://github.com/youam-network/uam"
-Changelog = "https://github.com/youam-network/uam/releases"
 
 [project.scripts]
 uam = "uam.cli.main:cli"
@@ -89,6 +89,9 @@ relay = [
 mcp = [
     "mcp>=1.0",
 ]
+cards = [
+    "Pillow>=10.0",
+]
 demo = [
     "litellm>=1.30",
 ]
@@ -107,6 +110,7 @@ all = [
     "web3[async]>=7.0",
     "mcp>=1.0",
     "litellm>=1.30",
+    "Pillow>=10.0",
     "sqlmodel>=0.0.22",
     "sqlalchemy[asyncio]>=2.0.0",
     "asyncpg>=0.30.0",
@@ -134,6 +138,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "uam.data" = ["*.json"]
+"uam.cards.fonts" = ["*.ttf"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

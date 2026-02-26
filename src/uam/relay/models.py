@@ -336,3 +336,36 @@ class WellKnownRelayResponse(BaseModel):
     federation_endpoint: str
     public_key: str
     version: str = "0.1"
+
+
+# ---------------------------------------------------------------------------
+# Reservation models (RES-01, RES-02)
+# ---------------------------------------------------------------------------
+
+
+class ReserveCheckResponse(BaseModel):
+    address: str
+    available: bool
+
+
+class ReserveRequest(BaseModel):
+    name: str  # just the agent name part (before ::)
+
+
+class ReserveResponse(BaseModel):
+    address: str
+    claim_token: str
+    expires_at: str
+    vcf_url: str  # URL to download reservation vCard
+
+
+class ReserveClaimRequest(BaseModel):
+    claim_token: str
+    public_key: str
+    webhook_url: str | None = None
+
+
+class ReserveClaimResponse(BaseModel):
+    address: str
+    token: str  # bearer token for the newly registered agent
+    relay: str

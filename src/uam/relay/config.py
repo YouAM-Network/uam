@@ -60,3 +60,11 @@ class Settings:
             os.getenv("UAM_FEDERATION_DISCOVERY_TTL_HOURS", "1")
         )
         self.federation_retry_delays: list[int] = [0, 30, 300, 1800, 7200]
+        # Reservation settings (RES-02)
+        self.reservation_ttl_hours: int = int(
+            os.getenv("UAM_RESERVATION_TTL_HOURS", "48")
+        )
+        # Viral onboarding settings (VIRAL-01)
+        self.website_url: str = os.getenv(
+            "UAM_WEBSITE_URL", f"https://{self.relay_domain}"
+        )
