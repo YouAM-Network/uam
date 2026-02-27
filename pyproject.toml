@@ -68,7 +68,7 @@ uam-mcp = "uam.mcp.server:main"
 
 [project.optional-dependencies]
 chain = [
-    "web3[async]>=7.0",
+    "web3>=7.0",
 ]
 db = [
     "sqlmodel>=0.0.22",
@@ -107,7 +107,7 @@ docs = [
 all = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.34",
-    "web3[async]>=7.0",
+    "web3>=7.0",
     "mcp>=1.0",
     "litellm>=1.30",
     "Pillow>=10.0",
