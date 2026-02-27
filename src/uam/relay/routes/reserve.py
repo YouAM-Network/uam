@@ -30,6 +30,7 @@ from uam.relay.models import (
     ReserveRequest,
     ReserveResponse,
 )
+from uam.cards.image import render_card
 from uam.cards.vcard import generate_reservation_vcard
 from uam.relay.webhook_validator import validate_webhook_url
 
@@ -211,6 +212,37 @@ async def reserve_claim(
         address=reservation.address,
         token=agent_token,
         relay=settings.relay_ws_url,
+    )
+
+
+@router.get("/reserve/{token}/card.jpg")
+async def download_reservation_card(
+    token: str,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Download the reservation card image as JPEG for a given claim token."""
+    reservation = await get_reservation_by_token(session, token)
+    if reservation is None:
+        raise HTTPException(status_code=404, detail="Invalid claim token")
+
+    settings = request.app.state.settings
+    agent_name = reservation.address.split("::")[0]
+
+    jpeg_bytes = render_card(
+        agent_name=agent_name,
+        relay_domain=settings.relay_domain,
+        card_type="reservation",
+        expires_at=reservation.expires_at.isoformat() if reservation.expires_at else None,
+        avatar_style=settings.avatar_style,
+    )
+
+    return Response(
+        content=jpeg_bytes,
+        media_type="image/jpeg",
+        headers={
+            "Content-Disposition": f'inline; filename="{agent_name}-card.jpg"',
+        },
     )
 
 
