@@ -38,12 +38,6 @@ classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
 ]
-
-[project.urls]
-Homepage = "https://youam.network"
-Documentation = "https://docs.youam.network"
-Repository = "https://github.com/youam-network/uam"
-Changelog = "https://github.com/youam-network/uam/releases"
 dependencies = [
     "pynacl>=1.6.2",
     "uuid6>=2025.0.1",
@@ -61,6 +55,12 @@ dependencies = [
     "asyncpg>=0.30.0",
     "alembic>=1.14.0",
 ]
+
+[project.urls]
+Homepage = "https://youam.network"
+Documentation = "https://docs.youam.network"
+Repository = "https://github.com/youam-network/uam"
+Changelog = "https://github.com/youam-network/uam/releases"
 
 [project.scripts]
 uam = "uam.cli.main:cli"
