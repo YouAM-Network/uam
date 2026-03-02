@@ -18,8 +18,10 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
-# Copy source
+# Copy source and Alembic migrations
 COPY src/ src/
+COPY alembic.ini ./
+COPY alembic/ alembic/
 
 ENV PYTHONPATH=src
 EXPOSE 8000
