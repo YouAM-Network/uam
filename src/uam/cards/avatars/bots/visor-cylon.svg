@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <g transform="translate(0, 8)">
+    <g id="visor-cylon">
+      <path d="M 60 95 C 80 90, 120 90, 140 95 L 140 110 C 120 115, 80 115, 60 110 Z" fill="#0f172a" stroke="#020617" stroke-width="6" stroke-linejoin="round"/>
+      <path d="M 75 102.5 C 90 100, 110 100, 125 102.5" fill="none" stroke="TOKEN_GLOW_AURA" stroke-width="8" stroke-linecap="round" filter="url(#neon-glow)"/>
+      <circle cx="100" cy="102.5" r="4" fill="TOKEN_GLOW_CORE"/>
+    </g>
+  </g>
+</svg>

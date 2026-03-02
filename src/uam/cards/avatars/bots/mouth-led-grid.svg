@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <g transform="translate(0, 8)">
+    <g id="mouth-led" filter="url(#mecha-shadow)">
+      <path d="M 65 135 L 135 135 L 125 155 L 75 155 Z" fill="#1e293b" stroke="#020617" stroke-width="6" stroke-linejoin="round"/>
+      <rect x="75" y="140" width="8" height="10" fill="TOKEN_GLOW_AURA"/>
+      <rect x="85" y="145" width="8" height="5" fill="TOKEN_GLOW_AURA"/>
+      <rect x="95" y="138" width="8" height="12" fill="TOKEN_GLOW_AURA" filter="url(#neon-glow)"/>
+      <rect x="105" y="142" width="8" height="8" fill="TOKEN_GLOW_AURA"/>
+      <rect x="115" y="146" width="8" height="4" fill="TOKEN_GLOW_AURA"/>
+    </g>
+  </g>
+</svg>

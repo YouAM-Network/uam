@@ -55,6 +55,7 @@ dependencies = [
     "asyncpg>=0.30.0",
     "alembic>=1.14.0",
     "Pillow>=10.0",
+    "cairosvg>=2.7",
 ]
 
 [project.urls]
@@ -140,6 +141,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 "uam.data" = ["*.json"]
 "uam.cards.fonts" = ["*.ttf"]
+"uam.cards.avatars" = ["**/*.json", "**/*.svg"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

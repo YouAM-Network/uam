@@ -65,7 +65,7 @@ class Settings:
             os.getenv("UAM_RESERVATION_TTL_HOURS", "48")
         )
         # Card styling settings
-        self.avatar_style: str = os.getenv("UAM_AVATAR_STYLE", "bottts-neutral")
+        self.avatar_style: str = os.getenv("UAM_AVATAR_STYLE", "bots")
         self.card_bg_color: str | None = os.getenv("UAM_CARD_BG_COLOR")
         self.card_accent_color: str | None = os.getenv("UAM_CARD_ACCENT_COLOR")
         self.card_badge_text: str | None = os.getenv("UAM_CARD_BADGE_TEXT")

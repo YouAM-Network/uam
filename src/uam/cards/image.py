@@ -1,7 +1,7 @@
 """Card image renderer for UAM agent cards.
 
-Generates 600x600 JPEG card images with DiceBear avatars, agent address
-text, and distinct visual styles for reservation and identity card types.
+Generates 600x600 JPEG card images with locally-generated avatars, agent
+address text, and distinct visual styles for reservation and identity card types.
 
 Reservation cards use a navy+gold color scheme with "RESERVED" badge.
 Identity cards use a teal+cyan color scheme with "AI Agent" badge and
@@ -146,7 +146,7 @@ def render_card(
     *,
     fingerprint: str | None = None,
     expires_at: str | None = None,
-    avatar_style: str = "bottts-neutral",
+    avatar_style: str = "bots",
     avatar_bytes: bytes | None = None,
     bg_color: str | None = None,
     accent_color: str | None = None,
@@ -160,7 +160,7 @@ def render_card(
         card_type: Either "reservation" or "identity".
         fingerprint: Optional key fingerprint (shown on identity cards).
         expires_at: Optional expiration timestamp (shown on reservation cards).
-        avatar_style: DiceBear avatar style name.
+        avatar_style: Local avatar engine style name.
         avatar_bytes: Pre-fetched avatar PNG bytes (skips HTTP call if provided).
         bg_color: Override background color (hex, e.g. "#18181b").
         accent_color: Override accent color (hex, e.g. "#8b5cf6").

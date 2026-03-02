@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <g transform="translate(0, 8)">
+    <g id="visor-screen">
+      <path d="M 50 70 Q 100 60, 150 70 L 145 120 Q 100 130, 55 120 Z" fill="#0f172a" stroke="#020617" stroke-width="8" stroke-linejoin="round"/>
+      <path d="M 55 75 Q 100 65, 145 75 L 140 115 Q 100 125, 60 115 Z" fill="none" stroke="#1e293b" stroke-width="3"/>
+      <rect x="80" y="85" width="40" height="20" fill="TOKEN_GLOW_AURA" filter="url(#neon-glow)" opacity="0.8"/>
+      <rect x="85" y="90" width="10" height="10" fill="TOKEN_GLOW_CORE"/>
+      <rect x="105" y="90" width="10" height="10" fill="TOKEN_GLOW_CORE"/>
+    </g>
+  </g>
+</svg>

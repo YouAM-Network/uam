@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <defs>
+    <clipPath id="chassis-clip"><path d="M 40 100 C 40 20, 160 20, 160 100 L 160 160 C 160 185, 135 190, 100 190 C 65 190, 40 185, 40 160 Z"/></clipPath>
+  </defs>
+  <g transform="translate(0, 8)">
+    <g id="chassis-dome" filter="url(#mecha-shadow)">
+      <path d="M 40 100 C 40 20, 160 20, 160 100 L 160 160 C 160 185, 135 190, 100 190 C 65 190, 40 185, 40 160 Z" fill="TOKEN_BASE" stroke="TOKEN_OUTLINE" stroke-width="8" stroke-linejoin="round"/>
+      <path d="M 40 100 L 40 160 C 40 185, 65 190, 100 190 C 135 190, 160 185, 160 160 L 160 100 C 160 120, 135 150, 100 150 C 65 150, 40 120, 40 100 Z" fill="TOKEN_SHADOW" opacity="0.6"/>
+      <path d="M 70 190 L 70 200 L 130 200 L 130 190 Z" fill="TOKEN_SHADOW" stroke="TOKEN_OUTLINE" stroke-width="8" stroke-linejoin="round"/>
+    </g>
+  </g>
+</svg>

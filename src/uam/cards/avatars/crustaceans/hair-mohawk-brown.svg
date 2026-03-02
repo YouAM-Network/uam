@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <g transform="translate(0, 8)">
+    <g id="hair-mohawk" filter="url(#clean-shadow)">
+      <path d="M 90 45 C 85 10, 95 -30, 100 -30 C 105 -30, 115 10, 110 45 C 105 50, 95 50, 90 45 Z" fill="#78350f" stroke="#451a03" stroke-width="4" stroke-linejoin="round"/>
+      <path d="M 88 20 Q 80 -10, 95 -15" fill="none" stroke="#451a03" stroke-width="2" stroke-linecap="round"/>
+      <path d="M 112 20 Q 120 -10, 105 -15" fill="none" stroke="#92400e" stroke-width="3" stroke-linecap="round"/>
+    </g>
+  </g>
+</svg>

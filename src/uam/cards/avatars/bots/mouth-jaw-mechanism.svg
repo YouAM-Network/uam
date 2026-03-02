@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <g transform="translate(0, 8)">
+    <g id="mouth-jaw">
+      <path d="M 85 130 L 100 145 L 115 130" fill="none" stroke="#020617" stroke-width="8" stroke-linejoin="round"/>
+      <path d="M 75 145 L 85 160 L 115 160 L 125 145" fill="#1e293b"/>
+      <path d="M 75 145 L 85 160 L 115 160 L 125 145" fill="none" stroke="#020617" stroke-width="6" stroke-linejoin="round"/>
+      <line x1="95" y1="150" x2="95" y2="160" stroke="#020617" stroke-width="4"/>
+      <line x1="105" y1="150" x2="105" y2="160" stroke="#020617" stroke-width="4"/>
+    </g>
+  </g>
+</svg>

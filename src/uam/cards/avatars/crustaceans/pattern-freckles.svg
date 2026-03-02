@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <g transform="translate(0, 8)">
+    <g id="layer-pattern-freckles" filter="url(#clean-shadow)">
+      <circle cx="65" cy="85" r="2.5" fill="#ffffff" opacity="0.4"/>
+      <circle cx="72" cy="90" r="2" fill="#ffffff" opacity="0.4"/>
+      <circle cx="60" cy="92" r="2" fill="#ffffff" opacity="0.4"/>
+      <circle cx="68" cy="80" r="1.5" fill="#ffffff" opacity="0.4"/>
+      <circle cx="135" cy="85" r="2.5" fill="#ffffff" opacity="0.4"/>
+      <circle cx="128" cy="90" r="2" fill="#ffffff" opacity="0.4"/>
+      <circle cx="140" cy="92" r="2" fill="#ffffff" opacity="0.4"/>
+      <circle cx="132" cy="80" r="1.5" fill="#ffffff" opacity="0.4"/>
+    </g>
+  </g>
+</svg>

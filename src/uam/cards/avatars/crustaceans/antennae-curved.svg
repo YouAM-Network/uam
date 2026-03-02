@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <g transform="translate(0, 8)">
+    <g id="antennae-curved" filter="url(#clean-shadow)">
+      <path d="M 80 25 Q 60 5, 45 -10" fill="none" stroke="TOKEN_OUTLINE" stroke-width="6" stroke-linecap="round"/>
+      <path d="M 80 25 Q 60 5, 45 -10" fill="none" stroke="TOKEN_BASE" stroke-width="4" stroke-linecap="round"/>
+      <path d="M 120 25 Q 140 5, 155 -10" fill="none" stroke="TOKEN_OUTLINE" stroke-width="6" stroke-linecap="round"/>
+      <path d="M 120 25 Q 140 5, 155 -10" fill="none" stroke="TOKEN_BASE" stroke-width="4" stroke-linecap="round"/>
+    </g>
+  </g>
+</svg>

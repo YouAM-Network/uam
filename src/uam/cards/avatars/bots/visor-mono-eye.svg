@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <g transform="translate(0, 8)">
+    <g id="visor-mono">
+      <circle cx="100" cy="95" r="28" fill="#0f172a" stroke="#020617" stroke-width="8"/>
+      <path d="M 78 95 Q 100 70, 122 95 Q 100 120, 78 95 Z" fill="#1e293b"/>
+      <circle cx="100" cy="95" r="16" fill="TOKEN_GLOW_AURA" filter="url(#neon-glow)"/>
+      <circle cx="100" cy="95" r="8" fill="TOKEN_GLOW_CORE"/>
+    </g>
+  </g>
+</svg>

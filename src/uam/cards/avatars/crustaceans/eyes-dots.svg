@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <g transform="translate(0, 8)">
+    <g id="eyes-dots" filter="url(#clean-shadow)">
+      <circle cx="80" cy="75" r="8" fill="#1e293b"/>
+      <circle cx="120" cy="75" r="8" fill="#1e293b"/>
+    </g>
+  </g>
+</svg>

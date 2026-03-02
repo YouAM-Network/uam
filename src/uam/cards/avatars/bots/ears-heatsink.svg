@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <defs>
+    <filter id="neon-glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="6" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="mecha-shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="0" flood-color="#0f172a" flood-opacity="0.2"/>
+    </filter>
+    <pattern id="decal-warning" width="20" height="20" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <rect width="10" height="20" fill="#eab308"/>
+      <rect x="10" width="10" height="20" fill="#020617"/>
+    </pattern>
+    <pattern id="decal-barcode" width="30" height="10" patternUnits="userSpaceOnUse">
+      <rect x="0" width="2" height="10" fill="#0f172a"/>
+      <rect x="4" width="6" height="10" fill="#0f172a"/>
+      <rect x="12" width="2" height="10" fill="#0f172a"/>
+      <rect x="16" width="4" height="10" fill="#0f172a"/>
+      <rect x="24" width="2" height="10" fill="#0f172a"/>
+    </pattern>
+  </defs>
+  <g transform="translate(0, 8)">
+    <g id="ears-heatsink">
+      <rect x="20" y="90" width="30" height="40" rx="4" fill="#334155" stroke="TOKEN_OUTLINE" stroke-width="8"/>
+      <line x1="25" y1="100" x2="25" y2="120" stroke="TOKEN_SHADOW" stroke-width="4" stroke-linecap="round"/>
+      <line x1="35" y1="100" x2="35" y2="120" stroke="TOKEN_SHADOW" stroke-width="4" stroke-linecap="round"/>
+      <line x1="45" y1="100" x2="45" y2="120" stroke="TOKEN_SHADOW" stroke-width="4" stroke-linecap="round"/>
+      <rect x="150" y="90" width="30" height="40" rx="4" fill="#334155" stroke="TOKEN_OUTLINE" stroke-width="8"/>
+      <line x1="155" y1="100" x2="155" y2="120" stroke="TOKEN_SHADOW" stroke-width="4" stroke-linecap="round"/>
+      <line x1="165" y1="100" x2="165" y2="120" stroke="TOKEN_SHADOW" stroke-width="4" stroke-linecap="round"/>
+      <line x1="175" y1="100" x2="175" y2="120" stroke="TOKEN_SHADOW" stroke-width="4" stroke-linecap="round"/>
+    </g>
+  </g>
+</svg>

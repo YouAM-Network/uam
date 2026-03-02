@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <g transform="translate(0, 8)">
+    <g id="hair-long-waves" filter="url(#clean-shadow)">
+      <path d="M 25 180 C 0 80, 30 -10, 100 -10 C 170 -10, 200 80, 175 180 C 160 160, 160 110, 155 80 C 130 50, 70 50, 45 80 C 40 110, 40 160, 25 180 Z" fill="#fde047" stroke="#ca8a04" stroke-width="4" stroke-linejoin="round"/>
+      <path d="M 35 120 Q 55 150, 40 170 M 165 120 Q 145 150, 160 170" fill="none" stroke="#ca8a04" stroke-width="2" stroke-linecap="round"/>
+      <path d="M 45 90 Q 70 140, 50 160 M 155 90 Q 130 140, 150 160" fill="none" stroke="#fef08a" stroke-width="3" stroke-linecap="round"/>
+    </g>
+  </g>
+</svg>

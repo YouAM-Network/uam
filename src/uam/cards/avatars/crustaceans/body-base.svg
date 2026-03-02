@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <defs>
+    <filter id="clean-shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="6" stdDeviation="4" flood-color="#000000" flood-opacity="0.15"/>
+    </filter>
+    <pattern id="pat-spots" x="0" y="0" width="30" height="30" patternUnits="userSpaceOnUse">
+      <circle cx="15" cy="15" r="6" fill="#ffffff" opacity="0.2"/>
+    </pattern>
+    <pattern id="pat-stripes" x="0" y="0" width="100" height="200" patternUnits="userSpaceOnUse">
+      <path d="M 50 0 L 50 200" fill="none" stroke="#ffffff" stroke-width="15" opacity="0.15"/>
+      <path d="M 150 0 L 150 200" fill="none" stroke="#ffffff" stroke-width="15" opacity="0.15"/>
+    </pattern>
+    <pattern id="pat-hexagons" x="0" y="0" width="40" height="69.282" patternUnits="userSpaceOnUse" patternTransform="scale(0.5)">
+      <path d="M 40 11.547 L 40 34.641 L 20 46.188 L 0 34.641 L 0 11.547 L 20 0 Z M 20 69.282 L 0 57.735 L 0 34.641 L 20 46.188 L 40 34.641 L 40 57.735 Z M 60 46.188 L 40 57.735 L 40 34.641 L 60 23.094 L 80 34.641 L 80 57.735 Z" fill="none" stroke="#ffffff" stroke-width="4" opacity="0.2"/>
+    </pattern>
+    <pattern id="pat-wave-lines" x="0" y="0" width="40" height="200" patternUnits="userSpaceOnUse">
+      <path d="M 20 0 Q 40 25, 20 50 T 20 100 T 20 150 T 20 200" fill="none" stroke="#ffffff" stroke-width="8" opacity="0.2" stroke-linecap="round"/>
+    </pattern>
+    <clipPath id="carapace-clip">
+      <path d="M 60 25 C 75 10, 125 10, 140 25 C 160 85, 145 135, 120 145 C 100 150, 60 145, 40 135 C 15 85, 40 25, 60 25 Z"/>
+    </clipPath>
+  </defs>
+  <g transform="translate(0, 8)">
+    <g id="body-base">
+      <g id="walking-legs" fill="TOKEN_BASE" stroke="TOKEN_OUTLINE" stroke-width="6" stroke-linejoin="round" stroke-linecap="round">
+        <path d="M 50 75 L 25 65 L 15 85"/>
+        <path d="M 150 75 L 175 65 L 185 85"/>
+        <path d="M 45 100 L 20 95 L 15 115"/>
+        <path d="M 155 100 L 180 95 L 185 115"/>
+        <path d="M 45 125 L 25 125 L 25 145"/>
+        <path d="M 155 125 L 175 125 L 175 145"/>
+        <path d="M 50 145 L 35 150 L 40 165"/>
+        <path d="M 150 145 L 165 150 L 160 165"/>
+      </g>
+      <g id="leg-joints" fill="TOKEN_DARK">
+        <circle cx="25" cy="65" r="4"/><circle cx="175" cy="65" r="4"/>
+        <circle cx="20" cy="95" r="4"/><circle cx="180" cy="95" r="4"/>
+        <circle cx="25" cy="125" r="4"/><circle cx="175" cy="125" r="4"/>
+      </g>
+      <g id="tail" filter="url(#clean-shadow)">
+        <path d="M 60 140 C 65 165, 90 175, 100 175 C 110 175, 135 165, 140 140 Z" fill="TOKEN_DARK" stroke="TOKEN_OUTLINE" stroke-width="6" stroke-linejoin="round"/>
+        <path d="M 65 145 C 70 160, 95 165, 100 165 C 105 165, 130 160, 135 145 Z" fill="TOKEN_BASE" stroke="TOKEN_OUTLINE" stroke-width="4" stroke-linejoin="round"/>
+        <path d="M 100 160 Q 120 190, 135 175 Q 125 160, 120 155 Z" fill="TOKEN_BASE" stroke="TOKEN_OUTLINE" stroke-width="4" stroke-linejoin="round"/>
+        <path d="M 100 160 Q 80 190, 65 175 Q 75 160, 80 155 Z" fill="TOKEN_BASE" stroke="TOKEN_OUTLINE" stroke-width="4" stroke-linejoin="round"/>
+        <path d="M 90 155 Q 100 190, 110 155 Z" fill="TOKEN_DARK" stroke="TOKEN_OUTLINE" stroke-width="4" stroke-linejoin="round"/>
+      </g>
+    </g>
+  </g>
+</svg>

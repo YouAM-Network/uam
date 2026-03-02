@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <g transform="translate(0, 8)">
+    <g id="decals-warning" clip-path="url(#chassis-clip)">
+      <rect x="120" y="20" width="60" height="40" fill="url(#decal-warning)" stroke="#020617" stroke-width="6"/>
+    </g>
+  </g>
+</svg>

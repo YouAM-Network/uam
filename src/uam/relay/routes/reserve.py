@@ -295,13 +295,13 @@ async def get_avatar(
     address: str,
     request: Request,
 ) -> Response:
-    """Fetch a DiceBear avatar PNG for an agent address.
+    """Generate a PNG avatar for an agent address.
 
-    Returns a 200x200 PNG avatar deterministically generated from the address.
-    Falls back to a 1x1 transparent PNG if the upstream DiceBear API is unavailable.
+    Returns a 200x200 PNG avatar deterministically generated from the address
+    using the local SVG avatar engine. No external HTTP calls.
     """
     settings = request.app.state.settings
-    avatar_style = getattr(settings, "avatar_style", "bottts-neutral")
+    avatar_style = getattr(settings, "avatar_style", "bots")
 
     avatar_bytes = fetch_avatar(address, style=avatar_style)
     if avatar_bytes is None:

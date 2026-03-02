@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <g transform="translate(0, 8)">
+    <g id="antennae-stubby" filter="url(#clean-shadow)">
+      <path d="M 80 25 L 75 10" fill="none" stroke="TOKEN_OUTLINE" stroke-width="6" stroke-linecap="round"/>
+      <path d="M 80 25 L 75 10" fill="none" stroke="TOKEN_BASE" stroke-width="4" stroke-linecap="round"/>
+      <circle cx="75" cy="10" r="5" fill="TOKEN_BASE" stroke="TOKEN_OUTLINE" stroke-width="4"/>
+      <path d="M 120 25 L 125 10" fill="none" stroke="TOKEN_OUTLINE" stroke-width="6" stroke-linecap="round"/>
+      <path d="M 120 25 L 125 10" fill="none" stroke="TOKEN_BASE" stroke-width="4" stroke-linecap="round"/>
+      <circle cx="125" cy="10" r="5" fill="TOKEN_BASE" stroke="TOKEN_OUTLINE" stroke-width="4"/>
+    </g>
+  </g>
+</svg>

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <g transform="translate(0, 8)">
+    <g id="layer-pattern-back-stripe" clip-path="url(#carapace-clip)">
+      <path d="M 90 0 L 110 0 L 110 200 L 90 200 Z" fill="#ffffff" opacity="0.25" style="mix-blend-mode: overlay;"/>
+    </g>
+  </g>
+</svg>

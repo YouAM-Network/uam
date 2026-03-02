@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <g transform="translate(0, 8)">
+    <g id="hair-bob-cut" filter="url(#clean-shadow)">
+      <path d="M 30 110 C 15 50, 45 5, 100 0 C 155 5, 185 50, 170 110 C 160 85, 145 65, 145 50 C 120 40, 80 40, 55 50 C 55 65, 40 85, 30 110 Z" fill="#fde047" stroke="#ca8a04" stroke-width="4" stroke-linejoin="round"/>
+      <path d="M 45 80 Q 55 100, 45 110 M 155 80 Q 145 100, 155 110 M 55 60 Q 65 85, 50 100 M 145 60 Q 135 85, 150 100" fill="none" stroke="#ca8a04" stroke-width="2" stroke-linecap="round"/>
+      <path d="M 50 40 Q 100 15, 150 40" fill="none" stroke="#fef08a" stroke-width="4" stroke-linecap="round"/>
+    </g>
+  </g>
+</svg>

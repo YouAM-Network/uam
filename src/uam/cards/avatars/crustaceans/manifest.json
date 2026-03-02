@@ -1,0 +1,255 @@
+{
+  "name": "crustaceans",
+  "version": "2.1.0",
+  "width": 200,
+  "height": 200,
+  "shape": "circle",
+  "layers": [
+    {
+      "name": "body-base",
+      "required": true,
+      "components": [
+        "body-base.svg"
+      ]
+    },
+    {
+      "name": "antennae",
+      "required": true,
+      "components": [
+        "antennae-wavy.svg",
+        "antennae-curved.svg",
+        "antennae-stubby.svg"
+      ]
+    },
+    {
+      "name": "claws",
+      "required": true,
+      "components": [
+        "claws-chubby-pincers.svg",
+        "claws-classic-round.svg",
+        "claws-tiny.svg"
+      ]
+    },
+    {
+      "name": "body-carapace",
+      "required": true,
+      "components": [
+        "body-carapace.svg"
+      ]
+    },
+    {
+      "name": "pattern",
+      "required": true,
+      "components": [
+        "pattern-none.svg",
+        "pattern-spots.svg",
+        "pattern-stripes.svg",
+        "pattern-freckles.svg",
+        "pattern-hexagons.svg",
+        "pattern-wave-lines.svg",
+        "pattern-back-stripe.svg"
+      ]
+    },
+    {
+      "name": "hair",
+      "required": true,
+      "components": [
+        "hair-none-01.svg",
+        "hair-none-02.svg",
+        "hair-none-03.svg",
+        "hair-none-04.svg",
+        "hair-spiky-black.svg",
+        "hair-spiky-brown.svg",
+        "hair-spiky-blonde.svg",
+        "hair-spiky-orange.svg",
+        "hair-slicked-back-black.svg",
+        "hair-slicked-back-brown.svg",
+        "hair-slicked-back-blonde.svg",
+        "hair-slicked-back-orange.svg",
+        "hair-mohawk-black.svg",
+        "hair-mohawk-brown.svg",
+        "hair-mohawk-blonde.svg",
+        "hair-mohawk-orange.svg",
+        "hair-pigtails-black.svg",
+        "hair-pigtails-brown.svg",
+        "hair-pigtails-blonde.svg",
+        "hair-pigtails-orange.svg",
+        "hair-messy-bun-black.svg",
+        "hair-messy-bun-brown.svg",
+        "hair-messy-bun-blonde.svg",
+        "hair-messy-bun-orange.svg",
+        "hair-bob-cut-black.svg",
+        "hair-bob-cut-brown.svg",
+        "hair-bob-cut-blonde.svg",
+        "hair-bob-cut-orange.svg",
+        "hair-long-waves-black.svg",
+        "hair-long-waves-brown.svg",
+        "hair-long-waves-blonde.svg",
+        "hair-long-waves-orange.svg"
+      ]
+    },
+    {
+      "name": "eyes",
+      "required": true,
+      "components": [
+        "eyes-wide-open.svg",
+        "eyes-relaxed.svg",
+        "eyes-friendly-curve.svg",
+        "eyes-dots.svg",
+        "eyes-half-closed.svg",
+        "eyes-surprised.svg",
+        "eyes-tired.svg",
+        "eyes-winking.svg",
+        "eyes-squinting.svg"
+      ]
+    },
+    {
+      "name": "mouth",
+      "required": true,
+      "components": [
+        "mouth-neutral-line.svg",
+        "mouth-small-smile.svg",
+        "mouth-open-smile.svg",
+        "mouth-frown.svg",
+        "mouth-open-surprised.svg",
+        "mouth-tongue-out.svg",
+        "mouth-grumpy.svg",
+        "mouth-o-mouth.svg"
+      ]
+    }
+  ],
+  "palettes": [
+    {
+      "name": "crimson",
+      "background": "#f0f0f0",
+      "accent": "#ef4444",
+      "colors": {
+        "base": "#ef4444",
+        "shadow": "#b91c1c",
+        "dark": "#7f1d1d",
+        "outline": "#0f172a"
+      }
+    },
+    {
+      "name": "ocean",
+      "background": "#f0f0f0",
+      "accent": "#3b82f6",
+      "colors": {
+        "base": "#3b82f6",
+        "shadow": "#1d4ed8",
+        "dark": "#1e3a8a",
+        "outline": "#0f172a"
+      }
+    },
+    {
+      "name": "lemon",
+      "background": "#f0f0f0",
+      "accent": "#fde047",
+      "colors": {
+        "base": "#fde047",
+        "shadow": "#ca8a04",
+        "dark": "#713f12",
+        "outline": "#0f172a"
+      }
+    },
+    {
+      "name": "mint",
+      "background": "#f0f0f0",
+      "accent": "#34d399",
+      "colors": {
+        "base": "#34d399",
+        "shadow": "#059669",
+        "dark": "#064e3b",
+        "outline": "#0f172a"
+      }
+    },
+    {
+      "name": "lilac",
+      "background": "#f0f0f0",
+      "accent": "#c084fc",
+      "colors": {
+        "base": "#c084fc",
+        "shadow": "#7e22ce",
+        "dark": "#4c1d95",
+        "outline": "#0f172a"
+      }
+    },
+    {
+      "name": "tangerine",
+      "background": "#f0f0f0",
+      "accent": "#f97316",
+      "colors": {
+        "base": "#f97316",
+        "shadow": "#c2410c",
+        "dark": "#7c2d12",
+        "outline": "#0f172a"
+      }
+    },
+    {
+      "name": "rose",
+      "background": "#f0f0f0",
+      "accent": "#fb7185",
+      "colors": {
+        "base": "#fb7185",
+        "shadow": "#e11d48",
+        "dark": "#881337",
+        "outline": "#0f172a"
+      }
+    },
+    {
+      "name": "slate",
+      "background": "#f0f0f0",
+      "accent": "#94a3b8",
+      "colors": {
+        "base": "#94a3b8",
+        "shadow": "#475569",
+        "dark": "#1e293b",
+        "outline": "#0f172a"
+      }
+    },
+    {
+      "name": "jade",
+      "background": "#f0f0f0",
+      "accent": "#2dd4bf",
+      "colors": {
+        "base": "#2dd4bf",
+        "shadow": "#0f766e",
+        "dark": "#115e59",
+        "outline": "#0f172a"
+      }
+    },
+    {
+      "name": "peach",
+      "background": "#f0f0f0",
+      "accent": "#fed7aa",
+      "colors": {
+        "base": "#fed7aa",
+        "shadow": "#ea580c",
+        "dark": "#9a3412",
+        "outline": "#0f172a"
+      }
+    },
+    {
+      "name": "indigo",
+      "background": "#f0f0f0",
+      "accent": "#818cf8",
+      "colors": {
+        "base": "#818cf8",
+        "shadow": "#4338ca",
+        "dark": "#312e81",
+        "outline": "#0f172a"
+      }
+    },
+    {
+      "name": "coral",
+      "background": "#f0f0f0",
+      "accent": "#f87171",
+      "colors": {
+        "base": "#f87171",
+        "shadow": "#b91c1c",
+        "dark": "#7f1d1d",
+        "outline": "#0f172a"
+      }
+    }
+  ]
+}

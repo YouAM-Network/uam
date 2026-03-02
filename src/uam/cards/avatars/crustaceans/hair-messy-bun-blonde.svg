@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <g transform="translate(0, 8)">
+    <g id="hair-messy-bun" filter="url(#clean-shadow)">
+      <path d="M 65 25 C 50 -25, 150 -25, 135 25 Z" fill="#fde047" stroke="#ca8a04" stroke-width="4" stroke-linejoin="round"/>
+      <path d="M 80 5 C 100 -20, 120 -5, 115 15 M 95 15 Q 110 -5, 125 5" fill="none" stroke="#ca8a04" stroke-width="2" stroke-linecap="round"/>
+      <path d="M 40 70 C 35 -5, 165 -5, 160 70 C 130 45, 115 55, 100 40 C 85 55, 70 45, 40 70 Z" fill="#fde047" stroke="#ca8a04" stroke-width="4" stroke-linejoin="round"/>
+      <path d="M 65 20 Q 55 10, 60 30 M 135 20 Q 145 10, 140 30" fill="none" stroke="#ca8a04" stroke-width="2" stroke-linecap="round"/>
+    </g>
+  </g>
+</svg>

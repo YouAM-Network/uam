@@ -5,7 +5,6 @@ from __future__ import annotations
 import io
 from unittest.mock import patch, MagicMock
 
-import httpx
 import pytest
 from PIL import Image
 
@@ -138,46 +137,27 @@ class TestCardVariants:
 
 
 class TestFetchAvatar:
-    @patch("uam.cards.avatars.httpx.get")
-    def test_deterministic_same_url(self, mock_get):
-        """Same address produces same URL (deterministic)."""
-        mock_resp = MagicMock()
-        mock_resp.content = b"fake-png-bytes"
-        mock_resp.raise_for_status = MagicMock()
-        mock_get.return_value = mock_resp
-
+    def test_deterministic_same_output(self):
+        """Same address produces identical PNG bytes (deterministic)."""
         result1 = fetch_avatar("scout")
         result2 = fetch_avatar("scout")
-
+        assert result1 is not None
         assert result1 == result2
-        # Both calls used the same URL
-        call_urls = [call.args[0] for call in mock_get.call_args_list]
-        assert call_urls[0] == call_urls[1]
 
-    @patch("uam.cards.avatars.httpx.get", side_effect=httpx.TimeoutException("timeout"))
-    def test_returns_none_on_timeout(self, mock_get):
-        result = fetch_avatar("scout")
+    def test_different_addresses_differ(self):
+        """Different addresses produce different avatars."""
+        a = fetch_avatar("scout")
+        b = fetch_avatar("luna")
+        assert a is not None and b is not None
+        assert a != b
+
+    def test_returns_none_on_unknown_style(self):
+        """Unknown style returns None (fallback behavior)."""
+        result = fetch_avatar("scout", style="nonexistent-style")
         assert result is None
 
-    @patch("uam.cards.avatars.httpx.get")
-    def test_returns_none_on_http_error(self, mock_get):
-        mock_get.side_effect = httpx.HTTPStatusError(
-            "500",
-            request=MagicMock(),
-            response=MagicMock(),
-        )
+    def test_returns_valid_png(self):
+        """fetch_avatar returns valid PNG bytes."""
         result = fetch_avatar("scout")
-        assert result is None
-
-    @patch("uam.cards.avatars.httpx.get")
-    def test_custom_style_parameter(self, mock_get):
-        """Avatar style is passed through to the DiceBear URL."""
-        mock_resp = MagicMock()
-        mock_resp.content = b"fake-png-bytes"
-        mock_resp.raise_for_status = MagicMock()
-        mock_get.return_value = mock_resp
-
-        fetch_avatar("scout", style="identicon")
-        url = mock_get.call_args[0][0]
-        assert "identicon" in url
-        assert "seed=scout" in url
+        assert result is not None
+        assert result[:4] == b"\x89PNG"

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <defs>
+    <clipPath id="chassis-clip"><rect x="40" y="30" width="120" height="150" rx="15" ry="15"/></clipPath>
+  </defs>
+  <g transform="translate(0, 8)">
+    <g id="chassis-boxy" filter="url(#mecha-shadow)">
+      <rect x="40" y="30" width="120" height="150" rx="15" ry="15" fill="TOKEN_BASE" stroke="TOKEN_OUTLINE" stroke-width="8" stroke-linejoin="round"/>
+      <rect x="52" y="42" width="96" height="126" rx="8" ry="8" fill="none" stroke="TOKEN_SHADOW" stroke-width="4"/>
+      <path d="M 40 150 L 40 165 Q 40 180, 55 180 L 145 180 Q 160 180, 160 165 L 160 150 L 40 150 Z" fill="TOKEN_SHADOW" opacity="0.7"/>
+      <rect x="80" y="180" width="40" height="20" fill="TOKEN_SHADOW" stroke="TOKEN_OUTLINE" stroke-width="8" stroke-linejoin="round"/>
+      <line x1="90" y1="180" x2="90" y2="200" stroke="TOKEN_OUTLINE" stroke-width="4"/>
+      <line x1="110" y1="180" x2="110" y2="200" stroke="TOKEN_OUTLINE" stroke-width="4"/>
+    </g>
+  </g>
+</svg>

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <g transform="translate(0, 8)">
+    <g id="body-carapace" filter="url(#clean-shadow)">
+      <path id="carapace-mask-target" d="M 60 25 C 75 10, 125 10, 140 25 C 160 85, 145 135, 120 145 C 100 150, 60 145, 40 135 C 15 85, 40 25, 60 25 Z" fill="TOKEN_BASE" stroke="none"/>
+      <path d="M 60 25 C 75 10, 125 10, 140 25 C 160 85, 145 135, 120 145 C 100 150, 60 145, 40 135 C 15 85, 40 25, 60 25 Z" fill="none" stroke="TOKEN_SHADOW" stroke-width="8" opacity="0.4" stroke-linecap="round" transform="translate(-2, 2) scale(0.98)"/>
+      <path d="M 45 75 Q 45 55, 65 45" fill="none" stroke="#ffffff" stroke-width="4" stroke-linecap="round" opacity="0.6"/>
+      <path d="M 75 140 C 90 135, 110 135, 125 140" fill="none" stroke="TOKEN_OUTLINE" stroke-width="4" stroke-linecap="round" opacity="0.8"/>
+      <path d="M 85 145 C 95 142, 105 142, 115 145" fill="none" stroke="TOKEN_OUTLINE" stroke-width="4" stroke-linecap="round" opacity="0.8"/>
+      <path d="M 60 25 C 75 10, 125 10, 140 25 C 160 85, 145 135, 120 145 C 100 150, 60 145, 40 135 C 15 85, 40 25, 60 25 Z" fill="none" stroke="TOKEN_OUTLINE" stroke-width="6" stroke-linejoin="round"/>
+    </g>
+  </g>
+</svg>

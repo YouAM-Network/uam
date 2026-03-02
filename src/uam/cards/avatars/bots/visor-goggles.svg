@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <g transform="translate(0, 8)">
+    <g id="visor-goggles">
+      <circle cx="75" cy="90" r="22" fill="#0f172a" stroke="#020617" stroke-width="6"/>
+      <circle cx="75" cy="90" r="14" fill="TOKEN_GLOW_AURA" filter="url(#neon-glow)"/>
+      <circle cx="75" cy="90" r="6" fill="TOKEN_GLOW_CORE"/>
+      <circle cx="125" cy="90" r="22" fill="#0f172a" stroke="#020617" stroke-width="6"/>
+      <circle cx="125" cy="90" r="14" fill="TOKEN_GLOW_AURA" filter="url(#neon-glow)"/>
+      <circle cx="125" cy="90" r="6" fill="TOKEN_GLOW_CORE"/>
+      <path d="M 97 90 L 103 90" fill="none" stroke="#020617" stroke-width="8" stroke-linecap="round"/>
+    </g>
+  </g>
+</svg>

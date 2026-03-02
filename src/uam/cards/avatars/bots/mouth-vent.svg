@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <g transform="translate(0, 8)">
+    <g id="mouth-vent">
+      <rect x="70" y="130" width="60" height="25" rx="4" fill="#1e293b" stroke="#020617" stroke-width="6"/>
+      <line x1="80" y1="135" x2="80" y2="150" stroke="#020617" stroke-width="4" stroke-linecap="round"/>
+      <line x1="90" y1="135" x2="90" y2="150" stroke="#020617" stroke-width="4" stroke-linecap="round"/>
+      <line x1="100" y1="135" x2="100" y2="150" stroke="#020617" stroke-width="4" stroke-linecap="round"/>
+      <line x1="110" y1="135" x2="110" y2="150" stroke="#020617" stroke-width="4" stroke-linecap="round"/>
+      <line x1="120" y1="135" x2="120" y2="150" stroke="#020617" stroke-width="4" stroke-linecap="round"/>
+    </g>
+  </g>
+</svg>

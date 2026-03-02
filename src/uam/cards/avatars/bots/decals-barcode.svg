@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <g transform="translate(0, 8)">
+    <g id="decals-barcode" clip-path="url(#chassis-clip)">
+      <rect x="40" y="110" width="30" height="25" fill="#f8fafc" stroke="#020617" stroke-width="4"/>
+      <rect x="40" y="115" width="30" height="10" fill="url(#decal-barcode)"/>
+    </g>
+  </g>
+</svg>

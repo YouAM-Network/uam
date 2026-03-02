@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <g transform="translate(0, 8)">
+    <g id="eyes-surprised" filter="url(#clean-shadow)">
+      <path d="M 65 45 Q 80 40, 95 45" fill="none" stroke="#1e293b" stroke-width="4" stroke-linecap="round"/>
+      <path d="M 105 45 Q 120 40, 135 45" fill="none" stroke="#1e293b" stroke-width="4" stroke-linecap="round"/>
+      <g transform="translate(80, 75)">
+        <ellipse cx="0" cy="0" rx="16" ry="20" fill="#ffffff" stroke="#1e293b" stroke-width="4"/>
+        <circle cx="0" cy="0" r="4" fill="#1e293b"/>
+      </g>
+      <g transform="translate(120, 75)">
+        <ellipse cx="0" cy="0" rx="16" ry="20" fill="#ffffff" stroke="#1e293b" stroke-width="4"/>
+        <circle cx="0" cy="0" r="4" fill="#1e293b"/>
+      </g>
+    </g>
+  </g>
+</svg>

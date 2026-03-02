@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <g transform="translate(0, 8)">
+    <g id="decals-panels" clip-path="url(#chassis-clip)">
+      <path d="M 100 20 L 100 70 M 100 70 L 130 90 M 100 70 L 70 90" fill="none" stroke="#020617" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="100" cy="70" r="4" fill="#020617"/>
+      <path d="M 40 140 L 70 140 L 70 160" fill="none" stroke="#020617" stroke-width="4" stroke-linejoin="round"/>
+      <circle cx="70" cy="160" r="3" fill="#020617"/>
+    </g>
+  </g>
+</svg>

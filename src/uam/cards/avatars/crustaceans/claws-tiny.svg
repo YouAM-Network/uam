@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <g transform="translate(0, 8)">
+    <g id="layer-claws">
+      <path d="M 48 85 L 25 90 L 25 120 Z" fill="TOKEN_BASE" stroke="TOKEN_OUTLINE" stroke-width="6" stroke-linejoin="round"/>
+      <circle cx="25" cy="105" r="6" fill="TOKEN_DARK"/>
+      <path d="M 152 85 L 175 90 L 175 120 Z" fill="TOKEN_BASE" stroke="TOKEN_OUTLINE" stroke-width="6" stroke-linejoin="round"/>
+      <circle cx="175" cy="105" r="6" fill="TOKEN_DARK"/>
+      <g id="claw-left-tiny" filter="url(#clean-shadow)">
+        <circle cx="18" cy="115" r="12" fill="TOKEN_BASE" stroke="TOKEN_OUTLINE" stroke-width="6"/>
+        <path d="M 5 115 L 15 115" stroke="TOKEN_OUTLINE" stroke-width="4" stroke-linecap="round"/>
+      </g>
+      <g id="claw-right-tiny" filter="url(#clean-shadow)">
+        <circle cx="182" cy="115" r="12" fill="TOKEN_BASE" stroke="TOKEN_OUTLINE" stroke-width="6"/>
+        <path d="M 195 115 L 185 115" stroke="TOKEN_OUTLINE" stroke-width="4" stroke-linecap="round"/>
+      </g>
+    </g>
+  </g>
+</svg>

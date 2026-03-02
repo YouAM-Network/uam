@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <g transform="translate(0, 8)">
+    <g id="eyes-half-closed" filter="url(#clean-shadow)">
+      <g transform="translate(80, 75)">
+        <ellipse cx="0" cy="0" rx="16" ry="20" fill="#ffffff" stroke="#1e293b" stroke-width="4"/>
+        <circle cx="0" cy="2" r="8" fill="#1e293b"/>
+        <circle cx="-3" cy="-3" r="3" fill="#ffffff"/>
+        <path d="M -20 5 L 20 5 L 20 -25 L -20 -25 Z" fill="#ef4444" opacity="0.9"/>
+        <path d="M -18 5 L 18 5" fill="none" stroke="#1e293b" stroke-width="4" stroke-linecap="round"/>
+      </g>
+      <g transform="translate(120, 75)">
+        <ellipse cx="0" cy="0" rx="16" ry="20" fill="#ffffff" stroke="#1e293b" stroke-width="4"/>
+        <circle cx="0" cy="2" r="8" fill="#1e293b"/>
+        <circle cx="-3" cy="-3" r="3" fill="#ffffff"/>
+        <path d="M -20 5 L 20 5 L 20 -25 L -20 -25 Z" fill="#ef4444" opacity="0.9"/>
+        <path d="M -18 5 L 18 5" fill="none" stroke="#1e293b" stroke-width="4" stroke-linecap="round"/>
+      </g>
+    </g>
+  </g>
+</svg>
