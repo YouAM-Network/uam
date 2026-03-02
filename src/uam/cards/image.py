@@ -148,6 +148,9 @@ def render_card(
     expires_at: str | None = None,
     avatar_style: str = "bottts-neutral",
     avatar_bytes: bytes | None = None,
+    bg_color: str | None = None,
+    accent_color: str | None = None,
+    badge_text: str | None = None,
 ) -> bytes:
     """Generate a 600x600 JPEG card image.
 
@@ -159,17 +162,20 @@ def render_card(
         expires_at: Optional expiration timestamp (shown on reservation cards).
         avatar_style: DiceBear avatar style name.
         avatar_bytes: Pre-fetched avatar PNG bytes (skips HTTP call if provided).
+        bg_color: Override background color (hex, e.g. "#18181b").
+        accent_color: Override accent color (hex, e.g. "#8b5cf6").
+        badge_text: Override badge text (e.g. "AI Agent").
 
     Returns:
         Raw JPEG bytes (always under 200KB at 600x600).
     """
     scheme = _SCHEMES.get(card_type, _SCHEMES["reservation"])
-    bg_color = scheme["bg"]
-    accent = scheme["accent"]
-    badge_text = scheme["badge"]
+    bg = bg_color or scheme["bg"]
+    accent = accent_color or scheme["accent"]
+    badge = badge_text if badge_text is not None else scheme["badge"]
 
     # Create canvas
-    canvas = Image.new("RGB", (_WIDTH, _HEIGHT), bg_color)
+    canvas = Image.new("RGB", (_WIDTH, _HEIGHT), bg)
     draw = ImageDraw.Draw(canvas)
 
     # --- Top bar (y=20-60): relay domain right-aligned ---
@@ -196,8 +202,8 @@ def render_card(
 
     # --- Badge (y=360-390): accent color, centered ---
     font_badge = _load_font("Bold", 18)
-    bw, _ = _measure_text(draw, badge_text, font_badge)
-    draw.text(((_WIDTH - bw) // 2, 365), badge_text, fill=accent, font=font_badge)
+    bw, _ = _measure_text(draw, badge, font_badge)
+    draw.text(((_WIDTH - bw) // 2, 365), badge, fill=accent, font=font_badge)
 
     # --- Bottom section (y=420-560) ---
     font_body = _load_font("Regular", 15)

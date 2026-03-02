@@ -103,6 +103,34 @@ class TestCardVariants:
             ident = render_card(name, "youam.network", "identity", avatar_bytes=_TEST_AVATAR)
             assert len(ident) < MAX_SIZE, f"Identity card for {name_len}-char name too large: {len(ident)}"
 
+    def test_custom_style_overrides(self):
+        """Custom bg_color, accent_color, badge_text produce valid JPEG."""
+        result = render_card(
+            "scout",
+            "youam.network",
+            "reservation",
+            avatar_bytes=_TEST_AVATAR,
+            bg_color="#18181b",
+            accent_color="#8b5cf6",
+            badge_text="Custom Badge",
+        )
+        assert result[:2] == JPEG_MAGIC
+        assert 0 < len(result) < MAX_SIZE
+
+    def test_custom_overrides_differ_from_defaults(self):
+        """Cards with custom styles produce different bytes than defaults."""
+        default = render_card("scout", "youam.network", "reservation", avatar_bytes=_TEST_AVATAR)
+        custom = render_card(
+            "scout",
+            "youam.network",
+            "reservation",
+            avatar_bytes=_TEST_AVATAR,
+            bg_color="#ff0000",
+            accent_color="#00ff00",
+            badge_text="CUSTOM",
+        )
+        assert default != custom
+
 
 # ---------------------------------------------------------------------------
 # Avatar fetch tests

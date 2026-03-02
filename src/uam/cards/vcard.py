@@ -84,6 +84,9 @@ def generate_reservation_vcard(
     expires_at: str | None = None,
     card_image_jpeg: bytes | None = None,
     avatar_style: str = "bottts-neutral",
+    bg_color: str | None = None,
+    accent_color: str | None = None,
+    badge_text: str | None = None,
 ) -> str:
     """Generate a vCard 3.0 for an address reservation.
 
@@ -109,6 +112,9 @@ def generate_reservation_vcard(
             "reservation",
             expires_at=expires_at,
             avatar_style=avatar_style,
+            bg_color=bg_color,
+            accent_color=accent_color,
+            badge_text=badge_text,
         )
 
     b64_photo = base64.b64encode(card_image_jpeg).decode("ascii")
@@ -161,6 +167,9 @@ def generate_identity_vcard(
     fingerprint: str | None = None,
     card_image_jpeg: bytes | None = None,
     avatar_style: str = "bottts-neutral",
+    bg_color: str | None = None,
+    accent_color: str | None = None,
+    badge_text: str | None = None,
 ) -> str:
     """Generate a vCard 3.0 for an established agent identity.
 
@@ -187,6 +196,9 @@ def generate_identity_vcard(
             "identity",
             fingerprint=fingerprint,
             avatar_style=avatar_style,
+            bg_color=bg_color,
+            accent_color=accent_color,
+            badge_text=badge_text,
         )
 
     b64_photo = base64.b64encode(card_image_jpeg).decode("ascii")
