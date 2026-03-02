@@ -64,6 +64,11 @@ class Settings:
         self.reservation_ttl_hours: int = int(
             os.getenv("UAM_RESERVATION_TTL_HOURS", "48")
         )
+        # Card styling settings
+        self.avatar_style: str = os.getenv("UAM_AVATAR_STYLE", "bottts-neutral")
+        self.card_bg_color: str | None = os.getenv("UAM_CARD_BG_COLOR")
+        self.card_accent_color: str | None = os.getenv("UAM_CARD_ACCENT_COLOR")
+        self.card_badge_text: str | None = os.getenv("UAM_CARD_BADGE_TEXT")
         # Viral onboarding settings (VIRAL-01)
         self.website_url: str = os.getenv(
             "UAM_WEBSITE_URL", f"https://{self.relay_domain}"

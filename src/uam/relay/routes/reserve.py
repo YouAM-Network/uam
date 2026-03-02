@@ -30,6 +30,7 @@ from uam.relay.models import (
     ReserveRequest,
     ReserveResponse,
 )
+from uam.cards.avatars import fetch_avatar
 from uam.cards.image import render_card
 from uam.cards.vcard import generate_reservation_vcard
 from uam.relay.webhook_validator import validate_webhook_url
@@ -229,13 +230,20 @@ async def download_reservation_card(
     settings = request.app.state.settings
     agent_name = reservation.address.split("::")[0]
 
-    jpeg_bytes = render_card(
-        agent_name=agent_name,
-        relay_domain=settings.relay_domain,
-        card_type="reservation",
-        expires_at=reservation.expires_at.isoformat() if reservation.expires_at else None,
-        avatar_style=settings.avatar_style,
-    )
+    try:
+        jpeg_bytes = render_card(
+            agent_name=agent_name,
+            relay_domain=settings.relay_domain,
+            card_type="reservation",
+            expires_at=reservation.expires_at.isoformat() if reservation.expires_at else None,
+            avatar_style=getattr(settings, "avatar_style", "bottts-neutral"),
+            bg_color=getattr(settings, "card_bg_color", None),
+            accent_color=getattr(settings, "card_accent_color", None),
+            badge_text=getattr(settings, "card_badge_text", None),
+        )
+    except Exception:
+        logger.exception("Failed to render reservation card for %s", agent_name)
+        raise HTTPException(status_code=500, detail="Card rendering failed")
 
     return Response(
         content=jpeg_bytes,
@@ -278,5 +286,31 @@ async def download_reservation_vcf(
         media_type="text/vcard",
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
+        },
+    )
+
+
+@router.get("/avatar/{address}.png")
+async def get_avatar(
+    address: str,
+    request: Request,
+) -> Response:
+    """Fetch a DiceBear avatar PNG for an agent address.
+
+    Returns a 200x200 PNG avatar deterministically generated from the address.
+    Falls back to a 1x1 transparent PNG if the upstream DiceBear API is unavailable.
+    """
+    settings = request.app.state.settings
+    avatar_style = getattr(settings, "avatar_style", "bottts-neutral")
+
+    avatar_bytes = fetch_avatar(address, style=avatar_style)
+    if avatar_bytes is None:
+        raise HTTPException(status_code=502, detail="Avatar service unavailable")
+
+    return Response(
+        content=avatar_bytes,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "public, max-age=86400",
         },
     )
