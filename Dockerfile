@@ -20,7 +20,6 @@ RUN uv sync --frozen --no-dev --no-install-project
 
 # Copy source
 COPY src/ src/
-COPY Procfile ./
 
 ENV PYTHONPATH=src
 EXPOSE 8000
