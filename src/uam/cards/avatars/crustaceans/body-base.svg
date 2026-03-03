@@ -17,7 +17,7 @@
       <path d="M 20 0 Q 40 25, 20 50 T 20 100 T 20 150 T 20 200" fill="none" stroke="#ffffff" stroke-width="8" opacity="0.2" stroke-linecap="round"/>
     </pattern>
     <clipPath id="carapace-clip">
-      <path d="M 60 25 C 75 10, 125 10, 140 25 C 160 85, 145 135, 120 145 C 100 150, 60 145, 40 135 C 15 85, 40 25, 60 25 Z"/>
+      <path d="M 60 25 C 75 10, 125 10, 140 25 C 160 85, 145 135, 120 145 C 110 150, 90 150, 80 145 C 55 135, 40 85, 60 25 Z"/>
     </clipPath>
   </defs>
   <g transform="translate(0, 8)">
