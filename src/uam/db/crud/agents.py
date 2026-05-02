@@ -25,9 +25,21 @@ async def create_agent(
 ) -> Agent:
     """Create a new Agent record.
 
+    T2.1 (Phase 43 Plan 04): if the caller does not provide ``token_hash``,
+    we compute it here from ``token`` + the configured pepper. Every Agent
+    row must have a non-null token_hash (NOT NULL post-migration 0003);
+    auto-deriving it keeps callers (reserve, demo, register) decoupled
+    from the hashing primitive.
+
     When *commit* is ``False`` the row is flushed but the caller is
     responsible for committing the session.
     """
+    if "token_hash" not in kwargs:
+        # Lazy import: CRUD shouldn't depend on relay config at module load.
+        from uam.relay.config import settings as _settings
+        from uam.relay.token_hashing import hash_token as _hash_token
+        kwargs["token_hash"] = _hash_token(token, _settings.token_pepper)
+
     agent = Agent(
         address=address,
         public_key=public_key,

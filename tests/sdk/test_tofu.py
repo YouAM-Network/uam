@@ -123,8 +123,21 @@ class TestTOFUResolvePublicKey:
         finally:
             await book.close()
 
-    async def test_unknown_contact_stored_as_provisional(self, data_dir):
-        """An unknown contact is resolved from network and stored as provisional."""
+    async def test_unknown_contact_resolved_without_mutation(self, data_dir):
+        """T1.5: _resolve_public_key is PURE -- it must NOT mutate the contact book.
+
+        Phase 43 T1.5 (Plan 02): the resolver returns the key without writing
+        any row to the contact book. This is the fix that makes send()'s
+        first-contact handshake actually fire (the old behaviour wrote a
+        ``provisional`` row here, which made send()'s ``is_known()`` check
+        short-circuit and skip ``_initiate_handshake``). Provisional /
+        handshake-sent storage now lives inside ``_initiate_handshake``.
+
+        Pre-Plan-02 this test asserted ``trust == 'provisional'`` after
+        ``_resolve_public_key`` ran -- that assertion encoded the bug. The
+        corrected contract is: resolver returns the key, contact book is
+        unchanged.
+        """
         sk_b, vk_b = generate_keypair()
         pk_b_str = serialize_verify_key(vk_b)
 
@@ -142,14 +155,21 @@ class TestTOFUResolvePublicKey:
             # Mock resolver returns a key
             agent._resolver.resolve_public_key = AsyncMock(return_value=pk_b_str)
 
+            # Pre-condition: bob is unknown
+            assert book.is_known("bob::test.local") is False
+            assert await book.get_trust_state("bob::test.local") is None
+
             result = await agent._resolve_public_key("bob::test.local")
 
+            # The key is returned correctly
             assert serialize_verify_key(result) == pk_b_str
             agent._resolver.resolve_public_key.assert_called_once()
 
-            # Check the contact was stored as provisional
-            trust = await book.get_trust_state("bob::test.local")
-            assert trust == "provisional"
+            # T1.5 contract: the contact book must NOT have been mutated.
+            # No row, no trust state, is_known still False.
+            assert book.is_known("bob::test.local") is False
+            assert await book.get_trust_state("bob::test.local") is None
+            assert await book.get_public_key("bob::test.local") is None
         finally:
             await book.close()
 
@@ -281,6 +301,14 @@ class TestTOFUHandshakeLifecycle:
         await book.open()
         try:
             manager = HandshakeManager(book, "auto-accept")
+
+            # Phase 43 T1.2: an accept can only promote to 'pinned' if Bob
+            # previously initiated a handshake to Alice. Seed the prior state.
+            await book.add_contact(
+                address="alice::test.local",
+                public_key=serialize_verify_key(vk_a),
+                trust_state="handshake-sent",
+            )
 
             # Create a handshake.accept envelope from alice
             accept_payload = json.dumps({"status": "accepted"}).encode("utf-8")
@@ -513,3 +541,135 @@ class TestIsTrustedOrVerifiedIncludesPinned:
             assert await book.is_trusted_or_verified("alice::test.local") is False
         finally:
             await book.close()
+
+
+# ===========================================================================
+# Phase 43 — Theme 1: Unsolicited handshake.accept tests (T1.2)
+# ===========================================================================
+#
+# These tests are FAILING-BY-DESIGN as of Wave 0. Plan 01 will turn them green
+# by gating _handle_accept on prior 'handshake-sent' state and verifying the
+# embedded contact_card matches the envelope sender.
+#
+# References:
+#   - 43-VALIDATION.md rows T1.2
+#   - 43-RESEARCH.md Pattern 3 (TOFU Card-Binding) + phase_requirements T1.2
+#   - REVIEW-protocol-sdk.md finding #2
+# ===========================================================================
+
+
+async def test_unsolicited_accept_rejected(data_dir):
+    """T1.2: an inbound handshake.accept from an address that we never sent a
+    handshake.request to must NOT promote that address to 'pinned'.
+
+    Expected behaviour after Plan 01: _handle_accept short-circuits when the
+    prior trust_state is not 'handshake-sent' (logs a warning, drops the
+    envelope, does NOT pin).
+    Today (Wave 0): _handle_accept unconditionally calls add_contact with
+    trust_state='pinned', so this test FAILS — the assertion that state
+    != 'pinned' will not hold.
+    """
+    sk_eve, vk_eve = generate_keypair()
+    sk_alice, vk_alice = generate_keypair()
+
+    # Build a handshake.accept envelope from Eve to Alice. Alice has never
+    # sent a request to Eve, so this is unsolicited.
+    accept_payload = json.dumps({"status": "accepted"}).encode("utf-8")
+    accept_envelope = create_envelope(
+        from_address="eve::evil.local",
+        to_address="alice::test.local",
+        message_type=MessageType.HANDSHAKE_ACCEPT,
+        payload_plaintext=accept_payload,
+        signing_key=sk_eve,
+        recipient_verify_key=vk_alice,
+    )
+
+    book = ContactBook(data_dir)
+    await book.open()
+    try:
+        manager = HandshakeManager(book, "auto-accept")
+        alice_agent = _mock_agent(sk_alice, vk_alice, "alice::test.local")
+
+        # Pre-condition: Alice has NEVER sent a handshake.request to Eve
+        assert await book.get_trust_state("eve::evil.local") is None
+
+        # Process the unsolicited accept. After Plan 01, _handle_accept's
+        # signature is (agent, envelope, sender_vk).
+        await manager._handle_accept(alice_agent, accept_envelope, vk_eve)
+
+        # Post-condition: must NOT be pinned. Failure mode today: state == 'pinned'.
+        state = await book.get_trust_state("eve::evil.local")
+        assert state != "pinned", (
+            f"Unsolicited handshake.accept promoted Eve to pinned (state={state!r}). "
+            "After Plan 01, _handle_accept must reject when prior state is not 'handshake-sent'."
+        )
+    finally:
+        await book.close()
+
+
+async def test_accept_card_envelope_binding(data_dir):
+    """T1.2: handshake.accept must cross-check the embedded contact_card against the envelope.
+
+    Setup: Alice DID send a request to Bob (trust_state='handshake-sent'),
+    but the inbound accept arrives from Bob's address with an embedded
+    contact_card claiming Eve's identity. The SDK must reject the accept
+    rather than promote Bob to pinned (or worse, accept Eve's identity).
+
+    Expected behaviour after Plan 01: InvalidEnvelopeError (or equivalent
+    rejection that leaves Bob in 'handshake-sent').
+    Today (Wave 0): _handle_accept ignores the payload entirely, so the
+    embedded card is never inspected and the test FAILS — Bob is promoted
+    to pinned with no binding check.
+    """
+    from uam.protocol.errors import InvalidEnvelopeError
+
+    sk_bob, vk_bob = generate_keypair()
+    sk_eve, vk_eve = generate_keypair()
+    sk_alice, vk_alice = generate_keypair()
+
+    book = ContactBook(data_dir)
+    await book.open()
+    try:
+        # Step 1: Alice has sent a request to Bob — establish handshake-sent state
+        await book.add_contact(
+            address="bob::test.local",
+            public_key=serialize_verify_key(vk_bob),
+            trust_state="handshake-sent",
+        )
+        manager = HandshakeManager(book, "auto-accept")
+
+        # Step 2: build an accept envelope from Bob whose embedded card
+        # actually claims Eve's identity (eve::evil.local, eve's pubkey)
+        forged_card = create_contact_card(
+            address="eve::evil.local",
+            display_name="eve",
+            relay="ws://test/ws",
+            signing_key=sk_eve,
+        )
+        accept_payload = json.dumps({
+            "status": "accepted",
+            "contact_card": contact_card_to_dict(forged_card),
+        }).encode("utf-8")
+        envelope = create_envelope(
+            from_address="bob::test.local",
+            to_address="alice::test.local",
+            message_type=MessageType.HANDSHAKE_ACCEPT,
+            payload_plaintext=accept_payload,
+            signing_key=sk_bob,
+            recipient_verify_key=vk_alice,
+        )
+        alice_agent = _mock_agent(sk_alice, vk_alice, "alice::test.local")
+
+        with pytest.raises(InvalidEnvelopeError, match="card|address|public_key|does not match"):
+            await manager._handle_accept(alice_agent, envelope, vk_bob)
+
+        # Bob remains in handshake-sent (NOT promoted to pinned)
+        state = await book.get_trust_state("bob::test.local")
+        assert state == "handshake-sent", (
+            f"Bob's trust_state should remain 'handshake-sent' after a card-mismatched "
+            f"accept; got {state!r}"
+        )
+        # Eve must not have been added either
+        assert book.is_known("eve::evil.local") is False
+    finally:
+        await book.close()

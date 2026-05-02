@@ -9,6 +9,14 @@ class Settings:
     """Relay server settings, read from environment variables with defaults."""
 
     def __init__(self) -> None:
+        # T2.1: Server-side pepper for HMAC-SHA-256(token, pepper).  The
+        # relay refuses to start if this is unset (see _require()).
+        # Generate with:
+        #   python -c "import secrets; print(secrets.token_urlsafe(48))"
+        # NEVER rotate this value without coordinated re-issuance of every
+        # existing bearer token (or a dual-pepper rolling rotation, which
+        # is deferred per 43-RESEARCH.md Open Question 1).
+        self.token_pepper: str = self._require("UAM_TOKEN_PEPPER")
         self.relay_domain: str = os.getenv("UAM_RELAY_DOMAIN", "youam.network")
         self.relay_ws_url: str = os.getenv(
             "UAM_RELAY_WS_URL", "wss://relay.youam.network/ws"
@@ -59,6 +67,12 @@ class Settings:
         self.federation_discovery_ttl_hours: int = int(
             os.getenv("UAM_FEDERATION_DISCOVERY_TTL_HOURS", "1")
         )
+        # T1.4: Federation peer-key cache TTL (seconds). Bounds the time window
+        # during which a poisoned home-relay /public-key response could affect
+        # inbound delivery. Default: 5 minutes.
+        self.federation_peer_key_ttl: int = int(
+            os.getenv("UAM_FEDERATION_PEER_KEY_TTL", "300")
+        )
         self.federation_retry_delays: list[int] = [0, 30, 300, 1800, 7200]
         # Reservation settings (RES-02)
         self.reservation_ttl_hours: int = int(
@@ -73,3 +87,55 @@ class Settings:
         self.website_url: str = os.getenv(
             "UAM_WEBSITE_URL", f"https://{self.relay_domain}"
         )
+
+    @staticmethod
+    def _require(name: str) -> str:
+        """Read a required env var or raise.
+
+        The relay refuses to start if any required env var is unset.
+        Use this at construction time to fail loudly during boot rather
+        than silently mis-configure the runtime.
+        """
+        v = os.getenv(name)
+        if not v:
+            raise RuntimeError(
+                f"Required env var {name} is unset. The relay refuses to "
+                f"start without it. Generate one with: "
+                f"python -c 'import secrets; print(secrets.token_urlsafe(48))'"
+            )
+        return v
+
+
+# ---------------------------------------------------------------------------
+# Module-level singleton -- imported by ``auth.py`` and tests.
+#
+# Constructed lazily on first attribute access so that simply importing
+# ``uam.relay.config`` (e.g. for type hints, for module discovery, or for
+# pytest collection) does not require every required env var to be set.
+# Production code paths that read from settings (``auth.verify_token_http``,
+# ``register.register``, etc.) DO touch the attributes and will raise the
+# clear ``RuntimeError`` from ``_require()`` if the relay was misconfigured.
+# ---------------------------------------------------------------------------
+
+
+class _LazySettings:
+    """Proxy that constructs the real ``Settings`` on first attribute access."""
+
+    _instance: Settings | None = None
+
+    def _materialize(self) -> Settings:
+        if self._instance is None:
+            self._instance = Settings()
+        return self._instance
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._materialize(), name)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if name.startswith("_"):
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._materialize(), name, value)
+
+
+settings = _LazySettings()

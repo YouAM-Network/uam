@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -32,6 +33,7 @@ from uam.relay.models import (
     FederationDeliverResponse,
     WellKnownRelayResponse,
 )
+from uam.relay.peer_key_cache import peer_key_cache
 from uam.relay.relay_auth import verify_federation_signature
 
 logger = logging.getLogger(__name__)
@@ -181,7 +183,15 @@ async def federation_deliver(
                 status_code=401, detail="Invalid relay signature"
             )
 
-        # ---- Step 7: Agent envelope signature verification ----
+        # ---- Step 7: Agent envelope signature verification (T1.4) ----
+        #
+        # We MUST resolve the sender's verify key authoritatively, NOT trust
+        # the envelope-supplied ``sender_key`` field. For local senders the
+        # DB is authoritative; for remote senders we look up the key on the
+        # sender's home relay (cached for ``UAM_FEDERATION_PEER_KEY_TTL`` s).
+        # If the envelope embeds a ``sender_key`` and it disagrees with the
+        # authoritative record, reject with 403 — that is the federation
+        # impersonation attack T1.4 closes.
         try:
             envelope = from_wire_dict(envelope_dict)
         except InvalidEnvelopeError as exc:
@@ -189,37 +199,60 @@ async def federation_deliver(
                 status_code=400, detail=f"Invalid envelope: {exc}"
             ) from exc
 
-        # Get sender's verify key from the envelope wire dict
-        sender_key_b64 = envelope_dict.get("sender_key")
-        if sender_key_b64:
-            try:
-                sender_vk = deserialize_verify_key(sender_key_b64)
-                verify_envelope(envelope, sender_vk)
-            except SignatureVerificationError as exc:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Invalid agent envelope signature: {exc}",
-                ) from exc
+        sender_key_envelope = envelope_dict.get("sender_key")  # cross-check only
+        sender_agent = await get_agent_by_address(session, envelope.from_address)
+        if sender_agent is not None:
+            # Local sender — DB is authoritative
+            authoritative_key = sender_agent.public_key
         else:
-            # Try looking up the sender locally (if registered on this relay)
-            sender_agent = await get_agent_by_address(session, envelope.from_address)
-            if sender_agent:
-                try:
-                    sender_vk = deserialize_verify_key(sender_agent.public_key)
-                    verify_envelope(envelope, sender_vk)
-                except SignatureVerificationError as exc:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Invalid agent envelope signature: {exc}",
-                    ) from exc
-            # else: sender not local and no sender_key in envelope
-            # The sending relay already verified the agent signature.
-            # Log a warning but don't reject -- the relay signature is valid.
-            else:
-                logger.warning(
-                    "Cannot re-verify agent signature for %s (no sender_key, sender not local)",
-                    envelope.from_address,
+            # Remote sender — resolve via the sender's home relay
+            federation_service = getattr(
+                request.app.state, "federation_service", None
+            )
+            if federation_service is None:
+                raise HTTPException(
+                    status_code=403,
+                    detail=(
+                        f"Cannot resolve sender key for {envelope.from_address!r}: "
+                        "federation service unavailable"
+                    ),
                 )
+            authoritative_key = await _resolve_remote_sender_key(
+                session, envelope.from_address, federation_service, settings
+            )
+            if authoritative_key is None:
+                raise HTTPException(
+                    status_code=403,
+                    detail=(
+                        f"Cannot resolve sender key for {envelope.from_address!r}: "
+                        "home relay unreachable or sender unknown"
+                    ),
+                )
+
+        # Cross-check: if envelope embedded a sender_key, it MUST match the
+        # authoritative one. This is the federation-impersonation guard.
+        if sender_key_envelope and sender_key_envelope != authoritative_key:
+            logger.warning(
+                "T1.4: envelope sender_key mismatch for %s "
+                "(envelope=%s..., authoritative=%s...)",
+                envelope.from_address,
+                sender_key_envelope[:16],
+                authoritative_key[:16],
+            )
+            raise HTTPException(
+                status_code=403,
+                detail="Envelope sender_key does not match home-relay record",
+            )
+
+        # Verify the envelope signature against the AUTHORITATIVE key
+        try:
+            sender_vk = deserialize_verify_key(authoritative_key)
+            verify_envelope(envelope, sender_vk)
+        except SignatureVerificationError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid agent envelope signature: {exc}",
+            ) from exc
 
         # ---- Step 8: Dedup check ----
         is_new = await record_message_id(session, envelope.message_id, envelope.from_address, commit=False)
@@ -334,5 +367,96 @@ async def _rediscover_relay_key(session: AsyncSession, from_relay: str) -> str |
     except Exception:
         logger.debug(
             "Failed to re-discover relay key for %s", from_relay, exc_info=True
+        )
+    return None
+
+
+async def _resolve_remote_sender_key(
+    session: AsyncSession,
+    sender_address: str,
+    federation_service,  # noqa: ANN001 — FederationService, avoid import cycle
+    settings,  # noqa: ANN001 — Settings, avoid import cycle
+) -> str | None:
+    """T1.4: resolve a non-local sender's verify key via its HOME relay.
+
+    Calls ``GET {home_relay}/api/v1/agents/{sender_address}/public-key`` (which
+    is the same unauthenticated endpoint a fresh-handshake client would use)
+    and caches successful resolutions in :data:`peer_key_cache` for
+    ``settings.federation_peer_key_ttl`` seconds.
+
+    Returns the public_key (b64) on success; ``None`` on any failure
+    (home relay unreachable, agent unknown, network error, malformed response).
+
+    Caller MUST treat ``None`` as a hard failure (HTTP 403). Falling back
+    to the envelope-supplied ``sender_key`` is the impersonation bypass T1.4
+    closes.
+
+    Notes
+    -----
+    * Failed lookups are NOT cached — a transient outage at the home relay
+      should not pin "no key" for ``ttl`` seconds.
+    * The ``federation_service._client`` httpx pool is reused (per
+      RESEARCH.md § Don't Build Your Own — do NOT instantiate a fresh client
+      per call).
+    * For senders whose ``domain == settings.relay_domain`` we return ``None``;
+      the caller is expected to resolve via :func:`get_agent_by_address`
+      before falling through to this helper.
+    """
+    cache_key = f"peer_agent_key:{sender_address}"
+    cached = await peer_key_cache.get(cache_key)
+    if cached:
+        return cached
+
+    if "::" not in sender_address:
+        logger.warning("T1.4: malformed sender_address %r", sender_address)
+        return None
+    domain = sender_address.split("::", 1)[1]
+    if domain == settings.relay_domain:
+        # Local agent — caller should have used get_agent_by_address.
+        return None
+
+    relay = await federation_service.discover_relay(domain)
+    if relay is None:
+        logger.warning(
+            "T1.4: cannot discover home relay for %s (domain=%s)",
+            sender_address, domain,
+        )
+        return None
+
+    federation_url = relay.get("federation_url")
+    if not federation_url:
+        logger.warning(
+            "T1.4: home relay record for %s lacks federation_url: %r",
+            domain, relay,
+        )
+        return None
+
+    parsed = urlparse(federation_url)
+    if not parsed.scheme or not parsed.netloc:
+        logger.warning(
+            "T1.4: home relay federation_url is malformed: %r", federation_url
+        )
+        return None
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    url = f"{base}/api/v1/agents/{sender_address}/public-key"
+
+    try:
+        resp = await federation_service._client.get(url, timeout=10.0)
+        resp.raise_for_status()
+        data = resp.json()
+        public_key = data.get("public_key")
+        if public_key:
+            await peer_key_cache.set(
+                cache_key, public_key, ttl=settings.federation_peer_key_ttl
+            )
+            return public_key
+        logger.warning(
+            "T1.4: home relay %s returned no public_key for %s",
+            base, sender_address,
+        )
+    except Exception:
+        logger.warning(
+            "T1.4: failed to resolve remote sender key for %s via %s",
+            sender_address, url, exc_info=True,
         )
     return None

@@ -6,7 +6,7 @@ import json
 import logging
 from datetime import datetime, timezone, timedelta
 
-from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 # Grace period for clock skew when checking expiry (seconds)
 _EXPIRY_GRACE_SECONDS = 30
@@ -262,18 +262,55 @@ async def handle_inbound_message(
 
 
 @router.websocket("/ws")
-async def websocket_endpoint(
-    websocket: WebSocket,
-    token: str = Query(...),
-) -> None:
+async def websocket_endpoint(websocket: WebSocket) -> None:
     """WebSocket endpoint for real-time agent messaging.
 
-    Auth flow: look up agent by token BEFORE accepting. Never accept
-    unauthenticated connections.
+    Auth flow (T2.2 -- Phase 43 Plan 04, priority order):
+      1. ``Authorization: Bearer {token}``      -- programmatic clients (Python SDK)
+      2. ``Sec-WebSocket-Protocol: bearer.{token}`` -- browsers (cannot set
+         custom headers on WS upgrade; subprotocol is the canonical workaround)
+      3. ``?token={token}`` query string         -- DEPRECATED; logs warning.
+         Removed in a follow-up release; documented as a one-release transition.
+
+    Look up agent by token BEFORE accepting.  Never accept unauthenticated
+    connections.  When auth is via subprotocol, the chosen subprotocol MUST
+    be echoed back in ``websocket.accept(subprotocol=...)`` -- without this,
+    browsers drop the connection silently with no error frame (Pitfall 3).
     """
     factory = init_session_factory(get_engine())
     manager: ConnectionManager = websocket.app.state.manager
     heartbeat = websocket.app.state.heartbeat
+
+    # T2.2: extract token from header / subprotocol / query (in priority order).
+    auth_header = websocket.headers.get("authorization")
+    token: str | None = None
+    chosen_subproto: str | None = None
+
+    if auth_header and auth_header.lower().startswith("bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+    else:
+        # Sec-WebSocket-Protocol may list multiple protocols; find the bearer one.
+        # Starlette parses the header into a list under scope['subprotocols'].
+        for proto in websocket.scope.get("subprotocols", []):
+            if proto.startswith("bearer."):
+                token = proto.removeprefix("bearer.")
+                chosen_subproto = proto
+                break
+
+    if not token:
+        token = websocket.query_params.get("token")
+        if token:
+            client_host = websocket.client.host if websocket.client else "unknown"
+            logger.warning(
+                "WS auth via querystring is DEPRECATED; use Authorization "
+                "header or Sec-WebSocket-Protocol: bearer.<token>. "
+                "(client_ip=%s)",
+                client_host,
+            )
+
+    if not token:
+        await websocket.close(code=1008, reason="missing token")
+        return
 
     # Auth: look up agent by token before accepting
     agent = await verify_token_ws(token)
@@ -289,8 +326,13 @@ async def websocket_endpoint(
         await websocket.close(code=1008, reason="sender is blocked")
         return
 
-    # Accept and register
-    await websocket.accept()
+    # Accept and register.  Echo the chosen subprotocol so browser clients
+    # don't drop the connection (Pitfall 3 -- without echo the WS handshake
+    # is technically valid but browsers per-spec close it).
+    if chosen_subproto:
+        await websocket.accept(subprotocol=chosen_subproto)
+    else:
+        await websocket.accept()
     await manager.connect(address, websocket)
     heartbeat.record_connect(address)
     logger.info("WebSocket connected: %s", address)

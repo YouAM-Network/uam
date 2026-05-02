@@ -529,3 +529,98 @@ class TestVerifiedTrustState:
             assert await book2.is_trusted_or_verified("alice::example.com") is True
         finally:
             await book2.close()
+
+
+# ===========================================================================
+# Phase 43 — Theme 1: Pinned-overwrite refusal tests (T1.3)
+# ===========================================================================
+#
+# These tests are FAILING-BY-DESIGN as of Wave 0. Plan 01 will turn them green
+# by adding a pinned-overwrite guard to ContactBook.add_contact and a
+# force=True escape hatch for legitimate key rotation.
+#
+# References:
+#   - 43-VALIDATION.md rows T1.3
+#   - 43-RESEARCH.md phase_requirements T1.3 + Pitfall 6
+#   - REVIEW-protocol-sdk.md finding #5
+# ===========================================================================
+
+
+async def test_add_contact_refuses_pinned_overwrite(data_dir):
+    """T1.3: add_contact must refuse to overwrite a pinned row with a different public_key.
+
+    Expected behaviour after Plan 01: KeyPinningError raised; original
+    pinned key preserved.
+    Today (Wave 0): add_contact does an unconditional INSERT...ON CONFLICT
+    DO UPDATE, so the pinned key is silently overwritten and this test
+    FAILS at the pytest.raises assertion.
+    """
+    from uam.protocol.errors import KeyPinningError
+
+    book = ContactBook(data_dir)
+    await book.open()
+    try:
+        # Pin Alice with key K1
+        await book.add_contact(
+            address="alice::test.local",
+            public_key="K1_base64",
+            trust_state="pinned",
+        )
+        # Attempt overwrite with a different key (no force=True)
+        with pytest.raises(KeyPinningError):
+            await book.add_contact(
+                address="alice::test.local",
+                public_key="K2_base64",
+                trust_state="provisional",
+            )
+
+        # Original pinned key K1 must still be there
+        pk = await book.get_public_key("alice::test.local")
+        assert pk == "K1_base64", (
+            f"Pinned key was overwritten without force=True; got {pk!r}"
+        )
+        assert await book.get_trust_state("alice::test.local") == "pinned"
+    finally:
+        await book.close()
+
+
+async def test_add_contact_force_overwrites_pinned(data_dir, caplog):
+    """T1.3: add_contact(force=True) DOES overwrite a pinned row, with a WARNING audit log.
+
+    Expected behaviour after Plan 01: force=True parameter accepted;
+    overwrite proceeds; WARNING-level log entry emitted naming the address
+    and the rotation event for audit trail.
+    Today (Wave 0): add_contact does not accept a force= keyword argument,
+    so this test FAILS with a TypeError on the keyword (or — once force=
+    is added but the warning is missing — fails on the log assertion).
+    """
+    book = ContactBook(data_dir)
+    await book.open()
+    try:
+        await book.add_contact(
+            address="alice::test.local",
+            public_key="K1_base64",
+            trust_state="pinned",
+        )
+        with caplog.at_level("WARNING"):
+            await book.add_contact(
+                address="alice::test.local",
+                public_key="K2_base64",
+                trust_state="pinned",
+                force=True,
+            )
+
+        # Key was rotated to K2
+        pk = await book.get_public_key("alice::test.local")
+        assert pk == "K2_base64"
+
+        # Audit trail in logs
+        log_messages = [r.message.lower() for r in caplog.records]
+        assert any(
+            "force" in m or "rotat" in m or "overwrite" in m or "pinned" in m
+            for m in log_messages
+        ), (
+            f"force=True overwrite must log a WARNING; got messages={log_messages!r}"
+        )
+    finally:
+        await book.close()

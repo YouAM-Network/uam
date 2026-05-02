@@ -2,6 +2,15 @@
 
 from __future__ import annotations
 
+import os
+
+# T2.1 (Phase 43 Plan 04): the relay refuses to start without
+# ``UAM_TOKEN_PEPPER`` set, and the alembic 0003 migration also requires
+# it.  Set a deterministic test value at conftest-import time so every
+# test (and pytest collection itself) sees the same pepper.  Tests that
+# need a specific pepper override this via monkeypatch.
+os.environ.setdefault("UAM_TOKEN_PEPPER", "test-pepper-not-for-prod-1234567890abcdef")
+
 import pytest
 from nacl.signing import SigningKey
 

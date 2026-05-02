@@ -141,3 +141,97 @@ class TestMigrationDowngrade:
 
         tables = _get_tables(db_path)
         assert len(tables) == 17
+
+
+# ===========================================================================
+# Phase 43 — Theme 2.1: Token-hash migration test (T2.1)
+# ===========================================================================
+#
+# This test is FAILING-BY-DESIGN as of Wave 0. Plan 04 will turn it green by
+# creating alembic/versions/0003_token_hash.py adding the token_hash column
+# (NOT NULL after backfill) and a deterministic backfill step.
+#
+# References:
+#   - 43-VALIDATION.md row T2.1 (migration)
+#   - 43-RESEARCH.md Pattern 1 (Token Hashing) + phase_requirements T2.1 +
+#     Pitfall 1 (Token Backfill Race)
+#   - REVIEW-routes.md C3
+# ===========================================================================
+
+
+class TestTokenHashMigration:
+    """T2.1: alembic 0003 adds agents.token_hash and backfills."""
+
+    def test_0003_token_hash(self, alembic_cfg):
+        """T2.1: alembic upgrade to revision 0003 must add agents.token_hash
+        and backfill it via deterministic HMAC. After upgrade, no row may
+        have token_hash IS NULL.
+
+        Pre-condition: at revision 0002 (current head as of Wave 0),
+        an agents row exists with `token = 'plaintext_xyz'`.
+        Post-condition: after upgrade to 0003, token_hash is non-NULL and
+        equals hash_token(plaintext_xyz, settings.token_pepper).
+
+        Expected behaviour after Plan 04: the migration exists, runs
+        cleanly, and leaves no NULL rows.
+        Today (Wave 0): the alembic head is '0002' so `command.upgrade(cfg, "0003")`
+        raises CommandError. The test FAILS at that line, naming the
+        missing artifact in the assertion message.
+        """
+        cfg, db_path = alembic_cfg
+
+        # Upgrade to 0002 (current head); insert a test row
+        command.upgrade(cfg, "0002")
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            # 0001 declares created_at/updated_at NOT NULL with no SQLite-side
+            # server default; supply explicit values so the row inserts cleanly
+            # before we exercise the 0003 backfill logic.
+            conn.execute(
+                "INSERT INTO agents "
+                "(address, public_key, token, status, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))",
+                ("alice::test.local", "pk_b64", "plaintext_xyz", "active"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Attempt to upgrade to 0003. Today this is a CommandError because
+        # alembic does not know about revision 0003 yet.
+        try:
+            command.upgrade(cfg, "0003")
+        except Exception as exc:
+            pytest.fail(
+                f"T2.1 contract: Plan 04 must add alembic/versions/0003_token_hash.py "
+                f"adding agents.token_hash (TEXT NOT NULL UNIQUE INDEX after backfill) "
+                f"and a deterministic HMAC backfill step. Today the migration does "
+                f"not exist, so command.upgrade(cfg, '0003') raises: {exc!r}"
+            )
+
+        # If 0003 exists and upgrade succeeded, assert backfill worked
+        conn = sqlite3.connect(str(db_path))
+        try:
+            rows = conn.execute(
+                "SELECT token, token_hash FROM agents WHERE address = ?",
+                ("alice::test.local",),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        assert len(rows) == 1
+        token, token_hash = rows[0]
+        assert token_hash is not None, (
+            "After 0003 upgrade, token_hash must be backfilled non-NULL "
+            "for every existing row (Pitfall 1: backfill race)."
+        )
+        # Determinism check: token_hash must equal HMAC(token, pepper)
+        from uam.relay.token_hashing import hash_token
+        from uam.relay.config import settings
+        pepper = getattr(settings, "token_pepper", None)
+        assert pepper, "Settings.token_pepper must be configured (UAM_TOKEN_PEPPER env)"
+        assert token_hash == hash_token("plaintext_xyz", pepper), (
+            "Backfilled token_hash does not match the deterministic HMAC of "
+            "the plaintext token; backfill is not reproducible."
+        )

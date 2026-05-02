@@ -12,6 +12,8 @@ from pathlib import Path
 
 import aiosqlite
 
+from uam.protocol.errors import KeyPinningError
+
 logger = logging.getLogger(__name__)
 
 _SCHEMA = """
@@ -187,8 +189,19 @@ class ContactBook:
         trust_source: str | None = None,
         relay: str | None = None,
         relays: list[str] | None = None,
+        *,
+        force: bool = False,
     ) -> None:
         """Add or update a contact (upsert).
+
+        Phase 43 T1.3: refuses to overwrite a contact whose existing
+        ``trust_state`` is ``"pinned"`` or ``"verified"`` when the incoming
+        ``public_key`` differs, unless ``force=True`` is passed. This closes
+        the silent-pinned-overwrite path (an attacker-driven add_contact call
+        could otherwise rewrite a pinned key for a victim's address). When
+        ``force=True`` is used (intended for legitimate key rotation, e.g.
+        via a future ``rotate_contact()`` API), a ``WARNING``-level log entry
+        is emitted naming the address and the rotation event.
 
         Args:
             trust_source: How this contact was established (e.g.,
@@ -196,9 +209,45 @@ class ContactBook:
                 existing trust_source is preserved on update.
             relay: The contact's primary relay URL (CARD-04).
             relays: List of alternative relay URLs for failover (CARD-04).
+            force: When ``True``, allow overwriting a pinned/verified contact
+                with a different public_key. Logs a ``WARNING`` for audit.
+
+        Raises:
+            KeyPinningError: When the existing contact is pinned/verified,
+                the incoming public_key differs, and ``force`` is ``False``.
         """
         if self._db is None:
             raise RuntimeError("ContactBook not open. Call open() first.")
+
+        # T1.3: read existing row and gate pinned-overwrite
+        async with self._db.execute(
+            "SELECT public_key, trust_state FROM contacts WHERE address = ?",
+            (address,),
+        ) as cursor:
+            existing = await cursor.fetchone()
+
+        if existing is not None:
+            existing_pk, existing_state = existing
+            if (
+                existing_state in ("pinned", "verified")
+                and existing_pk != public_key
+            ):
+                if not force:
+                    raise KeyPinningError(
+                        f"Refusing to overwrite {existing_state} contact "
+                        f"{address!r}: existing public_key "
+                        f"{existing_pk[:16]!r}... does not match incoming key "
+                        f"{public_key[:16]!r}.... Pass force=True to rotate."
+                    )
+                logger.warning(
+                    "Force-overwriting %s contact %r: rotating public_key "
+                    "%r -> %r (legitimate key rotation expected)",
+                    existing_state,
+                    address,
+                    existing_pk[:16],
+                    public_key[:16],
+                )
+
         relays_json = json.dumps(relays) if relays is not None else None
         await self._db.execute(
             """

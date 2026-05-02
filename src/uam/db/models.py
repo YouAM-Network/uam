@@ -31,7 +31,18 @@ class Agent(SQLModel, table=True):
 
     address: str = Field(primary_key=True)
     public_key: str
-    token: str = Field(index=True, unique=True)
+    # T2.1: ``token`` is transitional. Plan 04 added ``token_hash`` as the
+    # authoritative lookup column (HMAC-SHA-256 with server pepper); the
+    # plaintext column remains for one release so an emergency rollback
+    # can revert to the old auth path. A follow-up phase (Phase 47) drops
+    # this column after the new path proves stable in production.
+    token: str | None = Field(default=None, index=True, unique=True)
+    # T2.1: HMAC-SHA-256(token, UAM_TOKEN_PEPPER). Populated on every
+    # registration after Plan 04 lands; backfilled for pre-existing rows
+    # by alembic migration 0003. The model field is nullable so the
+    # column-add migration is safe; alembic 0003's batch ALTER tightens
+    # the DB column to NOT NULL after backfill.
+    token_hash: str | None = Field(default=None, index=True, unique=True)
     display_name: str | None = None
     contact_card: dict | None = Field(default=None, sa_type=JSON)
     status: str = Field(default="active")

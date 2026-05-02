@@ -390,6 +390,14 @@ class TestHandshakeAccept:
         try:
             manager = HandshakeManager(book, "auto-accept")
 
+            # Phase 43 T1.2: an accept can only promote to 'pinned' if Bob
+            # previously initiated a handshake to Alice. Seed the prior state.
+            await book.add_contact(
+                address="alice::test.local",
+                public_key=serialize_verify_key(vk_a),
+                trust_state="handshake-sent",
+            )
+
             # Create a handshake.accept envelope from alice
             accept_payload = json.dumps({"status": "accepted"}).encode("utf-8")
             envelope = create_envelope(
@@ -430,3 +438,207 @@ class TestKnownContactSkipsHandshake:
             assert book.is_known("alice::test.local") is True
         finally:
             await book.close()
+
+
+# ===========================================================================
+# Phase 43 — Theme 1: TOFU/SDK card-binding tests (T1.1)
+# ===========================================================================
+#
+# These tests are FAILING-BY-DESIGN as of Wave 0. Plan 01 will turn them green
+# by adding card↔envelope binding in HandshakeManager._handle_request and
+# Agent.approve.
+#
+# References:
+#   - 43-VALIDATION.md rows T1.1
+#   - 43-RESEARCH.md Pattern 3 (TOFU Card-Binding)
+#   - REVIEW-protocol-sdk.md finding #1
+# ===========================================================================
+
+
+def _make_handshake_request_envelope_with_card(
+    sk_sender,
+    vk_sender,
+    sk_recipient,
+    vk_recipient,
+    sender_addr,
+    recipient_addr,
+    card,
+):
+    """Build a handshake.request envelope with a *caller-supplied* card.
+
+    Differs from ``_make_handshake_request_envelope`` (top of file) in that
+    the caller controls the embedded card identity, allowing adversarial
+    fixtures where card.address != envelope.from_address.
+    """
+    card_json = json.dumps(contact_card_to_dict(card))
+    envelope = create_envelope(
+        from_address=sender_addr,
+        to_address=recipient_addr,
+        message_type=MessageType.HANDSHAKE_REQUEST,
+        payload_plaintext=card_json.encode("utf-8"),
+        signing_key=sk_sender,
+        recipient_verify_key=vk_recipient,
+    )
+    return envelope
+
+
+async def test_request_rejects_card_address_mismatch(data_dir):
+    """T1.1: a handshake.request whose embedded card.address != envelope.from_address must be rejected.
+
+    Setup: Eve crafts a card claiming address='alice::test.local' but signed
+    with Eve's key. Eve sends the envelope from 'eve::evil.local'. The card
+    is internally self-consistent (verify_contact_card passes — Eve's key
+    signs the card). The SDK must reject on the address-mismatch binding.
+
+    Expected behaviour after Plan 01: InvalidEnvelopeError.
+    Today (Wave 0): _handle_request happily ingests the forged card and
+    stores 'alice::test.local' in Bob's contact book, so this test FAILS.
+    """
+    from uam.protocol.errors import InvalidEnvelopeError
+
+    sk_eve, vk_eve = generate_keypair()
+    sk_bob, vk_bob = generate_keypair()
+
+    # Eve forges a card claiming Alice's address but signs it with her own key
+    forged_card = create_contact_card(
+        address="alice::test.local",
+        display_name="alice",
+        relay="ws://test/ws",
+        signing_key=sk_eve,
+    )
+    envelope = _make_handshake_request_envelope_with_card(
+        sk_eve, vk_eve, sk_bob, vk_bob,
+        sender_addr="eve::evil.local",
+        recipient_addr="bob::test.local",
+        card=forged_card,
+    )
+
+    book = ContactBook(data_dir)
+    await book.open()
+    try:
+        manager = HandshakeManager(book, "auto-accept")
+        bob_agent = _mock_agent(sk_bob, vk_bob, "bob::test.local")
+
+        with pytest.raises(InvalidEnvelopeError, match="address.*does not match|does not match.*sender|card.*address"):
+            await manager._handle_request(bob_agent, envelope, vk_eve)
+
+        # Side-effect must NOT have happened — alice's address must not appear
+        assert book.is_known("alice::test.local") is False
+        assert book.is_known("eve::evil.local") is False
+    finally:
+        await book.close()
+
+
+async def test_request_rejects_card_pubkey_mismatch(data_dir):
+    """T1.1: a contact_card whose embedded public_key differs from the envelope sender's verify key must be rejected.
+
+    Setup: Eve sends the envelope from 'eve::evil.local' signed with her key,
+    but embeds a card whose public_key is BOB's key (Eve trying to make Alice
+    pin Bob's key for Eve's address). The card is internally self-consistent
+    (signed by Bob's key). The SDK must cross-check envelope.sender_vk against
+    card.public_key and reject.
+
+    Expected behaviour after Plan 01: InvalidEnvelopeError.
+    Today (Wave 0): _handle_request only calls verify_contact_card (which
+    only checks self-signature) and ingests the mismatched card, so this
+    test FAILS.
+    """
+    from uam.protocol.errors import InvalidEnvelopeError
+
+    sk_eve, vk_eve = generate_keypair()
+    sk_bob, vk_bob = generate_keypair()
+    sk_alice, vk_alice = generate_keypair()
+
+    # Eve crafts a card matching her envelope address but signed with BOB's key,
+    # so card.public_key == BOB's key (passes verify_contact_card)
+    forged_card = create_contact_card(
+        address="eve::evil.local",
+        display_name="eve",
+        relay="ws://test/ws",
+        signing_key=sk_bob,
+    )
+    envelope = _make_handshake_request_envelope_with_card(
+        sk_eve, vk_eve, sk_alice, vk_alice,
+        sender_addr="eve::evil.local",
+        recipient_addr="alice::test.local",
+        card=forged_card,
+    )
+
+    book = ContactBook(data_dir)
+    await book.open()
+    try:
+        manager = HandshakeManager(book, "auto-accept")
+        alice_agent = _mock_agent(sk_alice, vk_alice, "alice::test.local")
+
+        with pytest.raises(InvalidEnvelopeError, match="public_key.*does not match|verify key|card.*key|key.*does not match"):
+            await manager._handle_request(alice_agent, envelope, vk_eve)
+
+        # Eve's address must NOT have been pinned with Bob's key
+        assert book.is_known("eve::evil.local") is False
+    finally:
+        await book.close()
+
+
+async def test_approve_rejects_mismatched_card(data_dir, tmp_path, monkeypatch):
+    """T1.1: Agent.approve() must enforce the same card↔envelope binding as _handle_request.
+
+    The pending handshake holds a contact_card; approve() should re-validate
+    the card before promoting to trusted. We seed pending_handshakes with a
+    card whose address differs from the pending entry's address (simulating
+    a request that slipped through the request-handler binding gate, or a
+    historical pending row from before the fix landed).
+
+    Expected behaviour after Plan 01: InvalidEnvelopeError on approve().
+    Today (Wave 0): Agent.approve only calls verify_contact_card and trusts
+    the embedded card, so this test FAILS.
+    """
+    from uam.protocol.errors import InvalidEnvelopeError
+    from uam.sdk.agent import Agent
+
+    # Isolate from any real ~/.uam state
+    monkeypatch.setenv("UAM_HOME", str(tmp_path / "uam_home"))
+
+    sk_eve, vk_eve = generate_keypair()
+
+    # Build a self-consistent card claiming a different address than the
+    # pending entry's address. verify_contact_card will pass; the binding
+    # check must reject.
+    bad_card = create_contact_card(
+        address="alice::test.local",  # Eve forging Alice
+        display_name="alice",
+        relay="ws://test/ws",
+        signing_key=sk_eve,
+    )
+
+    # Build a minimal Agent and seed the pending row directly
+    agent = Agent(
+        "bob",
+        relay="http://testserver",
+        key_dir=str(tmp_path / "keys"),
+        auto_register=False,
+        transport="http",
+    )
+    agent._key_manager.load_or_generate("bob")
+    # approve() uses _send_accept which reads agent.address — set _address
+    # so the post-binding-check code path doesn't trip on RuntimeError.
+    agent._address = "bob::test.local"
+    # _send_accept also calls self._transport.send, so install a stub
+    agent._transport = AsyncMock()
+    await agent._contact_book.open()
+    try:
+        # Seed pending: address key is 'eve::evil.local' (envelope sender)
+        # but the stored card claims 'alice::test.local'
+        await agent._contact_book.add_pending(
+            "eve::evil.local",
+            json.dumps(contact_card_to_dict(bad_card)),
+        )
+        agent._connected = True
+
+        with pytest.raises(InvalidEnvelopeError, match="does not match|public_key|address|card"):
+            await agent.approve("eve::evil.local")
+
+        # Neither address should have been promoted to trusted
+        assert agent._contact_book.is_known("alice::test.local") is False
+        assert agent._contact_book.is_known("eve::evil.local") is False
+    finally:
+        await agent._contact_book.close()

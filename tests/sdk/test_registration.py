@@ -77,8 +77,13 @@ class TestRegistrationFlow:
         assert "token" in data
         assert data["address"] == "sdkagent::test.local"
 
-    def test_register_same_key_returns_existing(self, relay_client):
-        """Re-registration with same public key returns existing credentials."""
+    def test_register_same_key_regenerates_token(self, relay_client):
+        """Re-registration with same public key returns the same address but a
+        FRESH token (T2.1, Phase 43 Plan 04). The old contract returned the
+        existing token; that path was incompatible with hashed token storage
+        and was a security smell (a leaked token could be re-issued forever).
+        New contract: same address, new token, old token invalidated.
+        """
         sk, vk = generate_keypair()
         pk = serialize_verify_key(vk)
         resp1 = relay_client.post(
@@ -91,7 +96,11 @@ class TestRegistrationFlow:
             json={"agent_name": "dupebot", "public_key": pk},
         )
         assert resp2.status_code == 200
-        assert resp2.json()["token"] == resp1.json()["token"]
+        assert resp2.json()["address"] == resp1.json()["address"]
+        assert resp2.json()["token"] != resp1.json()["token"], (
+            "T2.1: re-registration must rotate the token; returning the "
+            "existing token allows replay of leaked credentials."
+        )
 
     def test_register_different_key_returns_409(self, relay_client):
         """Re-registration with different public key returns 409."""

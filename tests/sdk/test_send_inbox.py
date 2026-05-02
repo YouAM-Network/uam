@@ -292,3 +292,88 @@ class TestSendInboxViaRelay:
             assert book.is_known("bob::test.local") is True
         finally:
             await book.close()
+
+
+# ===========================================================================
+# Phase 43 — Theme 1.5: First-send-fires-handshake test (T1.5)
+# ===========================================================================
+#
+# This test is FAILING-BY-DESIGN as of Wave 0. Plan 02 will turn it green by
+# removing the premature add_contact(provisional) call from _resolve_public_key
+# so the is_known() check in send() correctly returns False on first send to
+# an unknown contact, which then triggers _initiate_handshake.
+#
+# References:
+#   - 43-VALIDATION.md row T1.5
+#   - 43-RESEARCH.md phase_requirements T1.5 + Pitfall 7
+#   - REVIEW-protocol-sdk.md finding #14
+# ===========================================================================
+
+
+async def test_first_send_initiates_handshake(tmp_path, monkeypatch):
+    """T1.5: first send() to an unknown contact MUST fire a handshake.request.
+
+    Expected behaviour after Plan 02: _resolve_public_key is pure (no contact
+    book mutation) so the subsequent ``self._contact_book.is_known(to_address)``
+    check in send() correctly returns False, and ``_initiate_handshake`` is
+    invoked, emitting a handshake.request envelope through the transport.
+
+    Today (Wave 0): _resolve_public_key writes a 'provisional' contact row
+    BEFORE send() reaches its is_known() check, so is_known() returns True
+    and the handshake is skipped entirely. The transport sees only the
+    plain MESSAGE envelope. This test asserts the SECURE behavior (a
+    handshake.request was sent) and therefore FAILS today.
+    """
+    from unittest.mock import AsyncMock
+    from uam.sdk.agent import Agent
+
+    # Isolate this test from any real ~/.uam state
+    monkeypatch.setenv("UAM_HOME", str(tmp_path / "uam_home"))
+
+    sk_b, vk_b = generate_keypair()
+    pk_b_str = serialize_verify_key(vk_b)
+    bob_address = "bob::test.local"
+
+    # Build a minimal agent without doing real registration
+    agent = Agent(
+        "alice",
+        relay="http://testserver",
+        key_dir=str(tmp_path / "keys"),
+        auto_register=False,
+        transport="http",
+    )
+    agent._key_manager.load_or_generate("alice")
+    agent._address = "alice::test.local"
+    agent._token = "test-token"
+
+    # Mock transport — captures every envelope sent so we can assert on types
+    sent_envelopes: list[dict] = []
+
+    async def _capture_send(wire):
+        sent_envelopes.append(wire)
+
+    agent._transport = AsyncMock()
+    agent._transport.send = _capture_send
+
+    # Mock resolver — returns Bob's key for unknown lookups
+    agent._resolver = AsyncMock()
+    agent._resolver.resolve_public_key = AsyncMock(return_value=pk_b_str)
+
+    # Open the contact book and verify Bob is unknown
+    await agent._contact_book.open()
+    agent._connected = True
+    try:
+        assert agent._contact_book.is_known(bob_address) is False
+
+        await agent.send(bob_address, "hello")
+
+        # Inspect every envelope the transport saw. At least one MUST be a
+        # handshake.request — that's the contract of T1.5.
+        sent_types = [env.get("type") for env in sent_envelopes]
+        assert MessageType.HANDSHAKE_REQUEST.value in sent_types, (
+            f"First send to unknown contact must initiate handshake; "
+            f"got types={sent_types!r}. After Plan 02, _resolve_public_key "
+            "must not pre-populate the contact book."
+        )
+    finally:
+        await agent._contact_book.close()

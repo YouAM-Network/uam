@@ -235,11 +235,31 @@ class Agent:
                     f"Run: uam contact verify {to_address}"
                 )
 
-        # Resolve recipient's verify key (Ed25519)
+        # Resolve recipient's verify key (Ed25519). Phase 43 T1.5: this is a
+        # PURE resolver -- it returns the key without mutating the contact
+        # book. The handshake decision below is gated on trust_state, NOT on
+        # row presence in the contact book.
         recipient_vk = await self._resolve_public_key(to_address)
 
-        # Check if first contact -- send handshake if needed
-        if not self._contact_book.is_known(to_address):
+        # Phase 43 T1.5: fire a handshake.request unless we have a contact in
+        # a state where the handshake is unnecessary or already in flight.
+        #   - {pinned, verified, trusted}: prior round-trip already confirmed
+        #     the key cryptographically; sending again is fine.
+        #   - handshake-sent: we already fired a request and are awaiting the
+        #     accept. Re-firing on every send would amplify network traffic.
+        #   - any other state (None, provisional, unverified, unknown): the
+        #     handshake never went out (or was lost), fire it now.
+        # Pre-fix this used self._contact_book.is_known(), which returned True
+        # whenever ANY row existed for the address -- including the
+        # ``provisional`` row that ``_resolve_public_key`` itself was writing.
+        # The handshake therefore never fired and require_verify was unusable.
+        trust_state = await self._contact_book.get_trust_state(to_address)
+        if trust_state not in (
+            "pinned",
+            "verified",
+            "trusted",
+            "handshake-sent",
+        ):
             await self._initiate_handshake(to_address, recipient_vk)
 
         # Create signed, encrypted envelope
@@ -306,7 +326,16 @@ class Agent:
 
         Adds the sender to contacts with trust_source='explicit-approval'
         and sends handshake.accept back.
+
+        Phase 43 T1.1: re-validates the stored contact_card's binding to the
+        original envelope sender (the pending entry's *address* key) before
+        promoting. Pending entries that pre-date the binding fix in
+        ``HandshakeManager._handle_request`` may carry a poisoned card whose
+        ``card.address`` differs from the pending key; ``approve`` must not
+        promote those into the contact book.
         """
+        from uam.sdk.handshake import _bind_card_to_envelope
+
         await self._ensure_connected()
 
         # Find the pending entry
@@ -319,6 +348,19 @@ class Agent:
         card_dict = json.loads(entry["contact_card"])
         card = contact_card_from_dict(card_dict)
         verify_contact_card(card)
+
+        # T1.1: re-bind the card to the originating envelope's sender. We
+        # don't have the original envelope here, but the pending row's key
+        # (``address``) is the envelope.from_address that arrived alongside
+        # the card. The card's claimed public_key is also stored in the row;
+        # using it as the sender_vk means the public_key check trivially
+        # passes here -- the address check is the load-bearing one for
+        # historical/poisoned pending entries. The request-handler binding
+        # in ``HandshakeManager._handle_request`` is the primary defense for
+        # newly-arriving requests.
+        fake_envelope = type("PendingEnvelope", (), {"from_address": address})()
+        sender_vk = deserialize_verify_key(card.public_key)
+        _bind_card_to_envelope(card, fake_envelope, sender_vk)
 
         # Add to contacts with trust_source tracking
         await self._contact_book.add_contact(
@@ -333,7 +375,6 @@ class Agent:
         await self._contact_book.remove_pending(address)
 
         # Send handshake.accept back
-        sender_vk = deserialize_verify_key(card.public_key)
         await self._handshake._send_accept(self, address, sender_vk)
 
     async def deny(self, address: str) -> None:
@@ -540,11 +581,32 @@ class Agent:
             await self.connect()
 
     async def _resolve_public_key(self, to_address: str):
-        """Resolve a recipient's public key, checking contact book first.
+        """Resolve a recipient's public key.
 
-        Returns a VerifyKey. Caches resolved keys in the contact book.
-        Raises KeyPinningError if a pinned contact's key doesn't match
-        the network-resolved key (TOFU-03).
+        Phase 43 T1.5: this is a PURE resolver. It returns a VerifyKey and
+        does NOT mutate the contact book. The previous implementation wrote a
+        ``trust_state="provisional"`` row here, which caused ``send()``'s
+        ``is_known()`` check to short-circuit and skip the first-contact
+        handshake. Provisional/handshake-sent storage now happens inside
+        ``_initiate_handshake`` (after the handshake.request envelope is
+        sent), preserving Phase 28's intended lifecycle:
+        no-row -> handshake-sent -> pinned.
+
+        Resolution order:
+          1. If a known contact has a stored key, return it (local-first,
+             zero network I/O).
+          2. Otherwise route to the network resolver (Tier 1/2/3 via
+             SmartResolver).
+
+        Returns:
+            VerifyKey: the recipient's Ed25519 verify key.
+
+        Raises:
+            KeyPinningError: if a pinned/trusted/verified contact's stored
+                key disagrees with the network-resolved key (TOFU-03 race
+                guard). This guard fires only in a vanishingly small window
+                where a row appears between our two reads; it is kept as
+                defense-in-depth.
         """
         # TOFU-01: Check contact book first (local-first, zero network I/O)
         pk_str = await self._contact_book.get_public_key(to_address)
@@ -552,12 +614,14 @@ class Agent:
             # Known contact: always use stored key
             return deserialize_verify_key(pk_str)
 
-        # Unknown contact: resolve from network
+        # Unknown contact: resolve from network. NO contact-book mutation here.
         resolved_pk_str = await self._resolver.resolve_public_key(
             to_address, self._token, self._config.relay_url
         )
 
-        # TOFU-03: Double-check no pinned key exists (race condition guard)
+        # TOFU-03: Defense-in-depth race guard. If a pinned/trusted/verified
+        # row appeared between our get_public_key call above and the network
+        # resolve completing, refuse to silently use the freshly-resolved key.
         stored_pk = await self._contact_book.get_public_key(to_address)
         if stored_pk is not None and stored_pk != resolved_pk_str:
             trust = await self._contact_book.get_trust_state(to_address)
@@ -568,11 +632,6 @@ class Agent:
                     f"This may indicate a relay MITM attack. "
                     f"To accept the new key: uam contact remove {to_address}"
                 )
-
-        # Store as provisional (TOFU: unverified until handshake completes)
-        await self._contact_book.add_contact(
-            to_address, resolved_pk_str, trust_state="provisional"
-        )
 
         return deserialize_verify_key(resolved_pk_str)
 

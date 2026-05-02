@@ -35,7 +35,14 @@ class WebSocketTransport(TransportBase):
         token: str,
         on_message: Callable[[dict], Awaitable[None]] | None = None,
     ) -> None:
-        self._url = f"{ws_url}?token={token}"
+        # T2.2 (Phase 43 Plan 04): authenticate via Sec-WebSocket-Protocol
+        # subprotocol rather than ?token= in the URL.  This keeps the bearer
+        # token out of HTTP server access logs, reverse-proxy logs, browser
+        # address-bar history, and third-party JS error trackers that capture
+        # the URL.  The relay echoes the chosen subprotocol back via
+        # ``websocket.accept(subprotocol=...)`` to complete the handshake.
+        self._url = ws_url
+        self._token = token
         self._on_message = on_message
         self._ws: websockets.asyncio.client.ClientConnection | None = None
         self._listen_task: asyncio.Task | None = None
@@ -82,6 +89,7 @@ class WebSocketTransport(TransportBase):
             try:
                 async with connect(
                     self._url,
+                    subprotocols=[f"bearer.{self._token}"],
                     ping_interval=20,
                     ping_timeout=20,
                     open_timeout=10,
