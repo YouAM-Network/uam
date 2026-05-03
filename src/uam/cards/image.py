@@ -11,12 +11,21 @@ include the viral onboarding command.
 from __future__ import annotations
 
 import io
+import logging
 import sys
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
+from PIL.Image import DecompressionBombError
 
 from uam.cards.avatars import fetch_avatar
+from uam.cards.safe_image import (
+    ImageTooLargeError,
+    UnsupportedImageFormatError,
+    safe_image_open,
+)
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Color schemes
@@ -102,21 +111,48 @@ def _fit_text(
 
 
 def _paste_avatar(canvas: Image.Image, avatar_bytes: bytes) -> None:
-    """Composite a PNG avatar onto the canvas, centered at y=80."""
+    """Composite a PNG/JPEG avatar onto the canvas, centered at y=80.
+
+    Decoding goes through ``safe_image_open`` (T5.3 — Phase 45), which enforces
+    a 256KB byte cap, a {PNG, JPEG} format whitelist, and a 4MP pixel cap
+    (decompression-bomb defense). On any decoder failure (oversize,
+    unsupported format, decompression bomb, or any other Pillow anomaly), we
+    log a warning and return silently — the canvas is left untouched at the
+    avatar zone (200x200 region centered at y=80) so the surrounding card
+    background shows through. The caller's letter-circle fallback (see
+    ``render_card``) only fires when ``avatar_bytes`` itself is missing; when
+    we have bytes that turn out to be malicious, the safe behavior is to show
+    no avatar rather than crash the entire card render or risk a malloc bomb.
+    """
     try:
-        avatar = Image.open(io.BytesIO(avatar_bytes))
-        avatar = avatar.resize((200, 200), Image.LANCZOS)
+        avatar = safe_image_open(
+            avatar_bytes,
+            max_bytes=256 * 1024,
+            allowed_formats=("PNG", "JPEG"),
+        )
+    except (
+        ImageTooLargeError,
+        UnsupportedImageFormatError,
+        DecompressionBombError,
+        Exception,  # belt-and-braces; never crash card render on a decoder anomaly
+    ) as exc:
+        logger.warning(
+            "T5.3: rejected avatar bytes (%d bytes): %s",
+            len(avatar_bytes),
+            exc,
+        )
+        return  # canvas untouched; card background shows in the avatar zone
 
-        # Center horizontally
-        x = (_WIDTH - 200) // 2
-        y = 80
+    avatar = avatar.resize((200, 200), Image.LANCZOS)
 
-        if avatar.mode == "RGBA":
-            canvas.paste(avatar, (x, y), avatar)
-        else:
-            canvas.paste(avatar, (x, y))
-    except Exception:
-        pass  # If avatar loading fails, skip silently
+    # Center horizontally
+    x = (_WIDTH - 200) // 2
+    y = 80
+
+    if avatar.mode == "RGBA":
+        canvas.paste(avatar, (x, y), avatar)
+    else:
+        canvas.paste(avatar, (x, y))
 
 
 def _draw_gradient_bar(

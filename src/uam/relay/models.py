@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class RegisterRequest(BaseModel):
@@ -324,6 +324,14 @@ class FederationDeliverRequest(BaseModel):
     hop_count: int = 0
     timestamp: str
     from_relay: str
+    # T3.2 (Phase 45): 128-bit nonce, urlsafe-b64 of 16 bytes ≈ 22 chars.
+    # Pydantic enforces presence (missing → 422) and length window
+    # (min 22 = ``secrets.token_urlsafe(16)``; max 64 lets operators use
+    # longer nonces). The nonce is in the canonical signed body scope —
+    # ``sign_federation_request`` picks it up automatically because it
+    # signs the whole body dict. Receiving relay dedups (from_relay,
+    # nonce) at Step 6.5 of ``federation_deliver`` BEFORE crypto verify.
+    nonce: str = Field(min_length=22, max_length=64)
 
 
 class FederationDeliverResponse(BaseModel):

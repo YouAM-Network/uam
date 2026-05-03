@@ -113,3 +113,93 @@ async def test_concurrent_get_agent_returns_singleton(monkeypatch):
 
     # Cleanup — clear the singleton so other tests start fresh.
     mcp_srv._agent = None
+
+
+# ---------------------------------------------------------------------------
+# R-T4.6 — half-construction reset on connect failure (Phase 45 Wave 0)
+# ---------------------------------------------------------------------------
+#
+# Inherited Phase-44 review recommendation: even after Plan 44-06 added the
+# asyncio.Lock + double-check, ``_get_agent`` still has a half-construction
+# bug — if ``await _agent.connect()`` raises, the module-level ``_agent``
+# remains set to the partially-built instance.  The next caller hits the
+# fast-path ``if _agent is not None and _agent.is_connected`` check; with the
+# stub Agent below, ``is_connected`` returns False so the slow-path tries
+# again, but in production code an Agent instance can have ``is_connected ==
+# True`` after a failed handshake midway through ``connect()`` (e.g.
+# transport opened but registration rejected).  The ONLY safe behavior is
+# to ``_agent = None`` in the except branch so the next caller starts from
+# a clean slate.
+#
+# Plan 45 Plan 04 (or wherever R-T4.6 lands) must wrap construct+connect in
+# try/except and reset ``_agent = None`` on failure.
+
+
+@pytest.mark.asyncio
+async def test_connect_failure_clears_agent(monkeypatch):
+    """R-T4.6: ``_get_agent`` must reset ``_agent = None`` on connect() failure
+    so a half-constructed Agent is not cached and reused for the fast-path
+    is_connected check.
+
+    Failing-by-design today: ``_get_agent`` does not wrap construct+connect in
+    try/except, so when ``connect()`` raises, ``_agent`` retains the
+    half-constructed instance.  Plan 45-04 (or the dedicated R-T4.6 plan) must
+    add the try/except and reset.
+
+    Contract:
+      1. ``_agent`` starts as None.
+      2. Caller invokes ``_get_agent``; constructor runs; connect() raises.
+      3. The exception propagates to the caller (or is converted to a domain
+         error — either is fine).
+      4. ``mcp_srv._agent`` MUST be None afterward — NOT the half-constructed
+         instance.
+    """
+    from uam.mcp import server as mcp_srv
+
+    # Reset the singleton for this test
+    monkeypatch.setattr(mcp_srv, "_agent", None)
+    monkeypatch.setenv("UAM_AGENT_NAME", "test-mcp-agent-half-construct")
+
+    constructed: list[object] = []
+
+    class _StubAgent:
+        """Stub that records construction and forces connect() to raise."""
+
+        def __init__(self, *args, **kwargs):
+            constructed.append(self)
+            self._is_connected = False
+
+        @property
+        def is_connected(self) -> bool:
+            return self._is_connected
+
+        async def connect(self):
+            raise RuntimeError("relay unreachable (simulated)")
+
+    monkeypatch.setattr(mcp_srv, "Agent", _StubAgent)
+
+    # First call must propagate the connect() failure (or convert to a
+    # domain-specific error).  Either is acceptable; the contract is on
+    # the post-state of mcp_srv._agent.
+    raised = False
+    try:
+        await mcp_srv._get_agent()
+    except RuntimeError:
+        raised = True
+    except Exception:
+        raised = True
+
+    assert raised, (
+        "connect() failure should propagate (or be converted to a domain error) — "
+        "silently swallowing it would hide the failure from the caller"
+    )
+
+    assert mcp_srv._agent is None, (
+        "After connect() failure, _agent must be None — not the half-constructed "
+        f"Agent. Found _agent={mcp_srv._agent!r} (constructed instances: "
+        f"{len(constructed)}). Plan 45 R-T4.6 must wrap the construct+connect "
+        "block in try/except and reset _agent = None on failure."
+    )
+
+    # Cleanup
+    mcp_srv._agent = None

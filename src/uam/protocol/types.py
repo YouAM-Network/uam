@@ -13,6 +13,10 @@ UAM_VERSION = "0.1"
 # Maximum envelope size in bytes (64 KB)
 MAX_ENVELOPE_SIZE = 65536
 
+# Maximum age of an envelope's timestamp before it is dropped as stale (seconds).
+# Matches federation_timestamp_max_age (relay-side) for consistency. T3.1 / Phase 45.
+MAX_ENVELOPE_AGE = 300
+
 
 class MessageType(str, Enum):
     """All UAM message types.

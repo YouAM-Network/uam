@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from uam.db.crud.agents import get_agent_by_address
 from uam.db.crud.dedup import record_message_id
 from uam.db.crud.federation import get_known_relay, log_federation, upsert_known_relay
+from uam.db.crud.federation_nonces import record_nonce
 from uam.db.crud.messages import store_message
 from uam.db.session import get_session
 from uam.protocol import (
@@ -35,6 +36,7 @@ from uam.relay.models import (
 )
 from uam.relay.peer_key_cache import peer_key_cache
 from uam.relay.relay_auth import verify_federation_signature
+from uam.relay.ssrf import SSRFBlockedError, validate_outbound_target
 
 logger = logging.getLogger(__name__)
 
@@ -53,16 +55,21 @@ async def federation_deliver(
     """Accept an inbound federated envelope from a remote relay.
 
     Validation order (DoS-resistant, cheapest checks first):
-    1.  Federation enabled check
-    2.  Parse request fields
-    3.  Timestamp freshness
-    4.  Loop prevention (hop_count + via chain)
-    5.  Destination domain verification
-    6.  Relay signature verification (with key rotation retry)
-    7.  Agent envelope signature verification
-    8.  Dedup check
-    9.  Deliver (WebSocket > webhook > store)
-    10. Log to federation_log
+    1.   Federation enabled check
+    2.   Parse request fields
+    3.   Timestamp freshness
+    4.   Loop prevention (hop_count + via chain)
+    5.   Destination domain verification
+    6.   Relay signature verification (with key rotation retry)
+    6.5. Federation nonce dedup (T3.2 — Phase 45) — single cheap INSERT,
+         gates the expensive crypto verify in Step 7. (Comes AFTER the
+         cheap stale-timestamp/loop checks so a stale-ts DoS can't fill
+         the table; comes BEFORE expensive crypto verify so an attacker
+         can't burn cycles replaying a signed body.)
+    7.   Agent envelope signature verification
+    8.   Dedup check (envelope-level, by message_id)
+    9.   Deliver (WebSocket > webhook > store)
+    10.  Log to federation_log
     """
     manager = request.app.state.manager
     settings = request.app.state.settings
@@ -153,13 +160,17 @@ async def federation_deliver(
                 status_code=401, detail="Missing X-UAM-Relay-Signature header"
             )
 
-        # Build the dict that was signed (must match what the sender signed)
+        # Build the dict that was signed (must match what the sender signed).
+        # T3.2 (Phase 45): ``nonce`` is in the canonical signing scope on the
+        # outbound side (FederationService.forward) — include it here so the
+        # signature reconstruction matches.
         verify_dict = {
             "envelope": body.envelope,
             "via": body.via,
             "hop_count": body.hop_count,
             "timestamp": body.timestamp,
             "from_relay": body.from_relay,
+            "nonce": body.nonce,
         }
 
         relay_public_key = await _get_relay_public_key(session, from_relay)
@@ -181,6 +192,21 @@ async def federation_deliver(
         if not sig_valid:
             raise HTTPException(
                 status_code=401, detail="Invalid relay signature"
+            )
+
+        # ---- Step 6.5: Federation nonce dedup (T3.2 — Phase 45) ----
+        # Pydantic already validated body.nonce length on the request shape
+        # (min_length=22 → 422 on missing). A second sighting of the
+        # exact (from_relay, nonce) pair is a replay — return 409.
+        # ``commit=False`` lets the row land in the same transaction as the
+        # downstream dedup/store/log writes (single commit at the end).
+        is_new = await record_nonce(
+            session, body.from_relay, body.nonce, commit=False
+        )
+        if not is_new:
+            raise HTTPException(
+                status_code=409,
+                detail="Federation request replay (nonce already seen)",
             )
 
         # ---- Step 7: Agent envelope signature verification (T1.4) ----
@@ -352,8 +378,19 @@ async def _get_relay_public_key(session: AsyncSession, from_relay: str) -> str |
 async def _rediscover_relay_key(session: AsyncSession, from_relay: str) -> str | None:
     """Fetch the relay's .well-known to get a fresh public key (key rotation)."""
     url = f"https://{from_relay}/.well-known/uam-relay.json"
+    # T5.1 — SSRF guard before outbound HTTP. ``from_relay`` is an inbound
+    # request header value, so an attacker can set it to ``169.254.169.254``
+    # or any internal hostname. Validate before fetching.
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        validate_outbound_target(url, allowed_ports=(443, 8443))
+    except SSRFBlockedError as exc:
+        logger.warning(
+            "T5.1: refusing relay key re-discover %s: %s", url, exc
+        )
+        return None
+    try:
+        # T5.1 — explicit follow_redirects=False (don't trust httpx default).
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
             resp = await client.get(url)
             resp.raise_for_status()
             data = resp.json()
@@ -440,6 +477,18 @@ async def _resolve_remote_sender_key(
     base = f"{parsed.scheme}://{parsed.netloc}"
     url = f"{base}/api/v1/agents/{sender_address}/public-key"
 
+    # T5.1 — SSRF guard before outbound HTTP. The ``federation_url`` came from
+    # peer-controlled DNS/.well-known content via discover_relay; we MUST
+    # validate the derived peer-key URL before fetching.  The shared
+    # federation_service._client below is already constructed with
+    # follow_redirects=False (Plan 45-04 / federation.py __init__).
+    try:
+        validate_outbound_target(url, allowed_ports=(443, 8443))
+    except SSRFBlockedError as exc:
+        logger.warning(
+            "T5.1: refusing remote-sender-key fetch %s: %s", url, exc
+        )
+        return None
     try:
         resp = await federation_service._client.get(url, timeout=10.0)
         resp.raise_for_status()

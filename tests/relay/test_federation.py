@@ -9,6 +9,7 @@ Covers:
 from __future__ import annotations
 
 import os
+import secrets
 from datetime import datetime, timezone
 
 import pytest
@@ -47,11 +48,18 @@ def fed_client(fed_app):
 
 
 def _valid_federation_body() -> dict:
-    """Return a minimal valid FederationDeliverRequest body."""
+    """Return a minimal valid FederationDeliverRequest body.
+
+    T3.2 (Phase 45): ``nonce`` is required (Pydantic min_length=22), so we
+    generate a fresh CSPRNG nonce per call. Without this field the request
+    422s before the federation_enabled / signature checks the existing
+    tests are exercising.
+    """
     return {
         "envelope": {"message_id": "test-fed-msg", "from": "a::other.relay", "to": "b::test.local"},
         "from_relay": "other.relay",
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "nonce": secrets.token_urlsafe(16),
     }
 
 

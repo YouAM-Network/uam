@@ -81,14 +81,30 @@ async def _get_agent() -> Agent:
                 "Set it to the agent name before starting the MCP server."
             )
 
-        _agent = Agent(
+        # R-T4.6 (Phase 45 / Phase 44 review residual): construct into a
+        # local ``candidate`` and only assign to the module-level ``_agent``
+        # AFTER ``connect()`` succeeds.  If connect() raises, ``_agent``
+        # MUST be reset to None — otherwise a half-constructed Agent (with
+        # an open keypair file handle and a contact_book SQLite handle)
+        # would be cached and the next caller's fast-path
+        # ``is_connected`` check could either short-circuit on a stale
+        # half-state or fall through and orphan the previous instance.
+        candidate = Agent(
             name,
             relay=os.environ.get("UAM_RELAY_URL"),
             display_name=os.environ.get("UAM_DISPLAY_NAME"),
             transport=os.environ.get("UAM_TRANSPORT", "http"),
             trust_policy=os.environ.get("UAM_TRUST_POLICY", "auto-accept"),
         )
-        await _agent.connect()
+        try:
+            await candidate.connect()
+        except Exception:
+            # Construct succeeded but connect failed; do NOT cache the
+            # half-constructed Agent.  Let GC reclaim it and re-raise so
+            # the caller sees the failure.
+            _agent = None
+            raise
+        _agent = candidate
         return _agent
 
 

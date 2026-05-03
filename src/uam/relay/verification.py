@@ -9,9 +9,7 @@ it must perform its own validation.
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import logging
-import socket
 
 import dns.asyncresolver
 import dns.exception
@@ -28,6 +26,12 @@ from uam.db.crud.domain_verification import (
 )
 from uam.db.session import async_session_factory
 from uam.db.engine import get_engine
+# T5.1/T5.2 (Phase 45): is_public_ip promoted to uam.relay.ssrf with widened
+# rejection set (also rejects is_reserved/is_multicast/is_unspecified).  This
+# re-export preserves every existing import path
+# (`from uam.relay.verification import is_public_ip` — used by
+# uam.relay.webhook_validator and several test files).
+from uam.relay.ssrf import is_public_ip  # noqa: F401  — back-compat re-export
 
 logger = logging.getLogger(__name__)
 
@@ -71,33 +75,9 @@ def extract_public_key(tags: dict[str, str]) -> str | None:
 # ---------------------------------------------------------------------------
 # SSRF protection
 # ---------------------------------------------------------------------------
-
-
-def is_public_ip(hostname: str) -> bool:
-    """Check whether *hostname* resolves exclusively to public IP addresses.
-
-    Returns ``False`` if any resolved address is private, loopback,
-    link-local, or if DNS resolution fails (fail-closed for SSRF
-    protection, DNS-03).
-    """
-    try:
-        results = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
-    except (socket.gaierror, OSError):
-        return False
-
-    if not results:
-        return False
-
-    for _family, _, _, _, sockaddr in results:
-        ip_str = sockaddr[0]
-        try:
-            addr = ipaddress.ip_address(ip_str)
-        except ValueError:
-            return False
-        if addr.is_private or addr.is_loopback or addr.is_link_local:
-            return False
-
-    return True
+# Note: is_public_ip is now imported from uam.relay.ssrf (see imports above).
+# The body that used to live here was promoted in Phase 45 Plan 04 (T5.1) and
+# now also rejects is_reserved/is_multicast/is_unspecified per RESEARCH A10.
 
 
 # ---------------------------------------------------------------------------
@@ -169,8 +149,23 @@ async def verify_domain_ownership(
 
     url = f"https://{domain}/.well-known/uam.json"
     try:
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+        # T5.2 (Phase 45): follow_redirects=False — RFC 8615 .well-known does
+        # NOT require redirect support, and an attacker-controlled 30x to a
+        # private IP would bypass the public-IP check above. Refuse 3xx
+        # explicitly with an SSRF-specific reason for operator clarity.
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
             resp = await client.get(url)
+            if resp.status_code in (301, 302, 303, 307, 308):
+                logger.info(
+                    "T5.2: refusing to follow redirect from %s "
+                    "(.well-known should not redirect)",
+                    url,
+                )
+                return (
+                    False,
+                    "",
+                    "HTTPS .well-known returned redirect; refused for SSRF",
+                )
             if resp.status_code != 200:
                 return (
                     False,

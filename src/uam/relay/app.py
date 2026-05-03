@@ -35,6 +35,19 @@ _DEDUP_CLEANUP_INTERVAL: float = 3600.0  # 1 hour
 # How often to sweep expired stored messages (seconds)
 _EXPIRED_MESSAGE_SWEEP_INTERVAL: float = 300.0  # 5 minutes
 
+# How often to sweep old federation_nonces rows (T3.2 — Phase 45).
+# Default 600s = 10 min; configurable via UAM_FEDERATION_NONCE_SWEEP_INTERVAL.
+_FEDERATION_NONCE_SWEEP_INTERVAL: float = float(
+    os.environ.get("UAM_FEDERATION_NONCE_SWEEP_INTERVAL", "600")
+)
+# Maximum age before a federation_nonces row is pruned. Default 600s =
+# 2 × federation_timestamp_max_age (300s) — a replay arriving more than
+# this far past the original is independently rejected by the timestamp
+# check in federation_deliver Step 3.
+_FEDERATION_NONCE_MAX_AGE: int = int(
+    os.environ.get("UAM_FEDERATION_NONCE_MAX_AGE", "600")
+)
+
 # How often to run the retention purge (seconds)
 _RETENTION_PURGE_INTERVAL: float = 3600.0  # 1 hour
 
@@ -111,6 +124,42 @@ async def _expired_message_sweep_loop(app: FastAPI) -> None:
                 logger.warning("Transient DB error in expired message sweep, will retry next cycle: %s", exc)
             else:
                 logger.exception("Error in expired message sweep")
+
+
+async def _federation_nonce_sweep_loop(app: FastAPI) -> None:
+    """Periodically sweep old ``federation_nonces`` rows (T3.2 — Phase 45).
+
+    Removes ``(from_relay, nonce)`` rows older than
+    ``UAM_FEDERATION_NONCE_MAX_AGE`` (default 600s) so the table stays
+    bounded. Replays older than the freshness window are independently
+    rejected by ``federation_deliver`` Step 3 (timestamp check), so this
+    sweep is purely a storage hygiene measure.
+
+    Mirrors the shape of :func:`_expired_message_sweep_loop`.
+    """
+    from uam.db.crud.federation_nonces import sweep_old_nonces
+    from uam.db.retry import is_transient_error
+    from uam.db.session import async_session_factory
+    from uam.db.engine import get_engine
+
+    while True:
+        await asyncio.sleep(_FEDERATION_NONCE_SWEEP_INTERVAL)
+        try:
+            factory = async_session_factory(get_engine())
+            async with factory() as session:
+                count = await sweep_old_nonces(
+                    session, max_age_seconds=_FEDERATION_NONCE_MAX_AGE
+                )
+            if count:
+                logger.info("Pruned %d old federation_nonces rows", count)
+        except Exception as exc:
+            if is_transient_error(exc):
+                logger.warning(
+                    "Transient DB error in federation nonce sweep, will retry next cycle: %s",
+                    exc,
+                )
+            else:
+                logger.exception("Error in federation nonce sweep")
 
 
 async def _retention_worker_loop(app: FastAPI) -> None:
@@ -390,6 +439,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Background sweep for expired stored messages (MSG-04)
     expired_msg_task = asyncio.create_task(_expired_message_sweep_loop(app))
 
+    # Background sweep for old federation_nonces (T3.2 — Phase 45).
+    # Only run when federation is enabled — when disabled, the
+    # federation_deliver route is not mounted/active and no rows accrue.
+    federation_nonce_sweep_task = (
+        asyncio.create_task(_federation_nonce_sweep_loop(app))
+        if settings.federation_enabled
+        else None
+    )
+
     # Background retention worker -- hard-purge old records (RES-04)
     retention_task = asyncio.create_task(_retention_worker_loop(app))
 
@@ -431,6 +489,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await expired_msg_task
     except asyncio.CancelledError:
         pass
+
+    # Cancel federation nonce sweep loop (T3.2 — Phase 45)
+    if federation_nonce_sweep_task is not None:
+        federation_nonce_sweep_task.cancel()
+        try:
+            await federation_nonce_sweep_task
+        except asyncio.CancelledError:
+            pass
+
     dedup_cleanup_task.cancel()
     try:
         await dedup_cleanup_task

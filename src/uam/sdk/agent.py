@@ -10,7 +10,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
+from datetime import datetime, timezone
 
 import httpx
 
@@ -32,11 +34,13 @@ from uam.protocol import (
     contact_card_from_dict,
     verify_contact_card,
 )
+from uam.protocol.types import MAX_ENVELOPE_AGE
 from uam.sdk.config import SDKConfig
 from uam.sdk.key_manager import KeyManager
 from uam.sdk.message import ReceivedMessage
 from uam.sdk.contact_book import ContactBook
 from uam.sdk.handshake import HandshakeManager
+from uam.sdk.replay_cache import EnvelopeReplayCache
 from uam.sdk.resolver import AddressResolver, SmartResolver
 from uam.sdk.transport import create_transport
 from uam.sdk._sync import _run_sync
@@ -102,6 +106,12 @@ class Agent:
         self._handshake = HandshakeManager(
             self._contact_book, self._config.trust_policy
         )
+
+        # T3.1: per-Agent replay cache for inbound envelopes.
+        # In-process; one cache per Agent; not persisted across close()/open().
+        # The MAX_ENVELOPE_AGE timestamp window caps replay risk after restart.
+        cap = int(os.environ.get("UAM_REPLAY_CACHE_CAPACITY", "100000"))
+        self._replay_cache = EnvelopeReplayCache(capacity=cap, ttl=MAX_ENVELOPE_AGE)
 
     # -- Properties ----------------------------------------------------------
 
@@ -696,6 +706,76 @@ class Agent:
                 envelope.from_address,
             )
             return None  # Silently reject unsigned/invalid messages
+
+        # T3.1 (a) recipient binding -- drop envelopes addressed to someone else.
+        # Runs AFTER verify so attackers cannot poison the replay cache below
+        # by flooding garbage from_address values (Pitfall 1).
+        # Skip if _address is unset (test fixtures that drive _process_inbound
+        # directly without going through connect()); in production, inbox()
+        # calls _ensure_connected() first so _address is always populated here.
+        if self._address is not None and envelope.to_address != self._address:
+            logger.warning(
+                "Dropped envelope %s from %s addressed to %s (we are %s)",
+                envelope.message_id,
+                envelope.from_address,
+                envelope.to_address,
+                self._address,
+            )
+            return None
+
+        # T3.1 (b) timestamp freshness -- drop envelopes older than MAX_ENVELOPE_AGE.
+        try:
+            ts = datetime.fromisoformat(envelope.timestamp.replace("Z", "+00:00"))
+            age_seconds = abs((datetime.now(timezone.utc) - ts).total_seconds())
+            if age_seconds > MAX_ENVELOPE_AGE:
+                logger.info(
+                    "Dropped stale envelope %s from %s (age=%ds > %ds)",
+                    envelope.message_id,
+                    envelope.from_address,
+                    int(age_seconds),
+                    MAX_ENVELOPE_AGE,
+                )
+                return None
+        except (ValueError, AttributeError):
+            logger.warning(
+                "Dropped envelope %s with malformed timestamp %r",
+                envelope.message_id,
+                envelope.timestamp,
+            )
+            return None
+
+        # T3.1 (c) explicit expiry check -- drop envelopes whose expires has passed.
+        if envelope.expires is not None:
+            try:
+                exp = datetime.fromisoformat(envelope.expires.replace("Z", "+00:00"))
+                if datetime.now(timezone.utc) > exp:
+                    logger.info(
+                        "Dropped expired envelope %s from %s (expires=%s)",
+                        envelope.message_id,
+                        envelope.from_address,
+                        envelope.expires,
+                    )
+                    return None
+            except (ValueError, AttributeError):
+                logger.warning(
+                    "Dropped envelope %s with malformed expires %r",
+                    envelope.message_id,
+                    envelope.expires,
+                )
+                return None
+
+        # T3.1 (d) replay cache -- drop duplicate (from_address, message_id) pairs.
+        # MUST be the LAST check before handshake/decrypt: it's the only one that
+        # mutates state, so partial-failure paths above don't poison the cache.
+        if await self._replay_cache.seen_or_record(
+            envelope.from_address, envelope.message_id
+        ):
+            logger.info(
+                "Dropped replayed envelope %s from %s",
+                envelope.message_id,
+                envelope.from_address,
+            )
+            return None
 
         # Handle handshake messages (not user-visible)
         if envelope.type in (

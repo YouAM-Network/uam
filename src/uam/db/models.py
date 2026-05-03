@@ -14,7 +14,7 @@ Usage::
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import JSON, UniqueConstraint, func
 from sqlmodel import Field, SQLModel
@@ -131,6 +131,37 @@ class SeenMessageId(SQLModel, table=True):
     message_id: str = Field(primary_key=True)
     from_addr: str
     seen_at: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"server_default": func.now()})
+
+
+class FederationNonce(SQLModel, table=True):
+    """Federation request nonce dedup (T3.2 — Phase 45).
+
+    Records ``(from_relay, nonce)`` pairs received via
+    ``/api/v1/federation/deliver``. Replays of a previously-seen pair are
+    rejected with HTTP 409 by the route layer BEFORE crypto verify.
+
+    The composite ``(from_relay, nonce)`` PRIMARY KEY guarantees that a
+    second insert of the same pair raises ``IntegrityError`` — see
+    :func:`uam.db.crud.federation_nonces.record_nonce`. Per-relay scope is
+    intentional: relay-A and relay-B may legitimately both emit the same
+    random 22-char string.
+
+    Pruned by ``_federation_nonce_sweep_loop`` in ``app.py`` every
+    ``UAM_FEDERATION_NONCE_SWEEP_INTERVAL`` seconds (default 600s) — old
+    rows are deleted after ``2 × federation_timestamp_max_age`` (default
+    600s = 10min), well past the 5-min freshness window enforced in
+    ``federation_deliver`` Step 3.
+    """
+
+    __tablename__ = "federation_nonces"
+
+    from_relay: str = Field(primary_key=True, max_length=255)
+    nonce: str = Field(primary_key=True, max_length=64)
+    seen_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        nullable=False,
+        sa_column_kwargs={"server_default": func.now()},
+    )
 
 
 class DomainVerification(SQLModel, table=True):
@@ -336,6 +367,7 @@ __all__ = [
     "Contact",
     "AuditLog",
     "SeenMessageId",
+    "FederationNonce",
     "DomainVerification",
     "WebhookDelivery",
     "Reputation",

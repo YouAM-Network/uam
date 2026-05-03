@@ -8,6 +8,7 @@ Discovers remote relay endpoints via DNS SRV lookup with
 from __future__ import annotations
 
 import logging
+import secrets
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -19,6 +20,7 @@ import httpx
 
 from uam.protocol.types import utc_timestamp
 from uam.relay.relay_auth import sign_federation_request
+from uam.relay.ssrf import SSRFBlockedError, validate_outbound_target
 
 from uam.db.crud.federation import get_known_relay, log_federation, upsert_known_relay
 from uam.db.session import async_session_factory
@@ -53,7 +55,11 @@ class FederationService:
         self._settings = settings
         self._signing_key = signing_key
         self._verify_key = verify_key
-        self._client = httpx.AsyncClient(timeout=30.0)
+        # T5.1 (Phase 45): follow_redirects=False — defense-in-depth so an
+        # attacker-controlled 30x from a public-IP target cannot bounce the
+        # client to a private/loopback IP after validate_outbound_target has
+        # passed for the initial URL.
+        self._client = httpx.AsyncClient(timeout=30.0, follow_redirects=False)
         self._relay_domain: str = settings.relay_domain
 
     # ------------------------------------------------------------------
@@ -180,6 +186,14 @@ class FederationService:
         extract the ``public_key`` field.  Returns ``None`` on failure.
         """
         url = f"https://{host}:{port}/.well-known/uam-relay.json"
+        # T5.1 — SSRF guard before outbound HTTP
+        try:
+            validate_outbound_target(url, allowed_ports=(443, 8443))
+        except SSRFBlockedError as exc:
+            logger.warning(
+                "T5.1: refusing federation .well-known fetch %s: %s", url, exc
+            )
+            return None
         try:
             resp = await self._client.get(url, timeout=10.0)
             resp.raise_for_status()
@@ -197,6 +211,14 @@ class FederationService:
         Returns ``{"federation_endpoint": ..., "public_key": ...}`` or ``None``.
         """
         url = f"https://{domain}/.well-known/uam-relay.json"
+        # T5.1 — SSRF guard before outbound HTTP
+        try:
+            validate_outbound_target(url, allowed_ports=(443, 8443))
+        except SSRFBlockedError as exc:
+            logger.warning(
+                "T5.1: refusing federation discovery fetch %s: %s", url, exc
+            )
+            return None
         try:
             resp = await self._client.get(url, timeout=10.0)
             resp.raise_for_status()
@@ -255,12 +277,23 @@ class FederationService:
             )
 
         # 3. Build federation request body
+        # T3.2 (Phase 45): include a 128-bit CSPRNG nonce so the receiving
+        # relay can dedup replays of this signed body within the
+        # federation timestamp freshness window. ``sign_federation_request``
+        # below canonicalises and signs the WHOLE body dict — adding this
+        # field requires no changes to relay_auth.py because the nonce
+        # naturally lands in the canonical signing scope.
+        # NOTE: any sibling executor (e.g. 45-04) that adds further fields
+        # to this body MUST PRESERVE the ``nonce`` entry — receiving
+        # relays reject bodies missing it (Pydantic 422 on
+        # FederationDeliverRequest).
         body = {
             "envelope": envelope_dict,
             "via": (via or []) + [from_relay],
             "hop_count": hop_count + 1,
             "timestamp": utc_timestamp(),
             "from_relay": from_relay,
+            "nonce": secrets.token_urlsafe(16),  # T3.2: 128-bit replay defeat
         }
 
         # 4. Sign the request
@@ -275,6 +308,34 @@ class FederationService:
         }
 
         factory = async_session_factory(get_engine())
+        # T5.1 — SSRF guard before outbound HTTP. The federation_url came
+        # from peer-controlled DNS/.well-known content via discover_relay;
+        # we MUST validate it before posting the signed envelope.
+        try:
+            validate_outbound_target(
+                relay_info["federation_url"], allowed_ports=(443, 8443)
+            )
+        except SSRFBlockedError as exc:
+            error_detail = f"SSRF refused: {exc}"
+            logger.warning(
+                "T5.1: refusing federation forward to %s: %s",
+                relay_info["federation_url"],
+                exc,
+            )
+            async with factory() as session:
+                await log_federation(
+                    session,
+                    message_id,
+                    from_relay,
+                    target_domain,
+                    "outbound",
+                    hop_count + 1,
+                    "failed",
+                    error=error_detail,
+                )
+            return ForwardResult(
+                delivered=False, queued=False, error=error_detail
+            )
         try:
             resp = await self._client.post(
                 relay_info["federation_url"],
