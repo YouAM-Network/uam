@@ -22,6 +22,7 @@ Configuration via environment variables:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -47,36 +48,48 @@ def _safe_error(exc: Exception) -> str:
     return f"{cls}: An internal error occurred. Check server logs for details."
 
 
-# Module-level cached Agent instance (lazy-initialized)
+# Module-level cached Agent instance (lazy-initialized).
+# T4.6: protected by an asyncio.Lock so concurrent FastMCP tool calls
+# cannot construct duplicate Agent instances.
 _agent: Agent | None = None
+_agent_lock: asyncio.Lock = asyncio.Lock()  # Python ≥3.10 loop-agnostic at import (Pitfall 5)
 
 
 async def _get_agent() -> Agent:
-    """Return the module-level Agent, connecting lazily on first call.
+    """Return the module-level Agent, connecting lazily on first call (T4.6 atomic).
 
-    The Agent is created from environment variables and connected once.
-    Subsequent calls return the cached instance.
+    Double-check pattern: fast-path returns the cached connected Agent without
+    acquiring the lock; slow-path acquires ``_agent_lock``, re-checks the cached
+    value, then constructs + connects if needed. Concurrent FastMCP tool
+    invocations all share the same Agent instance.
     """
     global _agent
+
+    # Fast-path: cached and still connected → no lock acquisition.
     if _agent is not None and _agent.is_connected:
         return _agent
 
-    name = os.environ.get("UAM_AGENT_NAME")
-    if not name:
-        raise RuntimeError(
-            "UAM_AGENT_NAME environment variable is required. "
-            "Set it to the agent name before starting the MCP server."
-        )
+    async with _agent_lock:
+        # Double-check inside lock — another coroutine may have just initialized it.
+        if _agent is not None and _agent.is_connected:
+            return _agent
 
-    _agent = Agent(
-        name,
-        relay=os.environ.get("UAM_RELAY_URL"),
-        display_name=os.environ.get("UAM_DISPLAY_NAME"),
-        transport=os.environ.get("UAM_TRANSPORT", "http"),
-        trust_policy=os.environ.get("UAM_TRUST_POLICY", "auto-accept"),
-    )
-    await _agent.connect()
-    return _agent
+        name = os.environ.get("UAM_AGENT_NAME")
+        if not name:
+            raise RuntimeError(
+                "UAM_AGENT_NAME environment variable is required. "
+                "Set it to the agent name before starting the MCP server."
+            )
+
+        _agent = Agent(
+            name,
+            relay=os.environ.get("UAM_RELAY_URL"),
+            display_name=os.environ.get("UAM_DISPLAY_NAME"),
+            transport=os.environ.get("UAM_TRANSPORT", "http"),
+            trust_policy=os.environ.get("UAM_TRUST_POLICY", "auto-accept"),
+        )
+        await _agent.connect()
+        return _agent
 
 
 # ---------------------------------------------------------------------------

@@ -98,7 +98,7 @@ async def federation_deliver(
             relay_limit = relay_reputation.get_rate_limit(from_relay)
             if relay_limit == 0:
                 raise HTTPException(status_code=403, detail="Source relay reputation too low")
-            if not federation_limiter.check(from_relay, limit=relay_limit):
+            if not await federation_limiter.check(from_relay, limit=relay_limit):
                 raise HTTPException(status_code=429, detail="Federation rate limit exceeded")
 
     # Resolve relay_reputation once for use in validation and success/failure recording

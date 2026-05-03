@@ -145,7 +145,7 @@ class TestTokenHashing:
         from uam.db.models import Agent
         from sqlmodel import select
 
-        factory = init_session_factory(get_engine())
+        factory = await init_session_factory(get_engine())
         async with factory() as session:
             stmt = select(Agent).where(Agent.address == registered_agent["address"])
             result = await session.execute(stmt)

@@ -5,13 +5,30 @@ Covers five sub-tables: ``known_relays``, ``federation_log``,
 ``relay_reputation``.
 
 Every function takes ``session: AsyncSession`` as its first parameter.
+
+Phase 44 Plan 44-06 (T4.7 H2):
+    The state-machine and counter mutations are now single atomic
+    ``UPDATE`` statements:
+
+      - ``update_queue_entry``: ``UPDATE ... WHERE id=? AND status=?
+        ... RETURNING *`` with an ``expected_current_status`` parameter
+        (default ``'pending'``) so concurrent workers cannot both pick
+        up the same pending row.
+      - ``record_relay_success`` / ``record_relay_failure``: atomic
+        counter increment + clamped score adjustment via SQL ``CASE``
+        expressions. 50 concurrent ``record_relay_success`` calls land
+        50 increments — the prior SELECT-then-mutate pattern lost
+        updates.
+
+    SQLite-only SQL in ``relay_reputation.py`` (REVIEW-relay-core M9)
+    is OUT OF SCOPE for this plan and deferred to Phase 47/48.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from sqlalchemy import delete as sa_delete
+from sqlalchemy import case, delete as sa_delete, func, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
@@ -204,22 +221,49 @@ async def update_queue_entry(
     status: str,
     error: str | None = None,
     next_retry: datetime | None = None,
+    *,
+    expected_current_status: str = "pending",
 ) -> FederationQueueEntry | None:
-    """Update a queue entry's status, error, and retry schedule."""
-    stmt = select(FederationQueueEntry).where(
-        FederationQueueEntry.id == entry_id
+    """Atomically transition a queue entry's status (T4.7 H2 part).
+
+    ``UPDATE federation_queue SET status=?, error=?, attempt_count=
+    attempt_count + 1[, next_retry=?] WHERE id=? AND status=?
+    RETURNING *``
+
+    Concurrent retry-loop workers cannot both pick up the same pending
+    row: only the first writer's WHERE clause matches; subsequent
+    writers see ``status != expected_current_status`` and receive
+    ``None``. Callers in ``relay/app.py`` already transition rows from
+    ``pending`` (the get_pending_queue filter), so the default
+    ``expected_current_status='pending'`` matches today's behaviour.
+    Pass an alternate value when transitioning from a non-pending state
+    (e.g. ``in_progress`` -> ``completed``).
+
+    Returns the updated row, or ``None`` if no row matched (entry
+    missing, or pre-state did not match — race-loss).
+    """
+    values: dict = {
+        "status": status,
+        "error": error,
+        "attempt_count": FederationQueueEntry.attempt_count + 1,
+    }
+    if next_retry is not None:
+        values["next_retry"] = next_retry
+
+    stmt = (
+        update(FederationQueueEntry)
+        .where(
+            FederationQueueEntry.id == entry_id,
+            FederationQueueEntry.status == expected_current_status,
+        )
+        .values(**values)
+        .returning(FederationQueueEntry)
     )
     result = await session.execute(stmt)
     entry = result.scalar_one_or_none()
+    await session.commit()
     if entry is None:
         return None
-    entry.status = status
-    entry.error = error
-    entry.attempt_count += 1
-    if next_retry is not None:
-        entry.next_retry = next_retry
-    session.add(entry)
-    await session.commit()
     await session.refresh(entry)
     return entry
 
@@ -385,14 +429,40 @@ async def upsert_relay_reputation(
 async def record_relay_success(
     session: AsyncSession, domain: str
 ) -> RelayReputation:
-    """Increment ``messages_forwarded`` and boost score (+1, clamped)."""
-    rep = await upsert_relay_reputation(session, domain)
-    rep.messages_forwarded += 1
-    rep.score = _clamp(rep.score + 1)
-    rep.last_success = datetime.utcnow()
-    rep.updated_at = datetime.utcnow()
-    session.add(rep)
+    """Increment ``messages_forwarded`` and boost score (+1, clamped).
+
+    T4.7 H2: atomic ``UPDATE relay_reputation SET messages_forwarded =
+    messages_forwarded + 1, score = MIN(100, score + 1), last_success =
+    now(), updated_at = now() WHERE domain = ?``. Concurrent invocations
+    land all increments — the prior SELECT-then-mutate pattern lost
+    updates.
+
+    The clamp at 100 is expressed as a SQL ``CASE`` so the arithmetic
+    and clamp evaluate atomically inside the row lock.
+    """
+    # Ensure the row exists. ``upsert_relay_reputation`` is idempotent
+    # via swallow-IntegrityError on the primary-key collision.
+    await upsert_relay_reputation(session, domain)
+    new_score_expr = case(
+        (RelayReputation.score + 1 > 100, 100),
+        else_=RelayReputation.score + 1,
+    )
+    now = datetime.utcnow()
+    stmt = (
+        update(RelayReputation)
+        .where(RelayReputation.domain == domain)
+        .values(
+            messages_forwarded=RelayReputation.messages_forwarded + 1,
+            score=new_score_expr,
+            last_success=now,
+            updated_at=func.now(),
+        )
+        .returning(RelayReputation)
+    )
+    result = await session.execute(stmt)
+    rep = result.scalar_one_or_none()
     await session.commit()
+    assert rep is not None  # upsert ensured the row exists
     await session.refresh(rep)
     return rep
 
@@ -400,13 +470,31 @@ async def record_relay_success(
 async def record_relay_failure(
     session: AsyncSession, domain: str
 ) -> RelayReputation:
-    """Increment ``messages_rejected`` and penalise score (-5, clamped)."""
-    rep = await upsert_relay_reputation(session, domain)
-    rep.messages_rejected += 1
-    rep.score = _clamp(rep.score - 5)
-    rep.last_failure = datetime.utcnow()
-    rep.updated_at = datetime.utcnow()
-    session.add(rep)
+    """Increment ``messages_rejected`` and penalise score (-5, clamped).
+
+    T4.7 H2: atomic ``UPDATE`` mirroring ``record_relay_success`` but on
+    the failure column with a ``-5`` score adjustment clamped at 0.
+    """
+    await upsert_relay_reputation(session, domain)
+    new_score_expr = case(
+        (RelayReputation.score - 5 < 0, 0),
+        else_=RelayReputation.score - 5,
+    )
+    now = datetime.utcnow()
+    stmt = (
+        update(RelayReputation)
+        .where(RelayReputation.domain == domain)
+        .values(
+            messages_rejected=RelayReputation.messages_rejected + 1,
+            score=new_score_expr,
+            last_failure=now,
+            updated_at=func.now(),
+        )
+        .returning(RelayReputation)
+    )
+    result = await session.execute(stmt)
+    rep = result.scalar_one_or_none()
     await session.commit()
+    assert rep is not None  # upsert ensured the row exists
     await session.refresh(rep)
     return rep

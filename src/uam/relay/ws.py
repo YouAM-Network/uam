@@ -19,7 +19,7 @@ from uam.protocol import (
     verify_envelope,
 )
 from uam.relay.auth import verify_token_ws
-from uam.relay.connections import ConnectionManager
+from uam.relay.connections import ConnectionManager, LockedWebSocket
 
 from uam.db.crud.agents import get_agent_by_address, update_agent
 from uam.db.crud.messages import get_inbox, mark_delivered, store_message
@@ -33,12 +33,22 @@ router = APIRouter()
 
 
 async def _deliver_stored_messages(
-    websocket: WebSocket,
     address: str,
     factory: object,
     manager: ConnectionManager,
 ) -> None:
-    """Send all stored offline messages to a freshly connected agent."""
+    """Send all stored offline messages to a freshly connected agent.
+
+    Routes every drain frame through ``manager.send_to(address, ...)``
+    so the per-connection :class:`LockedWebSocket` lock serializes the
+    drain against the recv loop's error responses, the heartbeat ping,
+    peer forwarding, and webhook receipt forwarding (T4.1 / closes M8
+    from REVIEW-relay-core).
+
+    If the connection dies mid-drain, ``manager.send_to`` returns False
+    and we abort the rest of the drain — the unsent messages remain in
+    storage and will be redelivered on the next reconnect (RELAY-03).
+    """
     async with factory() as session:
         stored = await get_inbox(session, address)
     if not stored:
@@ -47,7 +57,12 @@ async def _deliver_stored_messages(
     ids: list[int] = []
     for msg in stored:
         envelope_data = json.loads(msg.envelope)
-        await websocket.send_json(envelope_data)
+        delivered = await manager.send_to(address, envelope_data)
+        if not delivered:
+            # Connection died mid-drain; abort. Unsent messages stay in
+            # storage and will be redelivered on the next reconnect.
+            logger.warning("Drain aborted for %s: connection lost", address)
+            break
         ids.append(msg.id)
 
         # Send receipt.delivered to the original sender (MSG-05 anti-loop guard)
@@ -62,19 +77,26 @@ async def _deliver_stored_messages(
             }
             await manager.send_to(original_from, receipt)
 
-    async with factory() as session:
-        await mark_delivered(session, ids)
-    logger.info("Delivered %d stored messages to %s", len(ids), address)
+    if ids:
+        async with factory() as session:
+            await mark_delivered(session, ids)
+        logger.info("Delivered %d stored messages to %s", len(ids), address)
 
 
 async def handle_inbound_message(
-    websocket: WebSocket,
+    wrapped_ws: LockedWebSocket,
     raw: dict,
     sender_address: str,
     factory: object,
     manager: ConnectionManager,
 ) -> None:
     """Parse, verify, and route an inbound envelope from a WebSocket client.
+
+    All response sends (errors, acks, rate-limit replies) go through the
+    :class:`LockedWebSocket` wrapper so they share the per-connection
+    lock with peer forwarding, heartbeat, the stored-message drain, and
+    webhook receipt forwarding — preventing frame interleave under
+    concurrent send pressure (T4.1).
 
     Order of operations (DoS-resistant):
     1.  Blocklist check (SPAM-01 -- O(1) set lookup)
@@ -88,19 +110,19 @@ async def handle_inbound_message(
     9.  Signature verification (expensive -- LAST)
     10. Route or store
     """
-    sender_limiter = websocket.app.state.sender_limiter
-    recipient_limiter = websocket.app.state.recipient_limiter
-    spam_filter = websocket.app.state.spam_filter
-    reputation_manager = websocket.app.state.reputation_manager
-    domain_limiter = websocket.app.state.domain_limiter
-    settings = websocket.app.state.settings
+    sender_limiter = wrapped_ws.app.state.sender_limiter
+    recipient_limiter = wrapped_ws.app.state.recipient_limiter
+    spam_filter = wrapped_ws.app.state.spam_filter
+    reputation_manager = wrapped_ws.app.state.reputation_manager
+    domain_limiter = wrapped_ws.app.state.domain_limiter
+    settings = wrapped_ws.app.state.settings
 
     # Receipt type detection -- check raw dict before full parsing (MSG-05)
     is_receipt = str(raw.get("type", "")).startswith("receipt.")
 
     # Blocklist check (SPAM-01)
     if spam_filter.is_blocked(sender_address):
-        await websocket.send_json({"error": "blocked", "detail": "Sender is blocked"})
+        await wrapped_ws.send_json({"error": "blocked", "detail": "Sender is blocked"})
         return
 
     # Allowlist check (SPAM-01)
@@ -112,21 +134,21 @@ async def handle_inbound_message(
     elif not is_allowlisted:
         send_limit = reputation_manager.get_send_limit(sender_address)
         if send_limit == 0:
-            await websocket.send_json({"error": "reputation_blocked", "detail": "Sender reputation too low"})
+            await wrapped_ws.send_json({"error": "reputation_blocked", "detail": "Sender reputation too low"})
             return
-        if not sender_limiter.check(sender_address, limit=send_limit):
-            await websocket.send_json({"error": "rate_limited", "detail": "Sender rate limit exceeded"})
+        if not await sender_limiter.check(sender_address, limit=send_limit):
+            await wrapped_ws.send_json({"error": "rate_limited", "detail": "Sender rate limit exceeded"})
             return
     else:
-        if not sender_limiter.check(sender_address):
-            await websocket.send_json({"error": "rate_limited", "detail": "Sender rate limit exceeded"})
+        if not await sender_limiter.check(sender_address):
+            await wrapped_ws.send_json({"error": "rate_limited", "detail": "Sender rate limit exceeded"})
             return
 
     # Parse envelope
     try:
         envelope = from_wire_dict(raw)
     except InvalidEnvelopeError as exc:
-        await websocket.send_json({
+        await wrapped_ws.send_json({
             "error": "invalid_envelope",
             "detail": str(exc),
         })
@@ -134,7 +156,7 @@ async def handle_inbound_message(
 
     # Verify sender matches authenticated connection
     if envelope.from_address != sender_address:
-        await websocket.send_json({
+        await wrapped_ws.send_json({
             "error": "sender_mismatch",
             "detail": f"Envelope from '{envelope.from_address}' but connected as '{sender_address}'",
         })
@@ -145,7 +167,7 @@ async def handle_inbound_message(
         is_new = await record_message_id(session, envelope.message_id, sender_address)
     if not is_new:
         # Silently ACK duplicate -- idempotent for the sender
-        await websocket.send_json({
+        await wrapped_ws.send_json({
             "type": "ack",
             "message_id": envelope.message_id,
             "delivered": True,
@@ -159,7 +181,7 @@ async def handle_inbound_message(
             exp_ts = datetime.fromisoformat(expires_str.replace("Z", "+00:00"))
             now = datetime.now(timezone.utc)
             if exp_ts + timedelta(seconds=_EXPIRY_GRACE_SECONDS) < now:
-                await websocket.send_json({
+                await wrapped_ws.send_json({
                     "error": "expired",
                     "detail": "Message has expired",
                 })
@@ -172,13 +194,13 @@ async def handle_inbound_message(
     if not is_receipt:
         sender_domain = sender_address.split("::")[1] if "::" in sender_address else ""
         if sender_domain and sender_domain != settings.relay_domain and not is_allowlisted:
-            if not domain_limiter.check(sender_domain):
-                await websocket.send_json({"error": "rate_limited", "detail": "Domain rate limit exceeded"})
+            if not await domain_limiter.check(sender_domain):
+                await wrapped_ws.send_json({"error": "rate_limited", "detail": "Domain rate limit exceeded"})
                 return
 
     # Rate limit: recipient (RELAY-05) -- receipt types exempt
-    if not is_receipt and not recipient_limiter.check(envelope.to_address):
-        await websocket.send_json({
+    if not is_receipt and not await recipient_limiter.check(envelope.to_address):
+        await wrapped_ws.send_json({
             "error": "rate_limited",
             "detail": "Recipient rate limit exceeded (100/min)",
         })
@@ -188,14 +210,14 @@ async def handle_inbound_message(
     if not is_receipt and not is_allowlisted:
         score = reputation_manager.get_score(sender_address)
         if score < 20:
-            await websocket.send_json({"error": "reputation_blocked", "detail": "Sender reputation too low"})
+            await wrapped_ws.send_json({"error": "reputation_blocked", "detail": "Sender reputation too low"})
             return
 
     # Look up sender's public key and verify signature (expensive)
     async with factory() as session:
         sender_agent = await get_agent_by_address(session, sender_address)
     if sender_agent is None:
-        await websocket.send_json({
+        await wrapped_ws.send_json({
             "error": "sender_not_found",
             "detail": f"Sender agent not found: {sender_address}",
         })
@@ -205,7 +227,7 @@ async def handle_inbound_message(
         sender_vk = deserialize_verify_key(sender_agent.public_key)
         verify_envelope(envelope, sender_vk)
     except SignatureVerificationError as exc:
-        await websocket.send_json({
+        await wrapped_ws.send_json({
             "error": "invalid_signature",
             "detail": str(exc),
         })
@@ -217,7 +239,7 @@ async def handle_inbound_message(
 
     if not delivered:
         # Tier 2: Webhook (near-real-time)
-        webhook_service = websocket.app.state.webhook_service
+        webhook_service = wrapped_ws.app.state.webhook_service
         webhook_initiated = await webhook_service.try_deliver(
             envelope.to_address, raw
         )
@@ -244,7 +266,7 @@ async def handle_inbound_message(
             )
 
     # Send ACK first (always before receipt)
-    await websocket.send_json({
+    await wrapped_ws.send_json({
         "type": "ack",
         "message_id": envelope.message_id,
         "delivered": delivered,
@@ -277,7 +299,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     be echoed back in ``websocket.accept(subprotocol=...)`` -- without this,
     browsers drop the connection silently with no error frame (Pitfall 3).
     """
-    factory = init_session_factory(get_engine())
+    factory = await init_session_factory(get_engine())
     manager: ConnectionManager = websocket.app.state.manager
     heartbeat = websocket.app.state.heartbeat
 
@@ -333,17 +355,24 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         await websocket.accept(subprotocol=chosen_subproto)
     else:
         await websocket.accept()
-    await manager.connect(address, websocket)
+    # T4.1: manager.connect() returns the LockedWebSocket wrapper. Every
+    # subsequent send/close on this connection MUST go through wrapped_ws
+    # so the per-connection lock serializes the recv loop, drain,
+    # heartbeat, peer forwarding, and webhook receipts.
+    wrapped_ws = await manager.connect(address, websocket)
     heartbeat.record_connect(address)
     logger.info("WebSocket connected: %s", address)
 
     try:
-        # Deliver stored offline messages on reconnect (RELAY-03)
-        await _deliver_stored_messages(websocket, address, factory, manager)
+        # Deliver stored offline messages on reconnect (RELAY-03).
+        # Drain routes through manager.send_to (closes M8) so it shares
+        # the per-connection lock with every other send path.
+        await _deliver_stored_messages(address, factory, manager)
 
-        # Message loop
+        # Message loop. Receive uses the wrapper's pass-through (no lock
+        # — single-reader contract). Sends use wrapped_ws (locked).
         while True:
-            raw = await websocket.receive_json()
+            raw = await wrapped_ws.receive_json()
 
             # Handle pong messages (heartbeat RELAY-06)
             if isinstance(raw, dict) and raw.get("type") == "pong":
@@ -352,11 +381,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
             # Distinguish message types: envelopes have "uam_version" field
             if "uam_version" in raw:
-                await handle_inbound_message(websocket, raw, address, factory, manager)
+                await handle_inbound_message(wrapped_ws, raw, address, factory, manager)
             else:
                 msg_type = raw.get("type", "<missing>") if isinstance(raw, dict) else "<invalid>"
                 logger.warning("Unknown message type from %s: %s", address, msg_type)
-                await websocket.send_json({
+                await wrapped_ws.send_json({
                     "error": "unknown_message_type",
                     "detail": f"Unrecognized message type: {msg_type}",
                 })

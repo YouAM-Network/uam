@@ -2,12 +2,33 @@
 
 Every function takes ``session: AsyncSession`` as its first parameter.
 Read queries filter ``deleted_at IS NULL`` by default.
+
+Phase 44 Plan 44-06 (T4.7):
+    ``record_attempt`` and ``complete_delivery`` are now single atomic
+    ``UPDATE`` statements:
+
+      - ``record_attempt`` increments ``attempt_count`` in SQL
+        (``attempt_count = attempt_count + 1``) so 20 concurrent calls
+        land 20 increments. No ``WHERE status=?`` filter — the function
+        is intentionally idempotent across pending/in_progress states
+        because the route layer in ``relay/webhook.py`` calls it during
+        every retry attempt regardless of current status.
+      - ``complete_delivery`` filters
+        ``WHERE status IN ('pending', 'in_progress')`` so a row that
+        was already finalised cannot be re-completed by a stale
+        concurrent caller.
+
+    ``update_circuit_breaker`` (which stomps the agent's
+    ``contact_card`` JSON for circuit-breaker state) is OUT OF SCOPE
+    for this plan — it requires a dedicated ``webhook_circuit_breakers``
+    table and is deferred to Phase 47/48 per RESEARCH § Out of Scope.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 
+from sqlalchemy import func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
@@ -69,24 +90,43 @@ async def record_attempt(
 ) -> WebhookDelivery | None:
     """Record a delivery attempt (increment counter, set status to in_progress).
 
+    T4.7: atomic ``UPDATE WebhookDelivery SET attempt_count =
+    attempt_count + 1, last_status_code=?, last_error=?,
+    status='in_progress' WHERE id=?``. The increment evaluates
+    atomically inside the row lock so 20 concurrent calls land 20
+    increments — the prior SELECT-then-mutate pattern lost updates.
+
+    No ``WHERE status=?`` pre-state filter is applied: the route layer
+    in ``relay/webhook.py`` calls this function during every retry
+    attempt regardless of whether the row is still ``pending`` or
+    already ``in_progress`` from a previous attempt. Idempotent
+    transitions (``in_progress`` -> ``in_progress``) are intentional.
+
     When *commit* is ``False`` the change is flushed but the caller is
     responsible for committing the session.
     """
-    stmt = select(WebhookDelivery).where(WebhookDelivery.id == delivery_id)
+    stmt = (
+        update(WebhookDelivery)
+        .where(WebhookDelivery.id == delivery_id)
+        .values(
+            attempt_count=WebhookDelivery.attempt_count + 1,
+            last_status_code=status_code,
+            last_error=error,
+            status="in_progress",
+        )
+        .returning(WebhookDelivery)
+    )
     result = await session.execute(stmt)
     delivery = result.scalar_one_or_none()
-    if delivery is None:
-        return None
-    delivery.attempt_count += 1
-    delivery.last_status_code = status_code
-    delivery.last_error = error
-    delivery.status = "in_progress"
-    session.add(delivery)
+
     if commit:
         await session.commit()
-        await session.refresh(delivery)
     else:
         await session.flush()
+
+    if delivery is None:
+        return None
+    await session.refresh(delivery)
     return delivery
 
 
@@ -100,23 +140,39 @@ async def complete_delivery(
 ) -> WebhookDelivery | None:
     """Mark a delivery as completed (succeeded or failed).
 
+    T4.7: atomic ``UPDATE WebhookDelivery SET status=?, completed_at=now,
+    last_error=? WHERE id=? AND status IN ('pending', 'in_progress')``.
+    The pre-state filter prevents a stale concurrent caller from
+    re-completing a row that was already finalised — the loser's WHERE
+    clause matches no rows and the call returns ``None``.
+
     When *commit* is ``False`` the change is flushed but the caller is
     responsible for committing the session.
     """
-    stmt = select(WebhookDelivery).where(WebhookDelivery.id == delivery_id)
+    stmt = (
+        update(WebhookDelivery)
+        .where(
+            WebhookDelivery.id == delivery_id,
+            WebhookDelivery.status.in_(["pending", "in_progress"]),  # type: ignore[union-attr]
+        )
+        .values(
+            status=status,
+            completed_at=func.now(),
+            last_error=error,
+        )
+        .returning(WebhookDelivery)
+    )
     result = await session.execute(stmt)
     delivery = result.scalar_one_or_none()
-    if delivery is None:
-        return None
-    delivery.status = status
-    delivery.completed_at = datetime.utcnow()
-    delivery.last_error = error
-    session.add(delivery)
+
     if commit:
         await session.commit()
-        await session.refresh(delivery)
     else:
         await session.flush()
+
+    if delivery is None:
+        return None
+    await session.refresh(delivery)
     return delivery
 
 

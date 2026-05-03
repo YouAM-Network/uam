@@ -46,13 +46,13 @@ async def _rate_limiter_cleanup_loop(app: FastAPI) -> None:
     """Periodically prune expired rate-limiter buckets to prevent memory leak."""
     while True:
         await asyncio.sleep(_RATE_LIMIT_CLEANUP_INTERVAL)
-        app.state.sender_limiter.cleanup()
-        app.state.recipient_limiter.cleanup()
-        app.state.register_limiter.cleanup()
-        app.state.domain_limiter.cleanup()
+        await app.state.sender_limiter.cleanup()
+        await app.state.recipient_limiter.cleanup()
+        await app.state.register_limiter.cleanup()
+        await app.state.domain_limiter.cleanup()
         federation_limiter = getattr(app.state, "federation_limiter", None)
         if federation_limiter:
-            federation_limiter.cleanup()
+            await federation_limiter.cleanup()
         logger.debug("Rate limiter buckets cleaned up")
 
 
@@ -262,8 +262,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from uam.db.engine import init_engine, dispose_engine
     from uam.db.session import init_session_factory, create_tables
 
-    engine = init_engine()
-    session_factory = init_session_factory(engine)
+    engine = await init_engine()
+    session_factory = await init_session_factory(engine)
 
     # Enable WAL mode for SQLite to allow concurrent reads during writes
     database_url = os.environ.get("DATABASE_URL", "")
@@ -456,7 +456,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if app.state.federation_service:
         await app.state.federation_service.close()
     if getattr(app.state, "federation_limiter", None):
-        app.state.federation_limiter.cleanup()
+        await app.state.federation_limiter.cleanup()
 
     await webhook_service.stop()
     await heartbeat.stop()

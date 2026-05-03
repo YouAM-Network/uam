@@ -79,7 +79,7 @@ async def verify_token_ws(
     from uam.db.session import init_session_factory
 
     token_hash = hash_token(token, settings.token_pepper)
-    factory = init_session_factory(get_engine())
+    factory = await init_session_factory(get_engine())
     async with factory() as session:
         stmt = select(Agent).where(Agent.token_hash == token_hash)
         result = await session.execute(stmt)

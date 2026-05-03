@@ -100,11 +100,11 @@ async def send_message(
         send_limit = reputation_manager.get_send_limit(agent["address"])
         if send_limit == 0:
             raise HTTPException(status_code=403, detail="Sender reputation too low")
-        if not sender_limiter.check(agent["address"], limit=send_limit):
+        if not await sender_limiter.check(agent["address"], limit=send_limit):
             raise HTTPException(status_code=429, detail="Sender rate limit exceeded")
     else:
         # Allowlisted senders use default (full) rate limit
-        if not sender_limiter.check(agent["address"]):
+        if not await sender_limiter.check(agent["address"]):
             raise HTTPException(status_code=429, detail="Sender rate limit exceeded")
 
     # Parse envelope
@@ -148,11 +148,11 @@ async def send_message(
         if not is_receipt:
             sender_domain = agent["address"].split("::")[1] if "::" in agent["address"] else ""
             if sender_domain and sender_domain != settings.relay_domain and not is_allowlisted:
-                if not domain_limiter.check(sender_domain):
+                if not await domain_limiter.check(sender_domain):
                     raise HTTPException(status_code=429, detail="Domain rate limit exceeded")
 
         # Rate limit: recipient (RELAY-05) -- receipt types exempt
-        if not is_receipt and not recipient_limiter.check(envelope.to_address):
+        if not is_receipt and not await recipient_limiter.check(envelope.to_address):
             raise HTTPException(status_code=429, detail="Recipient rate limit exceeded (100/min)")
 
         # Reputation check (SPAM-06) -- receipt types exempt

@@ -252,9 +252,17 @@ class TestReceiptRateLimitExemption:
         _boost(client, bob["address"])
 
         # Exhaust the sender rate limit (default 60/min, score=80 -> limit=60)
+        # T4.2 (Phase 44 Plan 02): SlidingWindowCounter.check is now async.
+        # Drive the coroutine via asyncio.run for this sync test scope.
+        import asyncio
+
         limiter = client.app.state.sender_limiter
-        for _ in range(60):
-            limiter.check(alice["address"])
+
+        async def _exhaust() -> None:
+            for _ in range(60):
+                await limiter.check(alice["address"])
+
+        asyncio.run(_exhaust())
 
         # Normal message should fail
         resp = _send(client, alice, bob)

@@ -32,7 +32,7 @@ async def register(body: RegisterRequest, request: Request, session: AsyncSessio
 
     # Rate limit by client IP (5/min)
     client_ip = request.client.host if request.client else "unknown"
-    if not request.app.state.register_limiter.check(client_ip):
+    if not await request.app.state.register_limiter.check(client_ip):
         raise HTTPException(status_code=429, detail="Registration rate limit exceeded (5/min)")
 
     # Validate public key is a real Ed25519 key

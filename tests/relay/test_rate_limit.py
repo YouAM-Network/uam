@@ -1,9 +1,17 @@
 """Tests for rate limiting -- unit tests on SlidingWindowCounter and
-integration tests on relay endpoints (RELAY-05)."""
+integration tests on relay endpoints (RELAY-05).
+
+T4.2 (Phase 44 Plan 02): SlidingWindowCounter.check / .remaining /
+.cleanup are now async (per-instance asyncio.Lock for atomicity). Unit
+tests use ``@pytest.mark.asyncio`` + ``await`` accordingly.
+"""
 
 from __future__ import annotations
 
+import asyncio
 import time
+
+import pytest
 
 from uam.relay.rate_limit import SlidingWindowCounter
 
@@ -11,68 +19,76 @@ from uam.relay.rate_limit import SlidingWindowCounter
 class TestSlidingWindowCounter:
     """Unit tests for the in-memory sliding-window rate limiter."""
 
-    def test_allows_within_limit(self):
+    @pytest.mark.asyncio
+    async def test_allows_within_limit(self):
         """Requests within the limit all succeed."""
         counter = SlidingWindowCounter(limit=3, window_seconds=60.0)
-        assert counter.check("key") is True
-        assert counter.check("key") is True
-        assert counter.check("key") is True
+        assert await counter.check("key") is True
+        assert await counter.check("key") is True
+        assert await counter.check("key") is True
 
-    def test_blocks_over_limit(self):
+    @pytest.mark.asyncio
+    async def test_blocks_over_limit(self):
         """Fourth request is blocked when limit is 3."""
         counter = SlidingWindowCounter(limit=3, window_seconds=60.0)
         for _ in range(3):
-            assert counter.check("key") is True
-        assert counter.check("key") is False
+            assert await counter.check("key") is True
+        assert await counter.check("key") is False
 
-    def test_window_expiry(self):
+    @pytest.mark.asyncio
+    async def test_window_expiry(self):
         """After the window expires, requests are allowed again."""
         counter = SlidingWindowCounter(limit=2, window_seconds=0.1)
-        assert counter.check("key") is True
-        assert counter.check("key") is True
-        assert counter.check("key") is False  # at limit
-        time.sleep(0.15)  # wait for window to expire
-        assert counter.check("key") is True  # allowed again
+        assert await counter.check("key") is True
+        assert await counter.check("key") is True
+        assert await counter.check("key") is False  # at limit
+        await asyncio.sleep(0.15)  # wait for window to expire
+        assert await counter.check("key") is True  # allowed again
 
-    def test_independent_keys(self):
+    @pytest.mark.asyncio
+    async def test_independent_keys(self):
         """Different keys have independent counters."""
         counter = SlidingWindowCounter(limit=1, window_seconds=60.0)
-        assert counter.check("a") is True
-        assert counter.check("a") is False  # a is at limit
-        assert counter.check("b") is True   # b is independent
+        assert await counter.check("a") is True
+        assert await counter.check("a") is False  # a is at limit
+        assert await counter.check("b") is True   # b is independent
 
-    def test_remaining_count(self):
+    @pytest.mark.asyncio
+    async def test_remaining_count(self):
         """remaining() decreases as requests are made."""
         counter = SlidingWindowCounter(limit=5, window_seconds=60.0)
-        assert counter.remaining("key") == 5
-        counter.check("key")
-        assert counter.remaining("key") == 4
-        counter.check("key")
-        counter.check("key")
-        assert counter.remaining("key") == 2
+        assert await counter.remaining("key") == 5
+        await counter.check("key")
+        assert await counter.remaining("key") == 4
+        await counter.check("key")
+        await counter.check("key")
+        assert await counter.remaining("key") == 2
 
-    def test_cleanup_removes_expired(self):
+    @pytest.mark.asyncio
+    async def test_cleanup_removes_expired(self):
         """cleanup() removes keys with no recent events."""
         counter = SlidingWindowCounter(limit=5, window_seconds=0.1)
-        counter.check("old_key")
-        time.sleep(0.15)
-        counter.cleanup()
+        await counter.check("old_key")
+        await asyncio.sleep(0.15)
+        await counter.cleanup()
         assert "old_key" not in counter._buckets
 
-    def test_len_tracks_keys(self):
+    @pytest.mark.asyncio
+    async def test_len_tracks_keys(self):
         """len(counter) returns the number of tracked keys."""
         counter = SlidingWindowCounter(limit=5, window_seconds=60.0)
         assert len(counter) == 0
-        counter.check("a")
+        await counter.check("a")
         assert len(counter) == 1
-        counter.check("b")
+        await counter.check("b")
         assert len(counter) == 2
 
-    def test_total_keys_matches_len(self):
+    @pytest.mark.asyncio
+    async def test_total_keys_matches_len(self):
         """total_keys() is an alias for len()."""
         counter = SlidingWindowCounter(limit=5, window_seconds=60.0)
-        counter.check("x")
-        counter.check("y")
+        await counter.check("x")
+        await counter.check("y")
         assert counter.total_keys() == len(counter) == 2
 
 

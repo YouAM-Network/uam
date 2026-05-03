@@ -18,6 +18,7 @@ Usage::
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncGenerator
 
@@ -34,6 +35,11 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _session_factory: async_sessionmaker[AsyncSession] | None = None
+# T4.5 (Phase 44 Plan 04): module-level lock serializes concurrent
+# ``init_session_factory()`` callers and dispose so the cached factory is
+# coherent with the underlying engine.  Python >=3.10 makes ``asyncio.Lock()``
+# loop-agnostic at module load (RESEARCH Pitfall 5).
+_session_factory_lock: asyncio.Lock = asyncio.Lock()
 
 # ---------------------------------------------------------------------------
 # Factory functions
@@ -57,8 +63,13 @@ def async_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSessio
     return async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
-def init_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
-    """Create (or return existing) session factory singleton.
+async def init_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
+    """Create (or return existing) session factory singleton (T4.5 atomic).
+
+    Double-check pattern: fast path returns the cached factory without
+    acquiring the lock; slow path acquires ``_session_factory_lock`` and
+    re-checks under it before constructing.  Concurrent callers all
+    receive the SAME factory instance.
 
     Parameters
     ----------
@@ -73,11 +84,34 @@ def init_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession
     global _session_factory  # noqa: PLW0603
 
     if _session_factory is not None:
+        return _session_factory  # fast path -- no lock needed once cached
+
+    async with _session_factory_lock:
+        # Double-check under the lock.
+        if _session_factory is not None:
+            return _session_factory
+        _session_factory = async_session_factory(engine)
+        logger.info("Session factory initialized")
         return _session_factory
 
-    _session_factory = async_session_factory(engine)
-    logger.info("Session factory initialized")
-    return _session_factory
+
+async def dispose_session_factory() -> None:
+    """Clear the cached session factory (T4.5).
+
+    Idempotent: safe to call when the factory was never initialized or has
+    already been disposed.  Acquires ``_session_factory_lock`` so callers
+    that race with ``init_session_factory`` see consistent state.
+
+    Called by ``dispose_engine()`` so a re-init produces a fresh factory
+    bound to the fresh engine, never a stale factory pinned to the
+    disposed engine (Threat T-44-04-02).
+    """
+    global _session_factory  # noqa: PLW0603
+
+    async with _session_factory_lock:
+        if _session_factory is not None:
+            _session_factory = None
+            logger.info("Session factory disposed")
 
 
 # ---------------------------------------------------------------------------

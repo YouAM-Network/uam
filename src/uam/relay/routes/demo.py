@@ -54,7 +54,7 @@ async def create_demo_session(request: Request, db_session: AsyncSession = Depen
 
     # Rate limit session creation (reuse register limiter -- 5/min per IP)
     client_ip = request.client.host if request.client else "unknown"
-    if not request.app.state.register_limiter.check(client_ip):
+    if not await request.app.state.register_limiter.check(client_ip):
         raise HTTPException(status_code=429, detail="Session creation rate limit exceeded")
 
     session = await session_mgr.create(settings.relay_domain)
@@ -82,7 +82,7 @@ async def demo_send(body: DemoSendRequest, request: Request, db_session: AsyncSe
         raise HTTPException(status_code=404, detail="Session not found or expired")
 
     # Rate limit sends per session address
-    if not request.app.state.sender_limiter.check(session.address):
+    if not await request.app.state.sender_limiter.check(session.address):
         raise HTTPException(status_code=429, detail="Send rate limit exceeded")
 
     # Resolve recipient public key

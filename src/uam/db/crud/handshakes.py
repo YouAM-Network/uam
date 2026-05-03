@@ -2,12 +2,27 @@
 
 Every function takes ``session: AsyncSession`` as its first parameter.
 Read queries filter ``deleted_at IS NULL`` by default.
+
+Phase 44 Plan 44-06 (T4.7 H11):
+    ``respond_handshake`` is now a single atomic
+    ``UPDATE ... WHERE id=? AND status='pending' AND deleted_at IS NULL
+    RETURNING *`` so concurrent ``approve`` + ``deny`` on the same
+    handshake produce exactly one winner. The previous SELECT-then-
+    mutate-in-Python-then-UPDATE pattern silently last-writer-wins:
+    both callers observed ``status='pending'`` and both reported
+    success, but only one ``status`` value landed in the row with no
+    audit-trail signal to the loser.
+
+    The atomic form lets the loser detect rejection via a ``None``
+    return value; the route layer in ``relay/routes/handshakes.py``
+    already guards on ``result is None`` and surfaces a 404.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
@@ -74,6 +89,20 @@ async def respond_handshake(
 ) -> Handshake | None:
     """Respond to a handshake by updating its status.
 
+    T4.7 H11: atomic ``UPDATE Handshake SET status=?, resolved_at=now
+    WHERE id=? AND status='pending' AND deleted_at IS NULL RETURNING *``.
+    Concurrent ``approve`` + ``deny`` on the same handshake produce
+    exactly one winner: the second writer's WHERE clause matches no
+    rows (status was flipped to 'approved' or 'denied' by the first
+    writer) and the loser receives ``None``.
+
+    Returns
+    -------
+    Handshake | None
+        The updated row on success. ``None`` if the handshake does not
+        exist, has been soft-deleted, or has already been resolved by
+        a concurrent caller (race-loss).
+
     Parameters
     ----------
     status:
@@ -93,19 +122,30 @@ async def respond_handshake(
             f"Must be one of: {', '.join(sorted(_VALID_RESPONSES))}"
         )
 
-    hs = await get_handshake_by_id(session, handshake_id)
-    if hs is None:
-        return None
+    now = datetime.utcnow()
+    stmt = (
+        update(Handshake)
+        .where(
+            Handshake.id == handshake_id,
+            Handshake.status == "pending",
+            Handshake.deleted_at.is_(None),  # type: ignore[union-attr]
+        )
+        .values(status=status, resolved_at=now)
+        .returning(Handshake)
+    )
+    result = await session.execute(stmt)
+    row = result.scalar_one_or_none()
 
-    hs.status = status
-    hs.resolved_at = datetime.utcnow()
-    session.add(hs)
     if commit:
         await session.commit()
-        await session.refresh(hs)
     else:
         await session.flush()
-    return hs
+
+    if row is None:
+        return None
+    # Refresh to keep the ORM identity map consistent with the post-update row.
+    await session.refresh(row)
+    return row
 
 
 async def get_handshake_by_id(

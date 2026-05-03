@@ -128,30 +128,58 @@ async def get_reservation_by_token(
 async def claim_reservation(
     session: AsyncSession, claim_token: str, *, commit: bool = True
 ) -> Reservation | None:
-    """Claim a reservation by its *claim_token*.
+    """Atomically claim a reservation by its *claim_token* (T4.4).
 
-    Validates that the reservation exists, has status='reserved', and
-    has not expired.  Returns the updated reservation with
-    status='claimed' and ``claimed_at`` set, or ``None`` if validation
-    fails.
+    Single-statement ``UPDATE ... WHERE pre-state ... RETURNING`` —
+    collapses the previous SELECT-then-UPDATE race window into one
+    round-trip. Postgres and SQLite (>=3.35; project uses 3.51.2) both
+    support RETURNING.
+
+    The WHERE clause enforces every precondition that the previous
+    Python-level checks did:
+
+      * ``claim_token`` matches
+      * ``status == 'reserved'`` (not yet claimed, not yet expired/swept)
+      * ``expires_at > now`` (TTL still in the future)
+      * ``deleted_at IS NULL`` (not soft-deleted)
+
+    Returns the updated :class:`Reservation` row (``status='claimed'``,
+    ``claimed_at=now``) on success, or ``None`` if the token did not
+    exist, was already claimed, was expired, or was soft-deleted.
+
+    Concurrency contract: two concurrent calls with the same valid
+    token produce EXACTLY ONE winner. The database serializes the
+    UPDATE — the first caller flips ``status`` from ``'reserved'`` to
+    ``'claimed'`` and the row is returned; every subsequent caller's
+    UPDATE matches zero rows because the WHERE pre-state no longer
+    holds, and ``scalar_one_or_none()`` returns ``None``.
+
+    Side benefit (H10 from REVIEW-data-layer): the
+    ``expire_reservations`` sweeper and ``claim_reservation`` racing
+    at the boundary now produce a clean outcome — whichever fires
+    first wins; the loser sees ``rowcount=0`` and returns ``None``.
+
+    The ``commit`` parameter preserves the existing API contract used
+    by ``routes/reserve.py`` (which batches claim + agent registration
+    in a single outer transaction with ``commit=False``).
     """
-    reservation = await get_reservation_by_token(session, claim_token)
-    if reservation is None:
-        return None
-
     now = datetime.utcnow()
-    if reservation.status != "reserved" or reservation.expires_at <= now:
-        return None
-
-    reservation.status = "claimed"
-    reservation.claimed_at = now
-    session.add(reservation)
+    stmt = (
+        update(Reservation)
+        .where(
+            Reservation.claim_token == claim_token,
+            Reservation.status == "reserved",
+            Reservation.expires_at > now,
+            Reservation.deleted_at.is_(None),  # type: ignore[union-attr]
+        )
+        .values(status="claimed", claimed_at=now)
+        .returning(Reservation)
+    )
+    result = await session.execute(stmt)
+    row = result.scalar_one_or_none()
     if commit:
         await session.commit()
-        await session.refresh(reservation)
-    else:
-        await session.flush()
-    return reservation
+    return row
 
 
 async def expire_reservations(
