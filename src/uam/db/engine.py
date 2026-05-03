@@ -33,6 +33,78 @@ from sqlalchemy.ext.asyncio import (
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Phase 47 R-47-10-01 — SQLite FK enforcement (production parity with tests)
+#
+# SQLite's ``PRAGMA foreign_keys`` defaults to OFF, and the setting is
+# **per-connection** (not persisted). Prior to this fix the relay's lifespan
+# (``src/uam/relay/app.py:317-322``) set the PRAGMA exactly once at startup
+# against a single connection, which had ZERO effect on every subsequent
+# pool checkout. Production therefore silently disabled all 11 FKs added by
+# alembic ``0006_foreign_keys`` on SQLite deployments — the exact bypass
+# documented in REVIEW-phase47.md L153-205 (Phase 48 blocker R-47-10-01).
+#
+# Fix: register a SQLAlchemy connect-event listener at module import time so
+# every new SQLite DBAPI connection (relay app, CLI, alembic runner, test
+# suite — anything that creates an engine via this module) executes
+# ``PRAGMA foreign_keys=ON`` before SQLAlchemy hands it back to the pool.
+#
+# Dialect detection MUST happen BEFORE issuing the PRAGMA. Running a
+# SQLite-only PRAGMA on a Postgres connection puts psycopg2 into
+# ``InFailedSqlTransaction``, which surfaces later as a hard error during
+# SQLAlchemy's on_connect probes (e.g. hstore OID lookup). The
+# ``type(dbapi_conn).__module__`` check returns ``sqlite3``, ``aiosqlite``,
+# or ``pysqlite3`` for SQLite drivers and never matches asyncpg / psycopg2.
+#
+# This mirrors ``tests/db/conftest.py:_enable_sqlite_fk`` so the test
+# fixture and production share the same enforcement primitive.
+# ---------------------------------------------------------------------------
+
+from sqlalchemy import event as _sa_event
+from sqlalchemy.engine import Engine as _SyncEngine
+
+
+def _enable_sqlite_foreign_keys(dbapi_conn, _conn_record):  # type: ignore[no-untyped-def]
+    """Per-connection PRAGMA: enforce SQLite foreign keys.
+
+    Fires for SQLite DBAPI connections only; non-SQLite drivers
+    (asyncpg, psycopg2) short-circuit before the PRAGMA executes.
+    """
+    module_name = type(dbapi_conn).__module__.lower()
+    if "sqlite" not in module_name:
+        return
+    try:
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+    except Exception:  # pragma: no cover -- defensive
+        # Never break engine creation over a PRAGMA hiccup; the FK gap
+        # would surface as a regression-test failure long before prod.
+        pass
+
+
+_FK_LISTENER_INSTALLED: bool = False
+
+
+def _install_sqlite_fk_listener_once() -> None:
+    """Idempotent install of the connect listener on the global Engine class.
+
+    Multiple imports within the same process (common in test-runner
+    sessions) MUST NOT stack listeners — that would cause N PRAGMA
+    executions per connection and skew test counts.
+    """
+    global _FK_LISTENER_INSTALLED  # noqa: PLW0603
+    if _FK_LISTENER_INSTALLED:
+        return
+    _sa_event.listen(_SyncEngine, "connect", _enable_sqlite_foreign_keys)
+    _FK_LISTENER_INSTALLED = True
+
+
+# Install at import time so the relay app, CLI, alembic runner, and test
+# suite all share the same enforcement primitive.
+_install_sqlite_fk_listener_once()
+
+
+# ---------------------------------------------------------------------------
 # Singleton cache
 # ---------------------------------------------------------------------------
 

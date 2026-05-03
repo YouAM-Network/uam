@@ -212,7 +212,7 @@ class TestStoredMessageExpiry:
     @pytest.mark.asyncio
     async def test_expired_stored_message_filtered_from_inbox(self, db_session):
         """Expired stored messages should NOT appear in get_inbox."""
-        past = datetime.utcnow() - timedelta(hours=1)
+        past = datetime.now(timezone.utc) - timedelta(hours=1)
         await store_message(
             db_session, "msg-expired", "alice::test.local", "bob::test.local",
             '{"test": "expired"}', expires_at=past,
@@ -223,7 +223,7 @@ class TestStoredMessageExpiry:
     @pytest.mark.asyncio
     async def test_unexpired_stored_message_returned(self, db_session):
         """Unexpired stored messages should appear in get_inbox."""
-        future = datetime.utcnow() + timedelta(hours=1)
+        future = datetime.now(timezone.utc) + timedelta(hours=1)
         await store_message(
             db_session, "msg-unexpired", "alice::test.local", "bob::test.local",
             '{"test": "unexpired"}', expires_at=future,
@@ -245,8 +245,8 @@ class TestStoredMessageExpiry:
     @pytest.mark.asyncio
     async def test_mark_expired_sweep(self, db_session):
         """mark_expired should expire queued messages whose expires_at is in the past."""
-        past = datetime.utcnow() - timedelta(hours=1)
-        future = datetime.utcnow() + timedelta(hours=1)
+        past = datetime.now(timezone.utc) - timedelta(hours=1)
+        future = datetime.now(timezone.utc) + timedelta(hours=1)
 
         # One expired, one unexpired, one no-expiry
         await store_message(

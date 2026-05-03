@@ -36,6 +36,7 @@ from uam.relay.models import (
     DemoSendRequest,
     DemoSendResponse,
 )
+from uam.relay.token_hashing import hash_token
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,26 @@ async def create_demo_session(request: Request, db_session: AsyncSession = Depen
 
     # Register the ephemeral agent in the relay database so other agents
     # can look up its public key and route messages to it.
-    await create_agent(db_session, session.address, session.verify_key_b64, session.token)
+    #
+    # Phase 47 R-47-10-02 fix: persist HMAC(token), never the plaintext.
+    # The 4th positional arg of create_agent is ``token_hash`` per the
+    # post-Plan-47-08 signature; passing ``session.token`` (plaintext from
+    # ``secrets.token_urlsafe(32)``) here previously wrote raw bearer
+    # tokens into the ``agents.token_hash`` column for every demo agent,
+    # defeating T7.5's snapshot-leak protection on the public-facing
+    # magic-moment entry point.
+    #
+    # Mirrors src/uam/relay/routes/reserve.py:196-201. The plaintext
+    # token stays in the in-memory SessionManager for the ~10-min TTL
+    # window so the browser can authenticate, but is never written to
+    # the DB. (REVIEW-phase47.md L350-407 for the bypass writeup.)
+    token_hash_value = hash_token(session.token, settings.token_pepper)
+    await create_agent(
+        db_session,
+        session.address,
+        session.verify_key_b64,
+        token_hash=token_hash_value,
+    )
 
     return CreateSessionResponse(session_id=session.session_id, address=session.address)
 

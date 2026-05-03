@@ -34,6 +34,11 @@ from sqlmodel import select
 
 from uam.db.models import Agent, WebhookDelivery
 
+# Note: ``datetime`` is imported only for type annotations on the
+# ``reset_at: datetime | None`` parameter of ``update_circuit_breaker``.
+# All wall-clock writes go through ``sa.func.now()`` (server-side) or are
+# elided in favour of ``onupdate=func.now()`` per T7.4.
+
 
 async def create_delivery(
     session: AsyncSession,
@@ -220,7 +225,8 @@ async def update_circuit_breaker(
         "reset_at": reset_at.isoformat() if reset_at else None,
     }
     agent.contact_card = card
-    agent.updated_at = datetime.utcnow()
+    # T7.4: updated_at populated server-side via onupdate=func.now() on the
+    # Agent.updated_at column (models.py); no Python-side write needed.
     session.add(agent)
     await session.commit()
     await session.refresh(agent)

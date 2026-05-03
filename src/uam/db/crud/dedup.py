@@ -6,7 +6,7 @@ Uses ``IntegrityError`` for duplicate detection on the primary key.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import delete as sa_delete
 from sqlalchemy.exc import IntegrityError
@@ -54,7 +54,9 @@ async def cleanup_expired(
 
     Returns the number of rows deleted.
     """
-    cutoff = datetime.utcnow() - timedelta(days=max_age_days)
+    # T7.4: tz-aware cutoff matches SeenMessageId.seen_at column's
+    # DateTime(timezone=True) declaration.
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
     stmt = sa_delete(SeenMessageId).where(SeenMessageId.seen_at < cutoff)
     result = await session.execute(stmt)
     await session.commit()

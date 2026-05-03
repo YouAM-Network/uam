@@ -6,7 +6,7 @@ Read queries filter ``deleted_at IS NULL`` by default.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import delete, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -54,7 +54,7 @@ async def get_inbox(
     session: AsyncSession, to_addr: str, limit: int = 50
 ) -> list[Message]:
     """Fetch queued, non-expired messages for *to_addr* (soft-delete filtered)."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     stmt = (
         select(Message)
         .where(
@@ -79,7 +79,7 @@ async def get_inbox_with_deleted(
 
     For admin visibility into soft-deleted messages.
     """
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     stmt = (
         select(Message)
         .where(
@@ -133,7 +133,7 @@ async def mark_delivered(
     """Mark messages as delivered by primary-key IDs. Returns count updated."""
     if not message_ids:
         return 0
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     stmt = (
         update(Message)
         .where(Message.id.in_(message_ids))  # type: ignore[union-attr]
@@ -146,7 +146,7 @@ async def mark_delivered(
 
 async def mark_expired(session: AsyncSession) -> int:
     """Expire queued messages whose expires_at is in the past. Returns count."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     stmt = (
         update(Message)
         .where(
@@ -155,6 +155,11 @@ async def mark_expired(session: AsyncSession) -> int:
             Message.deleted_at.is_(None),  # type: ignore[union-attr]
         )
         .values(status="expired")
+        # T7.4: skip ORM Python-side WHERE-clause re-evaluation. SQLite
+        # returns datetimes naive; comparing them against the tz-aware
+        # ``now`` raises in evaluator.py. The DB-side comparison is
+        # authoritative.
+        .execution_options(synchronize_session=False)
     )
     result = await session.execute(stmt)
     await session.commit()
@@ -173,7 +178,8 @@ async def purge_expired(
 
     Returns the total count deleted.
     """
-    cutoff = datetime.utcnow() - timedelta(days=retention_days)
+    # T7.4: tz-aware cutoff matches Message column's DateTime(timezone=True).
+    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
     total = 0
 
     # Soft-deleted past retention

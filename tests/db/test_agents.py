@@ -9,7 +9,6 @@ from uam.db.crud.agents import (
     deactivate_agent,
     get_agent_by_address,
     get_agent_by_address_with_deleted,
-    get_agent_by_token,
     list_agents,
     reactivate_agent,
     suspend_agent,
@@ -18,10 +17,15 @@ from uam.db.crud.agents import (
 
 
 async def _make_agent(session, address="alice::youam.network", **kwargs):
-    """Helper to create a test agent with sensible defaults."""
+    """Helper to create a test agent with sensible defaults.
+
+    Phase 47 T7.5: ``create_agent`` no longer accepts a ``token`` parameter.
+    The plaintext token column was dropped in alembic 0007; tests pass a
+    hash-shaped string here as the authoritative ``token_hash``.
+    """
     defaults = dict(
         public_key="pk_test",
-        token=f"tok_{address}",
+        token_hash=f"hash_{address}",
         display_name="Alice",
     )
     defaults.update(kwargs)
@@ -32,17 +36,10 @@ async def test_create_agent(session):
     agent = await _make_agent(session)
     assert agent.address == "alice::youam.network"
     assert agent.public_key == "pk_test"
-    assert agent.token == "tok_alice::youam.network"
+    assert agent.token_hash == "hash_alice::youam.network"
     assert agent.display_name == "Alice"
     assert agent.status == "active"
     assert agent.deleted_at is None
-
-
-async def test_get_by_token(session):
-    await _make_agent(session)
-    found = await get_agent_by_token(session, "tok_alice::youam.network")
-    assert found is not None
-    assert found.address == "alice::youam.network"
 
 
 async def test_get_by_address(session):

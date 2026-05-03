@@ -51,7 +51,14 @@ class BodySizeLimitMiddleware:
             return
 
         # 2) Streaming path: wrap receive to enforce running-byte cap.
-        if cl is None:
+        # Phase 47 R-T6.1-01: defense-in-depth -- run streaming check even when
+        # Content-Length is present-but-within-cap. Catches forged CL (e.g.
+        # CL=0 with 5000-byte body) which would otherwise bypass the middleware
+        # at the passthrough branch below. uvicorn+h11 closes this at the HTTP
+        # parser layer in production, but middleware logic must be correct as
+        # defense-in-depth (non-conformant HTTP frontends, raw ASGI tests, etc.).
+        # See REVIEW-phase46.md Section T6.1 Bypass attempt 1.
+        if cl is None or cl <= self.max_bytes:
             total = 0
             rejected = False
 
@@ -90,9 +97,6 @@ class BodySizeLimitMiddleware:
                 if rejected and not response_started:
                     await _send_413(send, None, self.max_bytes)
             return
-
-        # 3) Content-Length present and within limit -- passthrough.
-        await self.app(scope, receive, send)
 
 
 async def _send_413(send: Send, observed: int | None, limit: int) -> None:

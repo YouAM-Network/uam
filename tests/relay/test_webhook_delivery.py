@@ -139,12 +139,18 @@ class TestWebhookCircuitBreaker:
 # ---------------------------------------------------------------------------
 
 
-def _mock_agent(address: str = "agent::test.local", webhook_url: str | None = "https://example.com/hook", token: str = "test-key"):
-    """Create a mock Agent object with attribute access."""
+def _mock_agent(address: str = "agent::test.local", webhook_url: str | None = "https://example.com/hook", token_hash: str = "test-key-hash"):
+    """Create a mock Agent object with attribute access.
+
+    Phase 47 T7.5: HMAC signing now uses ``agent.token_hash`` (the plaintext
+    ``token`` column was dropped in alembic 0007). Tests pass a hash-shaped
+    string here; the value flows through ``compute_webhook_signature`` as the
+    HMAC secret regardless of shape.
+    """
     agent = MagicMock()
     agent.address = address
     agent.webhook_url = webhook_url
-    agent.token = token
+    agent.token_hash = token_hash
     return agent
 
 

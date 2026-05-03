@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import logging
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,6 +33,7 @@ from uam.relay.models import (
 from uam.cards.avatars import fetch_avatar
 from uam.cards.image import render_card
 from uam.cards.vcard import generate_reservation_vcard
+from uam.relay.token_hashing import hash_token
 from uam.relay.webhook_validator import validate_webhook_url
 
 logger = logging.getLogger(__name__)
@@ -116,7 +117,8 @@ async def reserve_address(
     claim_token = secrets.token_urlsafe(32)
 
     # Calculate expiry from configurable TTL
-    expires_at = datetime.utcnow() + timedelta(hours=settings.reservation_ttl_hours)
+    # T7.4: tz-aware to match Reservation.expires_at column DateTime(timezone=True).
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=settings.reservation_ttl_hours)
 
     # Create reservation
     try:
@@ -172,8 +174,11 @@ async def reserve_claim(
     if reservation.status != "reserved":
         raise HTTPException(status_code=409, detail="Reservation already claimed or expired")
 
-    # Check expiry
-    if reservation.expires_at <= datetime.utcnow():
+    # Check expiry — T7.4: normalize loaded value if SQLite returned naive.
+    expires_at_value = reservation.expires_at
+    if expires_at_value.tzinfo is None:
+        expires_at_value = expires_at_value.replace(tzinfo=timezone.utc)
+    if expires_at_value <= datetime.now(timezone.utc):
         raise HTTPException(status_code=410, detail="Reservation expired")
 
     # --- Transaction-wrapped DB section ---
@@ -183,13 +188,17 @@ async def reserve_claim(
         if claimed is None:
             raise HTTPException(status_code=409, detail="Could not claim reservation")
 
-        # Register the agent with the reserved address
+        # Register the agent with the reserved address.
+        # Phase 47 T7.5: only the hashed token is persisted; the plaintext
+        # ``agent_token`` is returned to the caller in the HTTP response and
+        # never written to the database.
         agent_token = secrets.token_urlsafe(32)
+        agent_token_hash = hash_token(agent_token, settings.token_pepper)
         await create_agent(
             session,
             reservation.address,
             body.public_key,
-            agent_token,
+            token_hash=agent_token_hash,
             commit=False,
             webhook_url=body.webhook_url,
         )

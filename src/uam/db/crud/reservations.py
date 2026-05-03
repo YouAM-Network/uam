@@ -9,7 +9,7 @@ look up active/by-token, claim, expire, and rate-limit counting.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, update
 from sqlalchemy.exc import IntegrityError
@@ -42,7 +42,7 @@ async def check_address_available(
         return False
 
     # Check if an active reservation exists
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     res_stmt = select(Reservation).where(
         Reservation.address == address,
         Reservation.status == "reserved",
@@ -98,7 +98,7 @@ async def get_active_reservation(
     """Return the active reservation for *address* (status='reserved',
     not expired, not soft-deleted), or ``None``.
     """
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     stmt = select(Reservation).where(
         Reservation.address == address,
         Reservation.status == "reserved",
@@ -163,7 +163,7 @@ async def claim_reservation(
     by ``routes/reserve.py`` (which batches claim + agent registration
     in a single outer transaction with ``commit=False``).
     """
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     stmt = (
         update(Reservation)
         .where(
@@ -174,6 +174,14 @@ async def claim_reservation(
         )
         .values(status="claimed", claimed_at=now)
         .returning(Reservation)
+        # T7.4: skip ORM Python-side WHERE-clause re-evaluation. Without this,
+        # SQLAlchemy compares the tz-aware ``now`` against any in-memory
+        # Reservation objects whose ``expires_at`` was loaded naive from
+        # SQLite (aiosqlite drops tz info), raising "can't compare offset-
+        # naive and offset-aware datetimes". The DB-side comparison is
+        # authoritative; in-memory sync is unnecessary because the caller
+        # consumes the RETURNING row directly.
+        .execution_options(synchronize_session=False)
     )
     result = await session.execute(stmt)
     row = result.scalar_one_or_none()
@@ -189,7 +197,7 @@ async def expire_reservations(
 
     Returns the count of expired reservations.
     """
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     stmt = (
         update(Reservation)
         .where(
@@ -197,6 +205,9 @@ async def expire_reservations(
             Reservation.expires_at <= now,
         )
         .values(status="expired")
+        # T7.4: skip ORM Python-side WHERE-clause re-evaluation (see
+        # claim_reservation for rationale).
+        .execution_options(synchronize_session=False)
     )
     result = await session.execute(stmt)
     if commit:
@@ -213,7 +224,9 @@ async def count_active_reservations_by_ip(
     within the last *window_hours* hours.  This supports the
     5-per-IP-per-hour rate limit (RES-06).
     """
-    cutoff = datetime.utcnow() - timedelta(hours=window_hours)
+    # T7.4: tz-aware cutoff matches Reservation.created_at column's
+    # DateTime(timezone=True) declaration.
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=window_hours)
     stmt = (
         select(func.count())
         .select_from(Reservation)

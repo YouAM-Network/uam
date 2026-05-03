@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlmodel import select
 
@@ -96,7 +96,7 @@ async def test_list_expired(session):
     stmt = select(DomainVerification).where(DomainVerification.id == v.id)
     result = await session.execute(stmt)
     record = result.scalar_one()
-    record.last_checked = datetime.utcnow() - timedelta(hours=2)
+    record.last_checked = datetime.now(timezone.utc) - timedelta(hours=2)
     session.add(record)
     await session.commit()
 

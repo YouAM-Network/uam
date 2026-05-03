@@ -166,3 +166,85 @@ def test_dispose_session_factory_exists():
     assert callable(sess_mod.dispose_session_factory), (
         "T4.5: dispose_session_factory exists but is not callable."
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 47 R-47-10-01 — PRAGMA foreign_keys=ON enforcement (engine-level)
+#
+# REVIEW-phase47.md L153-205 documented that the relay's production engine
+# never ran ``PRAGMA foreign_keys=ON``, so all 11 FKs added by alembic
+# 0006_foreign_keys were silently unenforced on SQLite. The fix in
+# src/uam/db/engine.py installs a SQLAlchemy connect-event listener at
+# module import time that mirrors tests/db/conftest.py:_enable_sqlite_fk.
+#
+# These regression tests boot a real engine via ``init_engine(url=...)``
+# (the same code path the FastAPI lifespan uses) and assert
+# ``PRAGMA foreign_keys = 1`` on a freshly-checked-out connection — both
+# on the first checkout AND across N sequential checkouts (because SQLite
+# PRAGMA is per-connection, not persisted).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sqlite_engine_enforces_pragma_foreign_keys(tmp_path):
+    """R-47-10-01 regression: any SQLite engine created via the project
+    factory MUST report ``PRAGMA foreign_keys = 1`` on a checked-out
+    connection.
+
+    Background: SQLite's default is foreign_keys=OFF and the PRAGMA is
+    per-connection (not persisted). Without the engine-level connect
+    listener in src/uam/db/engine.py, all FKs declared by alembic
+    0006_foreign_keys are silently unenforced in production.
+
+    This test is a production-path equivalent of
+    tests/db/conftest.py::_install_sqlite_fk_listener (which is the test-
+    only fixture). After this regression test passes, the conftest
+    autouse fixture is defence-in-depth, not the sole enforcement.
+    """
+    from sqlalchemy import text
+    from uam.db import engine as eng_mod
+
+    # Reset singleton so we exercise the factory fresh.
+    eng_mod._engine = None
+    url = f"sqlite+aiosqlite:///{tmp_path}/test_pragma_fk.db"
+    engine = await eng_mod.init_engine(url=url)
+    try:
+        async with engine.connect() as conn:
+            result = await conn.execute(text("PRAGMA foreign_keys"))
+            value = result.scalar()
+        assert value == 1, (
+            f"R-47-10-01: SQLite engine reports PRAGMA foreign_keys={value}, "
+            "expected 1. Engine-level connect listener in "
+            "src/uam/db/engine.py is missing or broken — production "
+            "deployments would silently skip all FK enforcement."
+        )
+    finally:
+        await eng_mod.dispose_engine()
+
+
+@pytest.mark.asyncio
+async def test_sqlite_pragma_fk_persists_across_pool_checkouts(tmp_path):
+    """R-47-10-01 defence-in-depth: every NEW connection (not just the
+    first) must get PRAGMA foreign_keys=ON.
+
+    SQLite's PRAGMA is per-connection, so a single "set on first connect"
+    pattern is insufficient. The connect-event listener fires on every
+    pool connection — verify by forcing N fresh checkouts.
+    """
+    from sqlalchemy import text
+    from uam.db import engine as eng_mod
+
+    eng_mod._engine = None
+    url = f"sqlite+aiosqlite:///{tmp_path}/test_pragma_fk_pool.db"
+    engine = await eng_mod.init_engine(url=url)
+    try:
+        # 5 sequential checkouts — the aiosqlite pool may reuse or rotate;
+        # either way, every connection should have FKs ON.
+        for i in range(5):
+            async with engine.connect() as conn:
+                value = (await conn.execute(text("PRAGMA foreign_keys"))).scalar()
+                assert value == 1, (
+                    f"Checkout #{i}: PRAGMA foreign_keys={value}, expected 1."
+                )
+    finally:
+        await eng_mod.dispose_engine()

@@ -34,10 +34,31 @@ from uam.protocol import (
 
 @pytest.fixture()
 async def session():
-    """Create an in-memory async engine with SQLModel tables and yield a session."""
+    """Create an in-memory async engine with SQLModel tables and yield a session.
+
+    Phase 47 R-47-10-01: with engine-level PRAGMA foreign_keys=ON now enforced
+    in production AND tests, the ``seen_message_ids.from_addr -> agents.address``
+    FK (CASCADE, alembic 0006_foreign_keys) actually fires. This fixture must
+    seed the parent agent ``alice::test.local`` BEFORE yielding — otherwise
+    every ``record_message_id(..., from_addr='alice::test.local')`` raises
+    IntegrityError, gets caught by the duplicate-detect path, and silently
+    returns False. Mirrors the seeding pattern in ``tests/db/conftest.py``.
+    """
+    from sqlalchemy import text
+
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
     async with engine.begin() as conn:
         await conn.run_sync(SQLModel.metadata.create_all)
+        # Seed the parent agent row so the seen_message_ids.from_addr FK
+        # (CASCADE, post-0006) resolves. token_hash is a marker string;
+        # this fixture never exercises the auth path.
+        await conn.execute(text(
+            "INSERT INTO agents (address, public_key, token_hash, status, "
+            " created_at, updated_at) "
+            "VALUES ('alice::test.local', 'fixture-pk', "
+            "        'fixture-hash-alice', 'active', "
+            "        datetime('now'), datetime('now'))"
+        ))
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with factory() as sess:
         yield sess
@@ -76,13 +97,13 @@ class TestCleanupExpired:
 
     @pytest.mark.asyncio
     async def test_cleanup_removes_old_entries(self, session):
-        from datetime import datetime, timedelta
+        from datetime import datetime, timedelta, timezone
 
-        # Insert an entry with seen_at 10 days ago
+        # Insert an entry with seen_at 10 days ago (T7.4: tz-aware).
         old_entry = SeenMessageId(
             message_id="old-msg",
             from_addr="alice::test.local",
-            seen_at=datetime.utcnow() - timedelta(days=10),
+            seen_at=datetime.now(timezone.utc) - timedelta(days=10),
         )
         session.add(old_entry)
         await session.commit()

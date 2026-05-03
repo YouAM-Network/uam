@@ -60,13 +60,10 @@ async def register(body: RegisterRequest, request: Request, session: AsyncSessio
         )
 
     # Check uniqueness -- if same public key, regenerate credentials.
-    # T2.1 (Phase 43 Plan 04): the previous "return existing credentials"
-    # path is incompatible with hashed token storage (we no longer keep
-    # the plaintext token in the DB after the column-drop in Phase 47, and
-    # even today the existing.token may be NULL on re-registration if the
-    # column was already nulled out by some operational tool).  Generating
-    # a fresh token on re-registration is also strictly better security
-    # hygiene -- it invalidates any old token that may have leaked.
+    # Phase 47 T7.5: the plaintext token column was dropped in alembic 0007;
+    # only ``token_hash`` is stored. Generating a fresh token on
+    # re-registration is also strictly better security hygiene -- it
+    # invalidates any old token that may have leaked.
     # BREAKING (minor): callers that re-register expecting their previous
     # token back will receive a NEW token; the old one stops working.
     existing = await get_agent_by_address(session, address)
@@ -77,7 +74,6 @@ async def register(body: RegisterRequest, request: Request, session: AsyncSessio
             await update_agent(
                 session,
                 address,
-                token=new_token,
                 token_hash=new_hash,
             )
             return RegisterResponse(
@@ -89,9 +85,9 @@ async def register(body: RegisterRequest, request: Request, session: AsyncSessio
 
     # --- Transaction-wrapped DB section (RES-01) ---
     # create_agent + optional update_agent (webhook URL) in a single commit.
-    # T2.1: write BOTH token (transitional) and token_hash (authoritative).
-    # The plaintext token column stays for one release as an emergency
-    # rollback path; auth.py reads token_hash exclusively.
+    # Phase 47 T7.5: only the hashed token is persisted. The plaintext
+    # ``token`` is returned to the caller in the HTTP response and never
+    # written to the database.
     token = secrets.token_urlsafe(32)
     token_hash_value = hash_token(token, settings.token_pepper)
     try:
@@ -99,9 +95,8 @@ async def register(body: RegisterRequest, request: Request, session: AsyncSessio
             session,
             address,
             body.public_key,
-            token,
-            commit=False,
             token_hash=token_hash_value,
+            commit=False,
         )
 
         # Optionally set webhook URL (HOOK-01)

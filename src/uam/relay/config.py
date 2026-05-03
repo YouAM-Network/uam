@@ -144,7 +144,11 @@ class Settings:
         T6.5 Phase 46: opt-in production gate. Operators must EXPLICITLY set
         UAM_ENV=production to enable strict required-secrets checks.
         """
-        return os.getenv("UAM_ENV", "development").lower() == "production"
+        # Phase 47 R-T6.5-01: .strip() defense against operator-typo bypass.
+        # Common .env-file mistake: `UAM_ENV=production ` (trailing space).
+        # Without .strip(), the gate silently falls through to development mode.
+        # See REVIEW-phase46.md § T6.5 Bypass attempt 2.
+        return os.getenv("UAM_ENV", "development").strip().lower() == "production"
 
     @staticmethod
     def _require_explicit_in_production(name: str) -> str:

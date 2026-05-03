@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -21,13 +21,13 @@ from uam.db.crud.reservations import (
 
 
 def _future(hours: int = 48) -> datetime:
-    """Return a datetime in the future."""
-    return datetime.utcnow() + timedelta(hours=hours)
+    """Return a tz-aware datetime in the future (T7.4)."""
+    return datetime.now(timezone.utc) + timedelta(hours=hours)
 
 
 def _past(hours: int = 1) -> datetime:
-    """Return a datetime in the past."""
-    return datetime.utcnow() - timedelta(hours=hours)
+    """Return a tz-aware datetime in the past (T7.4)."""
+    return datetime.now(timezone.utc) - timedelta(hours=hours)
 
 
 def _token() -> str:
@@ -51,7 +51,12 @@ async def test_create_reservation(session):
     assert res.claim_token == token
     assert res.status == "reserved"
     assert res.ip_address == "192.168.1.1"
-    assert res.expires_at > datetime.utcnow()
+    # T7.4: aiosqlite returns datetimes naive even when stored tz-aware (SQLite
+    # has no native TIMESTAMP WITH TIME ZONE). Normalize before comparing.
+    expires = res.expires_at
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    assert expires > datetime.now(timezone.utc)
     assert res.claimed_at is None
     assert res.deleted_at is None
     assert res.id is not None
@@ -89,7 +94,7 @@ async def test_check_address_available_agent_exists(session):
         session,
         address="taken::youam.network",
         public_key="pk_test",
-        token="tok_taken",
+        token_hash="hash_taken",
     )
     available = await check_address_available(session, "taken::youam.network")
     assert available is False

@@ -55,12 +55,17 @@ def mgr(session_factory):
 
 # We need a registered agent for foreign key constraint satisfaction
 async def _register_agent(session: AsyncSession, address: str = "bot::test.local") -> str:
-    """Insert a dummy agent row and return the address."""
+    """Insert a dummy agent row and return the address.
+
+    Phase 47 T7.5: ``Agent.token`` field was removed in alembic 0007 + the
+    ORM. The fixture passes ``token_hash`` (a placeholder string; the real
+    HMAC value is irrelevant for reputation tests).
+    """
     from sqlmodel import select
 
     result = await session.execute(select(Agent).where(Agent.address == address))
     if result.scalar_one_or_none() is None:
-        agent = Agent(address=address, public_key="pk_placeholder", token=f"key_{address}")
+        agent = Agent(address=address, public_key="pk_placeholder", token_hash=f"hash_{address}")
         session.add(agent)
         await session.commit()
     return address
@@ -252,7 +257,7 @@ class TestCacheLoading:
     async def test_load_cache_from_db(self, session, session_factory):
         """Insert scores directly into DB, load_cache() populates manager."""
         addr = "preloaded::test.local"
-        agent = Agent(address=addr, public_key="pk", token="key1")
+        agent = Agent(address=addr, public_key="pk", token_hash="hash_key1")
         session.add(agent)
         await session.commit()
 

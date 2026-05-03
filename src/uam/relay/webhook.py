@@ -43,16 +43,18 @@ _NON_RETRIABLE_4XX = set(range(400, 500)) - {408, 429}
 # ---------------------------------------------------------------------------
 
 
-def compute_webhook_signature(payload_bytes: bytes, token: str) -> str:
+def compute_webhook_signature(payload_bytes: bytes, signing_key: str) -> str:
     """Compute HMAC-SHA256 signature for a webhook payload.
 
-    Uses the agent's token as the HMAC secret.  Returns the signature
-    in ``sha256=<hex>`` format for the ``X-UAM-Signature`` header.
+    Phase 47 T7.5 + RESEARCH OQ1 option (a): callers pass the per-agent
+    ``token_hash`` value as the signing key (the plaintext token column was
+    dropped in alembic 0007). Returns the signature in ``sha256=<hex>`` format
+    for the ``X-UAM-Signature`` header.
 
     Callers MUST use compact JSON serialization
     (``json.dumps(data, separators=(",", ":"))```) for deterministic output.
     """
-    mac = hmac.new(token.encode("utf-8"), payload_bytes, hashlib.sha256)
+    mac = hmac.new(signing_key.encode("utf-8"), payload_bytes, hashlib.sha256)
     return f"sha256={mac.hexdigest()}"
 
 
@@ -212,7 +214,14 @@ class WebhookDeliveryService:
                 return False
 
             webhook_url: str = agent.webhook_url
-            token: str = agent.token
+            # Phase 47 T7.5 + RESEARCH OQ1 option (a): HMAC signing key is now
+            # the per-agent token_hash (HMAC-SHA-256 of the original token +
+            # server pepper, already stored). The plaintext column was dropped
+            # in alembic 0007. Internal-storage-only change: external webhook
+            # receivers MUST be re-keyed to verify against token_hash rather
+            # than the plaintext they were given at registration time
+            # (T-47-08-02 — operator notification required pre-deploy).
+            signing_key: str = agent.token_hash
 
             envelope_json = json.dumps(envelope_dict, separators=(",", ":"))
             message_id = envelope_dict.get("id", "unknown")
@@ -229,7 +238,7 @@ class WebhookDeliveryService:
 
         task = asyncio.create_task(
             self._deliver_with_retries(
-                address, envelope_dict, webhook_url, token, delivery_id
+                address, envelope_dict, webhook_url, signing_key, delivery_id
             )
         )
         self._active_tasks.add(task)
@@ -242,7 +251,7 @@ class WebhookDeliveryService:
         address: str,
         envelope_dict: dict,
         webhook_url: str,
-        token: str,
+        signing_key: str,
         delivery_id: int,
     ) -> None:
         """Deliver with exponential backoff retries.
@@ -250,6 +259,10 @@ class WebhookDeliveryService:
         Re-validates the webhook URL before each attempt as a TOCTOU
         defense (the URL could become dangerous between registration
         and delivery).
+
+        ``signing_key`` is the per-agent HMAC secret. Phase 47 T7.5 + RESEARCH
+        OQ1 option (a): the relay now signs with ``agent.token_hash``; external
+        receivers must be re-keyed accordingly (T-47-08-02).
         """
         if self._http_client is None:
             logger.error("HTTP client not initialized -- call start() first")
@@ -263,7 +276,7 @@ class WebhookDeliveryService:
         factory = async_session_factory(get_engine())
 
         payload_bytes = json.dumps(envelope_dict, separators=(",", ":")).encode("utf-8")
-        signature = compute_webhook_signature(payload_bytes, token)
+        signature = compute_webhook_signature(payload_bytes, signing_key)
 
         for attempt, delay in enumerate(RETRY_DELAYS, start=1):
             if delay > 0:

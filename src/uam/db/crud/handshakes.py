@@ -20,7 +20,7 @@ Phase 44 Plan 44-06 (T4.7 H11):
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -122,7 +122,10 @@ async def respond_handshake(
             f"Must be one of: {', '.join(sorted(_VALID_RESPONSES))}"
         )
 
-    now = datetime.utcnow()
+    # T7.4: tz-aware now() matches Handshake.resolved_at column's
+    # DateTime(timezone=True) declaration. resolved_at has no
+    # server_default — it's an explicit-action column written here.
+    now = datetime.now(timezone.utc)
     stmt = (
         update(Handshake)
         .where(

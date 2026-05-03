@@ -9,16 +9,56 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 from logging.config import fileConfig
 
-from alembic import context
-from sqlalchemy.ext.asyncio import create_async_engine
-from sqlmodel import SQLModel
+# ---------------------------------------------------------------------------
+# Phase 47 T7.2 — Dialect-gated batch mode helper.
+#
+# Defined BEFORE any alembic-context work so the helper is importable even
+# when env.py is loaded outside an alembic invocation (e.g. by
+# tests/db/test_alembic_env.py via importlib).
+# ---------------------------------------------------------------------------
+
+
+def _render_as_batch_for(url: str) -> bool:
+    """Whether to enable Alembic's batch-mode for the given DB URL.
+
+    Phase 47 T7.2: SQLite REQUIRES batch mode for ALTER TABLE (move-and-copy
+    pattern emulates ALTER COLUMN since SQLite lacks native ALTER COLUMN).
+    PostgreSQL supports ALTER COLUMN natively and gains nothing from batch
+    mode; in fact, a future migration passing ``recreate='always'`` would be
+    destructive on Postgres if batch mode were enabled. Gating defense-in-
+    depth at the env layer prevents that class of footgun.
+
+    Returns:
+        True for sqlite URLs (any dialect prefix: sqlite, sqlite+aiosqlite, etc.)
+        False otherwise (postgresql, postgresql+asyncpg, mysql, etc.)
+
+    See: .planning/phases/47-.../47-RESEARCH.md § Pattern 2.
+    """
+    return url.startswith("sqlite")
+
+
+# Self-register as ``alembic.env`` so a later ``from alembic import env``
+# resolves to this module. Idempotent + harmless. The test conftest also
+# explicitly loads this file under that name to make the helper unit-testable.
+# Skip when Alembic loads env.py via its own loader (``__name__`` is then
+# ``env_py``, not present in ``sys.modules``) — the migration runner doesn't
+# need this self-registration anyway.
+_self_mod = sys.modules.get(__name__)
+if _self_mod is not None:
+    sys.modules.setdefault("alembic.env", _self_mod)
+
+
+from alembic import context  # noqa: E402
+from sqlalchemy.ext.asyncio import create_async_engine  # noqa: E402
+from sqlmodel import SQLModel  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Ensure all 17 table classes register on SQLModel.metadata
 # ---------------------------------------------------------------------------
-from uam.db.models import *  # noqa: F401, F403
+from uam.db.models import *  # noqa: F401, F403, E402
 
 # ---------------------------------------------------------------------------
 # Alembic Config
@@ -72,7 +112,7 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
-        render_as_batch=True,
+        render_as_batch=_render_as_batch_for(url),
         compare_type=True,
     )
     with context.begin_transaction():
@@ -89,7 +129,7 @@ def _do_run_migrations(connection) -> None:  # noqa: ANN001
     context.configure(
         connection=connection,
         target_metadata=target_metadata,
-        render_as_batch=True,
+        render_as_batch=_render_as_batch_for(str(connection.engine.url)),
         compare_type=True,
     )
     with context.begin_transaction():

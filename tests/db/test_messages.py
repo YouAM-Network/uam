@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from uam.db.crud.messages import (
     get_inbox,
@@ -60,7 +60,7 @@ async def test_get_inbox_excludes_delivered(session):
 
 async def test_get_inbox_excludes_expired(session):
     # Store a message that expired in the past
-    past = datetime.utcnow() - timedelta(hours=1)
+    past = datetime.now(timezone.utc) - timedelta(hours=1)
     await _store(session, msg_id="expired-msg", to_addr="bob::youam.network", expires_at=past)
     # Store a valid message
     await _store(session, msg_id="valid-msg", to_addr="bob::youam.network")
@@ -93,7 +93,7 @@ async def test_mark_delivered(session):
 
 
 async def test_mark_expired(session):
-    past = datetime.utcnow() - timedelta(hours=1)
+    past = datetime.now(timezone.utc) - timedelta(hours=1)
     await _store(session, msg_id="exp1", expires_at=past)
     await _store(session, msg_id="valid1")  # no expiry
 

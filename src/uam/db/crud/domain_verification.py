@@ -7,7 +7,7 @@ default.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
@@ -36,7 +36,7 @@ async def upsert_verification(
     result = await session.execute(stmt)
     existing = result.scalar_one_or_none()
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     if existing is not None:
         existing.public_key = public_key
         existing.method = method
@@ -101,12 +101,18 @@ async def list_expired(session: AsyncSession) -> list[DomainVerification]:
     result = await session.execute(stmt)
     records = list(result.scalars().all())
 
-    now = datetime.utcnow()
-    expired = [
-        r
-        for r in records
-        if (now - r.last_checked).total_seconds() > r.ttl_hours * 3600
-    ]
+    # T7.4: ``r.last_checked`` is tz-aware on Postgres (DateTime(timezone=True))
+    # but aiosqlite returns naive datetimes regardless of column type — SQLite
+    # has no native TIMESTAMP WITH TIME ZONE. Normalize naive values to UTC
+    # before subtracting so the comparison works on both backends.
+    now = datetime.now(timezone.utc)
+    expired = []
+    for r in records:
+        last = r.last_checked
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        if (now - last).total_seconds() > r.ttl_hours * 3600:
+            expired.append(r)
     return expired
 
 
@@ -139,7 +145,9 @@ async def update_verification_timestamp(
     record = result.scalar_one_or_none()
     if record is None:
         return None
-    record.last_checked = datetime.utcnow()
+    # T7.4: explicit-action column; tz-aware now() matches the column's
+    # DateTime(timezone=True) declaration.
+    record.last_checked = datetime.now(timezone.utc)
     session.add(record)
     await session.commit()
     await session.refresh(record)

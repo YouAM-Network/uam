@@ -9,7 +9,7 @@ serialization (src/uam/db/crud/reservations.py:128-154):
 
     reservation = await get_reservation_by_token(session, claim_token)
     if reservation is None: return None
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     if reservation.status != "reserved" or reservation.expires_at <= now:
         return None
     reservation.status = "claimed"
@@ -31,7 +31,7 @@ NEW FILE created by Plan 44-00.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -82,7 +82,7 @@ async def test_concurrent_claim_one_winner(session_factory, monkeypatch):
             address="alice::test.local",
             claim_token="t-12345",
             ip_address="1.1.1.1",
-            expires_at=datetime.utcnow() + timedelta(hours=1),
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
         )
 
     async def attempt():
@@ -146,7 +146,7 @@ async def test_claim_reservation_rejects_expired_atomically(
         sleep_ms=80,  # > 50ms expiry → guaranteed post-expiry commits
     )
 
-    expiry = datetime.utcnow() + timedelta(milliseconds=50)
+    expiry = datetime.now(timezone.utc) + timedelta(milliseconds=50)
     async with session_factory() as session:
         await create_reservation(
             session,

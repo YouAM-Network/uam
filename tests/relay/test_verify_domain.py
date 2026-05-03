@@ -11,7 +11,7 @@ Covers:
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -476,7 +476,7 @@ class TestDatabaseHelpers:
         await create_agent(db_session, "bot::test.local", "PUBKEY", "token123")
 
         # Insert a verification that's already expired (last_checked far in the past)
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         record = DomainVerification(
             agent_address="bot::test.local",
             domain="old.com",

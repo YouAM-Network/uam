@@ -6,7 +6,7 @@ Read queries filter ``deleted_at IS NULL`` by default.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
@@ -18,32 +18,27 @@ async def create_agent(
     session: AsyncSession,
     address: str,
     public_key: str,
-    token: str,
+    token_hash: str,
     *,
     commit: bool = True,
     **kwargs: object,
 ) -> Agent:
     """Create a new Agent record.
 
-    T2.1 (Phase 43 Plan 04): if the caller does not provide ``token_hash``,
-    we compute it here from ``token`` + the configured pepper. Every Agent
-    row must have a non-null token_hash (NOT NULL post-migration 0003);
-    auto-deriving it keeps callers (reserve, demo, register) decoupled
-    from the hashing primitive.
+    Phase 47 T7.5: caller MUST pass the precomputed ``token_hash``. The
+    plaintext token is no longer stored anywhere on the relay; callers
+    (register, reserve) keep it only long enough to return it in the HTTP
+    response. ``token_hash`` is the authoritative auth column (HMAC-SHA-256
+    of the original token + server pepper); see ``uam.relay.auth`` and
+    ``uam.relay.token_hashing.hash_token``.
 
     When *commit* is ``False`` the row is flushed but the caller is
     responsible for committing the session.
     """
-    if "token_hash" not in kwargs:
-        # Lazy import: CRUD shouldn't depend on relay config at module load.
-        from uam.relay.config import settings as _settings
-        from uam.relay.token_hashing import hash_token as _hash_token
-        kwargs["token_hash"] = _hash_token(token, _settings.token_pepper)
-
     agent = Agent(
         address=address,
         public_key=public_key,
-        token=token,
+        token_hash=token_hash,
         **kwargs,
     )
     session.add(agent)
@@ -53,15 +48,6 @@ async def create_agent(
     else:
         await session.flush()
     return agent
-
-
-async def get_agent_by_token(
-    session: AsyncSession, token: str
-) -> Agent | None:
-    """Look up an agent by bearer token (soft-delete filtered)."""
-    stmt = select(Agent).where(Agent.token == token, Agent.deleted_at.is_(None))  # type: ignore[union-attr]
-    result = await session.execute(stmt)
-    return result.scalar_one_or_none()
 
 
 async def get_agent_by_address(
@@ -99,7 +85,8 @@ async def update_agent(
         return None
     for key, value in kwargs.items():
         setattr(agent, key, value)
-    agent.updated_at = datetime.utcnow()
+    # T7.4: updated_at populated server-side via onupdate=func.now() on the
+    # Agent.updated_at column (models.py); no Python-side write needed.
     session.add(agent)
     if commit:
         await session.commit()
@@ -117,7 +104,9 @@ async def deactivate_agent(
     if agent is None:
         return None
     agent.status = "deactivated"
-    agent.deleted_at = datetime.utcnow()
+    # T7.4: deleted_at is an explicit-action column (no server_default);
+    # use tz-aware now() so the value matches the column's DateTime(timezone=True).
+    agent.deleted_at = datetime.now(timezone.utc)
     session.add(agent)
     await session.commit()
     await session.refresh(agent)
@@ -133,7 +122,7 @@ async def reactivate_agent(
         return None
     agent.status = "active"
     agent.deleted_at = None
-    agent.updated_at = datetime.utcnow()
+    # T7.4: updated_at populated server-side via onupdate=func.now().
     session.add(agent)
     await session.commit()
     await session.refresh(agent)
@@ -148,7 +137,7 @@ async def suspend_agent(
     if agent is None:
         return None
     agent.status = "suspended"
-    agent.updated_at = datetime.utcnow()
+    # T7.4: updated_at populated server-side via onupdate=func.now().
     session.add(agent)
     await session.commit()
     await session.refresh(agent)

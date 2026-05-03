@@ -1,7 +1,27 @@
 """SQLModel table definitions for the UAM relay database.
 
-All 18 entities are defined here as SQLModel table classes. Each mutable
+All 19 entities are defined here as SQLModel table classes. Each mutable
 entity includes a ``deleted_at`` field for soft-delete support.
+
+Phase 47 T7.4 + T7.3b: every datetime field uses
+``sa_column=Column(DateTime(timezone=True), ...)`` (explicit Column
+construction) so the database stores timezone-aware values.
+
+The model layer pairs ``server_default=func.now()`` with
+``default_factory=lambda: datetime.now(timezone.utc)`` for every NOT NULL
+auto-managed column. The default factory exists because alembic migration
+0001 did not actually emit ``DEFAULT`` clauses for these columns at the DB
+level (the autogen apparently dropped the ``server_default`` from the
+``sa_column_kwargs`` dict) — without a Python-side default, ORM INSERTs
+hit ``NOT NULL constraint failed`` on tables like ``blocklist`` and
+``allowlist``. Pitfall 5 (planner doc) only fires when the Python default
+is **naive** (``datetime.utcnow``); a tz-aware default neutralises it
+because the value matches the column's ``DateTime(timezone=True)`` type.
+
+For columns whose action is explicit (``deleted_at``, ``claimed_at``,
+``completed_at``, ``resolved_at``, ``last_checked``, etc.), the CRUD
+layer sets the value via ``datetime.now(timezone.utc)`` — see
+``src/uam/db/crud/*.py``.
 
 Usage::
 
@@ -16,7 +36,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, UniqueConstraint, func
+from sqlalchemy import JSON, Column, DateTime, ForeignKey, String, UniqueConstraint, func
 from sqlmodel import Field, SQLModel
 
 # ---------------------------------------------------------------------------
@@ -31,27 +51,44 @@ class Agent(SQLModel, table=True):
 
     address: str = Field(primary_key=True)
     public_key: str
-    # T2.1: ``token`` is transitional. Plan 04 added ``token_hash`` as the
-    # authoritative lookup column (HMAC-SHA-256 with server pepper); the
-    # plaintext column remains for one release so an emergency rollback
-    # can revert to the old auth path. A follow-up phase (Phase 47) drops
-    # this column after the new path proves stable in production.
-    token: str | None = Field(default=None, index=True, unique=True)
-    # T2.1: HMAC-SHA-256(token, UAM_TOKEN_PEPPER). Populated on every
-    # registration after Plan 04 lands; backfilled for pre-existing rows
-    # by alembic migration 0003. The model field is nullable so the
-    # column-add migration is safe; alembic 0003's batch ALTER tightens
-    # the DB column to NOT NULL after backfill.
-    token_hash: str | None = Field(default=None, index=True, unique=True)
+    # Phase 47 T7.5: ``token_hash`` is the SINGLE source of truth for auth.
+    # The plaintext ``token`` field was dropped at the DB level by alembic
+    # migration 0007 and removed from this model in the same release. The
+    # plaintext is returned to the caller at registration time and NEVER
+    # stored on the relay; subsequent auth uses
+    # ``hmac.compare_digest(hash_token(plaintext, pepper), token_hash)``
+    # in ``uam.relay.auth`` (Phase 43 Plan 04 pattern).
+    token_hash: str = Field(index=True, unique=True)
     display_name: str | None = None
     contact_card: dict | None = Field(default=None, sa_type=JSON)
     status: str = Field(default="active")
     webhook_url: str | None = None
     relay_endpoint: str | None = None
-    last_seen: datetime | None = None
-    created_at: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"server_default": func.now()})
-    updated_at: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"server_default": func.now(), "onupdate": func.now()})
-    deleted_at: datetime | None = None
+    last_seen: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True),
+            server_default=func.now(),
+            nullable=False,
+        ),
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True),
+            server_default=func.now(),
+            onupdate=func.now(),
+            nullable=False,
+        ),
+    )
+    deleted_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
 
 
 class Message(SQLModel, table=True):
@@ -61,16 +98,49 @@ class Message(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     message_id: str = Field(index=True, unique=True)
-    from_addr: str
-    to_addr: str = Field(index=True)
+    # T7.3a: ForeignKey to agents.address with ON DELETE RESTRICT — audit
+    # data must survive (sender identity is part of the record). See
+    # alembic/versions/0006_foreign_keys.py and RESEARCH Pattern 3 +
+    # Pitfall 7 (sa_column form required to surface ondelete kwarg).
+    from_addr: str = Field(
+        sa_column=Column(
+            String,
+            ForeignKey("agents.address", ondelete="RESTRICT", name="fk_messages_from_addr"),
+            nullable=False,
+        ),
+    )
+    to_addr: str = Field(
+        sa_column=Column(
+            String,
+            ForeignKey("agents.address", ondelete="RESTRICT", name="fk_messages_to_addr"),
+            nullable=False,
+            index=True,
+        ),
+    )
     thread_id: str | None = Field(default=None, index=True)
     envelope: str
     status: str = Field(default="queued")
     retry_count: int = 0
-    created_at: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"server_default": func.now()})
-    delivered_at: datetime | None = None
-    expires_at: datetime | None = None
-    deleted_at: datetime | None = None
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True),
+            server_default=func.now(),
+            nullable=False,
+        ),
+    )
+    delivered_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
+    expires_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
+    deleted_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
 
 
 class Handshake(SQLModel, table=True):
@@ -79,13 +149,43 @@ class Handshake(SQLModel, table=True):
     __tablename__ = "handshakes"
 
     id: int | None = Field(default=None, primary_key=True)
-    from_addr: str = Field(index=True)
-    to_addr: str = Field(index=True)
+    # T7.3a: ForeignKey to agents.address with ON DELETE RESTRICT — handshake
+    # records are audit data and must outlive an agent's deletion. See
+    # alembic/versions/0006_foreign_keys.py.
+    from_addr: str = Field(
+        sa_column=Column(
+            String,
+            ForeignKey("agents.address", ondelete="RESTRICT", name="fk_handshakes_from"),
+            nullable=False,
+            index=True,
+        ),
+    )
+    to_addr: str = Field(
+        sa_column=Column(
+            String,
+            ForeignKey("agents.address", ondelete="RESTRICT", name="fk_handshakes_to"),
+            nullable=False,
+            index=True,
+        ),
+    )
     contact_card: dict | None = Field(default=None, sa_type=JSON)
     status: str = Field(default="pending")
-    created_at: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"server_default": func.now()})
-    resolved_at: datetime | None = None
-    deleted_at: datetime | None = None
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True),
+            server_default=func.now(),
+            nullable=False,
+        ),
+    )
+    resolved_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
+    deleted_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
 
 
 class Contact(SQLModel, table=True):
@@ -94,13 +194,50 @@ class Contact(SQLModel, table=True):
     __tablename__ = "contacts"
 
     id: int | None = Field(default=None, primary_key=True)
-    owner_address: str = Field(index=True)
-    contact_address: str
+    # T7.3a: owner deletion cascades — when the owner agent is deleted, its
+    # contact-book entries are meaningless and should be removed.
+    owner_address: str = Field(
+        sa_column=Column(
+            String,
+            ForeignKey("agents.address", ondelete="CASCADE", name="fk_contacts_owner"),
+            nullable=False,
+            index=True,
+        ),
+    )
+    # T7.3a: contact deletion sets NULL — preserve the contact-book row as a
+    # tombstone but sever the dangling reference. Per Pitfall 7 + the 0006
+    # migration, the column must be nullable to satisfy the SET NULL action.
+    contact_address: str | None = Field(
+        default=None,
+        sa_column=Column(
+            String,
+            ForeignKey("agents.address", ondelete="SET NULL", name="fk_contacts_contact"),
+            nullable=True,
+        ),
+    )
     trust_state: str = Field(default="unknown")
     contact_card: dict | None = Field(default=None, sa_type=JSON)
-    created_at: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"server_default": func.now()})
-    updated_at: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"server_default": func.now(), "onupdate": func.now()})
-    deleted_at: datetime | None = None
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True),
+            server_default=func.now(),
+            nullable=False,
+        ),
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True),
+            server_default=func.now(),
+            onupdate=func.now(),
+            nullable=False,
+        ),
+    )
+    deleted_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
 
 
 class AuditLog(SQLModel, table=True):
@@ -112,8 +249,25 @@ class AuditLog(SQLModel, table=True):
     action: str
     entity_type: str
     entity_id: str
-    actor_address: str | None = None
-    timestamp: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"server_default": func.now()})
+    # T7.3a: actor deletion sets NULL — audit log MUST survive actor
+    # deletion (compliance / forensics). Already Optional pre-Phase-47;
+    # the FK + SET NULL are layered on without a type change.
+    actor_address: str | None = Field(
+        default=None,
+        sa_column=Column(
+            String,
+            ForeignKey("agents.address", ondelete="SET NULL", name="fk_audit_log_actor"),
+            nullable=True,
+        ),
+    )
+    timestamp: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True),
+            server_default=func.now(),
+            nullable=False,
+        ),
+    )
     details: dict | None = Field(default=None, sa_type=JSON)
     ip_address: str | None = None
 
@@ -129,8 +283,22 @@ class SeenMessageId(SQLModel, table=True):
     __tablename__ = "seen_message_ids"
 
     message_id: str = Field(primary_key=True)
-    from_addr: str
-    seen_at: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"server_default": func.now()})
+    # T7.3a: per-recipient dedup state cascades on agent delete.
+    from_addr: str = Field(
+        sa_column=Column(
+            String,
+            ForeignKey("agents.address", ondelete="CASCADE", name="fk_seen_messages_from"),
+            nullable=False,
+        ),
+    )
+    seen_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True),
+            server_default=func.now(),
+            nullable=False,
+        ),
+    )
 
 
 class FederationNonce(SQLModel, table=True):
@@ -159,8 +327,11 @@ class FederationNonce(SQLModel, table=True):
     nonce: str = Field(primary_key=True, max_length=64)
     seen_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
-        nullable=False,
-        sa_column_kwargs={"server_default": func.now()},
+        sa_column=Column(
+            DateTime(timezone=True),
+            server_default=func.now(),
+            nullable=False,
+        ),
     )
 
 
@@ -171,15 +342,40 @@ class DomainVerification(SQLModel, table=True):
     __table_args__ = (UniqueConstraint("agent_address", "domain"),)
 
     id: int | None = Field(default=None, primary_key=True)
-    agent_address: str = Field(index=True)
+    # T7.3a: per-agent verification state cascades on agent delete.
+    agent_address: str = Field(
+        sa_column=Column(
+            String,
+            ForeignKey("agents.address", ondelete="CASCADE", name="fk_domain_verifications_agent"),
+            nullable=False,
+            index=True,
+        ),
+    )
     domain: str
     public_key: str
     method: str = Field(default="dns")
-    verified_at: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"server_default": func.now()})
-    last_checked: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"server_default": func.now()})
+    verified_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True),
+            server_default=func.now(),
+            nullable=False,
+        ),
+    )
+    last_checked: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True),
+            server_default=func.now(),
+            nullable=False,
+        ),
+    )
     ttl_hours: int = Field(default=24)
     status: str = Field(default="verified")
-    deleted_at: datetime | None = None
+    deleted_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
 
 
 class WebhookDelivery(SQLModel, table=True):
@@ -188,16 +384,37 @@ class WebhookDelivery(SQLModel, table=True):
     __tablename__ = "webhook_deliveries"
 
     id: int | None = Field(default=None, primary_key=True)
-    agent_address: str = Field(index=True)
+    # T7.3a: per-agent operational state cascades on agent delete.
+    agent_address: str = Field(
+        sa_column=Column(
+            String,
+            ForeignKey("agents.address", ondelete="CASCADE", name="fk_webhook_deliveries_agent"),
+            nullable=False,
+            index=True,
+        ),
+    )
     message_id: str
     envelope: str
     status: str = Field(default="pending")
     attempt_count: int = Field(default=0)
     last_status_code: int | None = None
     last_error: str | None = None
-    created_at: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"server_default": func.now()})
-    completed_at: datetime | None = None
-    deleted_at: datetime | None = None
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True),
+            server_default=func.now(),
+            nullable=False,
+        ),
+    )
+    completed_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
+    deleted_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
 
 
 class Reputation(SQLModel, table=True):
@@ -205,12 +422,37 @@ class Reputation(SQLModel, table=True):
 
     __tablename__ = "reputation"
 
-    address: str = Field(primary_key=True)
+    # T7.3a: address is both PRIMARY KEY and FK to agents.address with
+    # ON DELETE CASCADE — when an agent is deleted, its reputation row goes
+    # with it. Per Pitfall 7, sa_column form is required to surface ondelete.
+    address: str = Field(
+        sa_column=Column(
+            String,
+            ForeignKey("agents.address", ondelete="CASCADE", name="fk_reputation_address"),
+            primary_key=True,
+            nullable=False,
+        ),
+    )
     score: int = Field(default=30)
     messages_sent: int = Field(default=0)
     messages_rejected: int = Field(default=0)
-    created_at: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"server_default": func.now()})
-    updated_at: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"server_default": func.now(), "onupdate": func.now()})
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True),
+            server_default=func.now(),
+            nullable=False,
+        ),
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True),
+            server_default=func.now(),
+            onupdate=func.now(),
+            nullable=False,
+        ),
+    )
 
 
 class BlocklistEntry(SQLModel, table=True):
@@ -221,7 +463,14 @@ class BlocklistEntry(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     pattern: str = Field(unique=True)
     reason: str | None = None
-    created_at: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"server_default": func.now()})
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True),
+            server_default=func.now(),
+            nullable=False,
+        ),
+    )
 
 
 class AllowlistEntry(SQLModel, table=True):
@@ -232,7 +481,14 @@ class AllowlistEntry(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     pattern: str = Field(unique=True)
     reason: str | None = None
-    created_at: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"server_default": func.now()})
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True),
+            server_default=func.now(),
+            nullable=False,
+        ),
+    )
 
 
 class KnownRelay(SQLModel, table=True):
@@ -244,7 +500,14 @@ class KnownRelay(SQLModel, table=True):
     federation_url: str
     public_key: str
     discovered_via: str = Field(default="well-known")
-    last_verified: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"server_default": func.now()})
+    last_verified: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True),
+            server_default=func.now(),
+            nullable=False,
+        ),
+    )
     ttl_hours: int = Field(default=1)
     status: str = Field(default="active")
 
@@ -262,7 +525,14 @@ class FederationLog(SQLModel, table=True):
     hop_count: int = Field(default=0)
     status: str
     error: str | None = None
-    created_at: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"server_default": func.now()})
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True),
+            server_default=func.now(),
+            nullable=False,
+        ),
+    )
 
 
 class RelayBlocklistEntry(SQLModel, table=True):
@@ -273,7 +543,14 @@ class RelayBlocklistEntry(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     domain: str = Field(unique=True)
     reason: str | None = None
-    created_at: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"server_default": func.now()})
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True),
+            server_default=func.now(),
+            nullable=False,
+        ),
+    )
 
 
 class RelayAllowlistEntry(SQLModel, table=True):
@@ -284,7 +561,14 @@ class RelayAllowlistEntry(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     domain: str = Field(unique=True)
     reason: str | None = None
-    created_at: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"server_default": func.now()})
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True),
+            server_default=func.now(),
+            nullable=False,
+        ),
+    )
 
 
 class RelayReputation(SQLModel, table=True):
@@ -296,10 +580,31 @@ class RelayReputation(SQLModel, table=True):
     score: int = Field(default=50)
     messages_forwarded: int = Field(default=0)
     messages_rejected: int = Field(default=0)
-    last_success: datetime | None = None
-    last_failure: datetime | None = None
-    created_at: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"server_default": func.now()})
-    updated_at: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"server_default": func.now(), "onupdate": func.now()})
+    last_success: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
+    last_failure: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True),
+            server_default=func.now(),
+            nullable=False,
+        ),
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True),
+            server_default=func.now(),
+            onupdate=func.now(),
+            nullable=False,
+        ),
+    )
 
 
 class FederationQueueEntry(SQLModel, table=True):
@@ -313,10 +618,20 @@ class FederationQueueEntry(SQLModel, table=True):
     via: str = Field(default="[]")
     hop_count: int = Field(default=0)
     attempt_count: int = Field(default=0)
-    next_retry: datetime = Field(default_factory=datetime.utcnow)
+    next_retry: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
     status: str = Field(default="pending")
     error: str | None = None
-    created_at: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"server_default": func.now()})
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True),
+            server_default=func.now(),
+            nullable=False,
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -343,17 +658,39 @@ class Reservation(SQLModel, table=True):
     )
 
     id: int | None = Field(default=None, primary_key=True)
+    # T7.3a INTENTIONAL: NO ForeignKey on address. Reservations exist BEFORE
+    # an agent is registered — the whole purpose is to claim an address that
+    # is not yet in the agents table. Adding ForeignKey('agents.address')
+    # would prevent the workflow (every reservation insert would fail with
+    # IntegrityError because the parent row doesn't exist yet).
+    # See RESEARCH OQ3 + tests/db/test_foreign_keys.py::
+    # test_reservations_address_has_no_fk (positive contract test).
+    # Uniqueness across (agents, reservations) is enforced at the CRUD layer
+    # plus the (address, status) composite UniqueConstraint above.
     address: str = Field(index=True)
     claim_token: str = Field(unique=True, index=True)
     status: str = Field(default="reserved", index=True)
     ip_address: str | None = None
     created_at: datetime = Field(
-        default_factory=datetime.utcnow,
-        sa_column_kwargs={"server_default": func.now()},
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True),
+            server_default=func.now(),
+            nullable=False,
+        ),
     )
-    expires_at: datetime  # Must be set explicitly by caller
-    claimed_at: datetime | None = None
-    deleted_at: datetime | None = None
+    # expires_at must be set explicitly by caller (no server_default).
+    expires_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    claimed_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
+    deleted_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
 
 
 # ---------------------------------------------------------------------------

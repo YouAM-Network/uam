@@ -6,7 +6,7 @@ Read queries filter ``deleted_at IS NULL`` by default.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
@@ -58,7 +58,8 @@ async def update_trust(
     if contact is None:
         return None
     contact.trust_state = trust_state
-    contact.updated_at = datetime.utcnow()
+    # T7.4: updated_at populated server-side via onupdate=func.now() on the
+    # Contact.updated_at column (models.py); no Python-side write needed.
     session.add(contact)
     await session.commit()
     await session.refresh(contact)
@@ -84,7 +85,9 @@ async def delete_contact(
     contact = await get_contact(session, owner_address, contact_address)
     if contact is None:
         return False
-    contact.deleted_at = datetime.utcnow()
+    # T7.4: deleted_at is an explicit-action column; tz-aware now() matches
+    # the column's DateTime(timezone=True) declaration.
+    contact.deleted_at = datetime.now(timezone.utc)
     session.add(contact)
     await session.commit()
     return True

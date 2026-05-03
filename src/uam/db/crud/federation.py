@@ -26,7 +26,7 @@ Phase 44 Plan 44-06 (T4.7 H2):
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import case, delete as sa_delete, func, update
 from sqlalchemy.exc import IntegrityError
@@ -66,7 +66,7 @@ async def upsert_known_relay(
     result = await session.execute(stmt)
     existing = result.scalar_one_or_none()
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     if existing is not None:
         existing.federation_url = federation_url
         existing.public_key = public_key
@@ -186,7 +186,7 @@ async def enqueue_federation(
         via=via,
         hop_count=hop_count,
         status="pending",
-        next_retry=datetime.utcnow(),
+        next_retry=datetime.now(timezone.utc),
     )
     session.add(entry)
     if commit:
@@ -201,7 +201,7 @@ async def get_pending_queue(
     session: AsyncSession, limit: int = 50
 ) -> list[FederationQueueEntry]:
     """Get pending queue entries whose retry time has elapsed."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     stmt = (
         select(FederationQueueEntry)
         .where(
@@ -272,7 +272,9 @@ async def delete_completed_queue(
     session: AsyncSession, max_age_days: int = 7
 ) -> int:
     """Hard-delete completed/failed queue entries older than *max_age_days*."""
-    cutoff = datetime.utcnow() - timedelta(days=max_age_days)
+    # T7.4: tz-aware cutoff matches FederationQueueEntry.created_at column's
+    # DateTime(timezone=True) declaration.
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
     stmt = sa_delete(FederationQueueEntry).where(
         FederationQueueEntry.status.in_(["completed", "failed"]),
         FederationQueueEntry.created_at < cutoff,  # type: ignore[operator]
@@ -447,7 +449,7 @@ async def record_relay_success(
         (RelayReputation.score + 1 > 100, 100),
         else_=RelayReputation.score + 1,
     )
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     stmt = (
         update(RelayReputation)
         .where(RelayReputation.domain == domain)
@@ -480,7 +482,7 @@ async def record_relay_failure(
         (RelayReputation.score - 5 < 0, 0),
         else_=RelayReputation.score - 5,
     )
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     stmt = (
         update(RelayReputation)
         .where(RelayReputation.domain == domain)

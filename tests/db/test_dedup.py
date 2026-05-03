@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from uam.db.crud.dedup import (
     check_seen,
@@ -38,7 +38,8 @@ async def test_cleanup_expired(session):
     stmt = select(SeenMessageId).where(SeenMessageId.message_id == "old-msg")
     result = await session.execute(stmt)
     entry = result.scalar_one()
-    entry.seen_at = datetime.utcnow() - timedelta(days=10)
+    # T7.4: tz-aware to match SeenMessageId.seen_at column DateTime(timezone=True).
+    entry.seen_at = datetime.now(timezone.utc) - timedelta(days=10)
     session.add(entry)
     await session.commit()
 

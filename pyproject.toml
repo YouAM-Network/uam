@@ -133,6 +133,7 @@ dev = [
     "pytest-httpx>=0.35",
     "httpx>=0.28",
     "jsonschema>=4.20",
+    "testcontainers[postgres]>=4.13",
 ]
 
 [tool.setuptools.packages.find]
@@ -146,3 +147,6 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "postgres: Tests requiring a PostgreSQL container (skipped if Docker unavailable)",
+]
