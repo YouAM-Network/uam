@@ -10,14 +10,37 @@ their tier and associated rate limits:
 
 Scores are cached in memory with SQLAlchemy/SQLModel persistence.  New agents
 default to score 30 (Tier 1); DNS-verified agents start at 60.
+
+Phase 46 Plan 46-04 (T6.4):
+    ``update_score``, ``record_message_sent``, and ``record_message_rejected``
+    were converted from SELECT-then-mutate-in-Python-then-COMMIT to a single
+    atomic ``UPDATE`` statement with arithmetic in SQL. The previous
+    read-modify-write pattern was vulnerable to lost-update races: 100
+    concurrent ``record_message_sent`` calls could all read
+    ``messages_sent=N`` and all write ``messages_sent=N+1``, losing 99
+    increments.
+
+    The atomic form is::
+
+        UPDATE reputation
+        SET score = MAX(0, MIN(100, score + :delta)),
+            updated_at = now()
+        WHERE address = :address
+
+    Both Postgres and SQLite evaluate ``score + :delta`` atomically inside
+    the row lock, so 100 concurrent invocations land 100 deltas. Row-existence
+    is ensured first via a try/IntegrityError-rollback in a separate session,
+    mirroring the existing portable pattern from
+    ``src/uam/db/crud/reputation.py:init_reputation``.
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from typing import Any
 
+from sqlalchemy import func, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlmodel import select
 
@@ -88,6 +111,20 @@ class ReputationManager:
     # Score mutations (DB + cache)
     # ------------------------------------------------------------------
 
+    async def _ensure_row(self, address: str, score: int = 30) -> None:
+        """Insert default-score row if absent. Race-safe via IntegrityError.
+
+        Mirrors the portable pattern from
+        ``src/uam/db/crud/reputation.py:init_reputation``. Runs in its own
+        session so a rollback here cannot poison the caller's session state.
+        """
+        async with self._session_factory() as session:
+            try:
+                session.add(Reputation(address=address, score=score))
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()  # row already exists -- fine
+
     async def init_score(self, address: str, dns_verified: bool = False) -> None:
         """Initialize reputation for a newly registered agent.
 
@@ -116,27 +153,34 @@ class ReputationManager:
     async def update_score(self, address: str, delta: int) -> int:
         """Atomically adjust score by *delta* (clamped 0-100).
 
+        T6.4: single SQL ``UPDATE`` with arithmetic-in-SQL clamp via
+        ``func.max``/``func.min`` -- both Postgres and SQLite serialize
+        the row mutation, so concurrent calls do not lose updates.
+
         If the address has no reputation row yet, one is created with
         default score 30 before applying the delta.  Returns the new score.
         """
-        async with self._session_factory() as session:
-            # Ensure row exists
-            result = await session.execute(
-                select(Reputation).where(Reputation.address == address)
-            )
-            row = result.scalar_one_or_none()
-            if row is None:
-                row = Reputation(address=address, score=30)
-                session.add(row)
-                await session.flush()
+        # Step 1: ensure row exists in its own session (race-safe via IntegrityError).
+        await self._ensure_row(address, score=30)
 
-            # Apply delta with clamping
-            row.score = max(0, min(100, row.score + delta))
-            row.updated_at = datetime.utcnow()
-            session.add(row)
+        # Step 2: atomic UPDATE -- arithmetic + clamp inside SQL.
+        async with self._session_factory() as session:
+            stmt = (
+                update(Reputation)
+                .where(Reputation.address == address)
+                .values(
+                    score=func.max(0, func.min(100, Reputation.score + delta)),
+                    updated_at=func.now(),
+                )
+            )
+            await session.execute(stmt)
             await session.commit()
-            await session.refresh(row)
-            new_score = row.score
+
+            # Step 3: read back for cache + tier-transition logging.
+            result = await session.execute(
+                select(Reputation.score).where(Reputation.address == address)
+            )
+            new_score = int(result.scalar_one())
 
         old_score = self._cache.get(address, 30)
         self._cache[address] = new_score
@@ -159,17 +203,18 @@ class ReputationManager:
     async def set_score(self, address: str, score: int) -> None:
         """Admin override -- directly set a score (clamped 0-100)."""
         clamped = max(0, min(100, score))
+        # Ensure row exists, then atomic UPDATE (consistent with update_score).
+        await self._ensure_row(address, score=clamped)
         async with self._session_factory() as session:
-            result = await session.execute(
-                select(Reputation).where(Reputation.address == address)
+            stmt = (
+                update(Reputation)
+                .where(Reputation.address == address)
+                .values(
+                    score=clamped,
+                    updated_at=func.now(),
+                )
             )
-            row = result.scalar_one_or_none()
-            if row is None:
-                row = Reputation(address=address, score=clamped)
-            else:
-                row.score = clamped
-                row.updated_at = datetime.utcnow()
-            session.add(row)
+            await session.execute(stmt)
             await session.commit()
         old_score = self._cache.get(address, 30)
         self._cache[address] = clamped
@@ -182,30 +227,43 @@ class ReputationManager:
     # ------------------------------------------------------------------
 
     async def record_message_sent(self, address: str) -> None:
-        """Increment the messages_sent counter for *address*."""
+        """Increment the messages_sent counter for *address*.
+
+        T6.4: atomic ``UPDATE Reputation SET messages_sent =
+        messages_sent + 1, updated_at = now() WHERE address = ?`` --
+        100 concurrent invocations land 100 increments.
+        """
+        await self._ensure_row(address, score=30)
         async with self._session_factory() as session:
-            result = await session.execute(
-                select(Reputation).where(Reputation.address == address)
+            stmt = (
+                update(Reputation)
+                .where(Reputation.address == address)
+                .values(
+                    messages_sent=Reputation.messages_sent + 1,
+                    updated_at=func.now(),
+                )
             )
-            row = result.scalar_one_or_none()
-            if row is not None:
-                row.messages_sent += 1
-                row.updated_at = datetime.utcnow()
-                session.add(row)
-                await session.commit()
+            await session.execute(stmt)
+            await session.commit()
 
     async def record_message_rejected(self, address: str) -> None:
-        """Increment the messages_rejected counter for *address*."""
+        """Increment the messages_rejected counter for *address*.
+
+        T6.4: atomic ``UPDATE`` with arithmetic in SQL -- mirrors
+        ``record_message_sent`` but on the ``messages_rejected`` column.
+        """
+        await self._ensure_row(address, score=30)
         async with self._session_factory() as session:
-            result = await session.execute(
-                select(Reputation).where(Reputation.address == address)
+            stmt = (
+                update(Reputation)
+                .where(Reputation.address == address)
+                .values(
+                    messages_rejected=Reputation.messages_rejected + 1,
+                    updated_at=func.now(),
+                )
             )
-            row = result.scalar_one_or_none()
-            if row is not None:
-                row.messages_rejected += 1
-                row.updated_at = datetime.utcnow()
-                session.add(row)
-                await session.commit()
+            await session.execute(stmt)
+            await session.commit()
 
     # ------------------------------------------------------------------
     # Admin inspection

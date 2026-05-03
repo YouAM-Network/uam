@@ -318,21 +318,31 @@ class TestReputationAdmin:
         assert data["tier"] == "full"
 
     def test_reputation_set_invalid_range_over(self, admin_client):
-        """PUT with score >100 returns 400."""
+        """PUT with score >100 is rejected.
+
+        T6.2 (Phase 46): ``SetReputationRequest.score`` enforces
+        ``Field(ge=0, le=100)`` so out-of-range scores 422 at the Pydantic
+        parse layer instead of falling through to the handler's 400. Either
+        rejection is acceptable.
+        """
         agent = self._register_agent(admin_client)
         resp = admin_client.put(
             f"/api/v1/admin/reputation/{agent['address']}",
             json={"score": 150},
             headers=_headers(),
         )
-        assert resp.status_code == 400
+        assert resp.status_code in (400, 422)
 
     def test_reputation_set_invalid_range_under(self, admin_client):
-        """PUT with score <0 returns 400."""
+        """PUT with score <0 is rejected.
+
+        T6.2 (Phase 46): same as above — ``ge=0`` 422s at parse, 400 was the
+        handler-level fallback. Either is acceptable.
+        """
         agent = self._register_agent(admin_client)
         resp = admin_client.put(
             f"/api/v1/admin/reputation/{agent['address']}",
             json={"score": -10},
             headers=_headers(),
         )
-        assert resp.status_code == 400
+        assert resp.status_code in (400, 422)

@@ -39,14 +39,20 @@ class TestSetWebhookUrl:
         assert data["webhook_url"] == "https://example.com/hook"
 
     def test_set_webhook_rejects_http(self, client, registered_agent):
-        """HTTP URL returns 400."""
+        """HTTP URL is rejected.
+
+        T6.2 (Phase 46): ``WebhookUrlRequest.webhook_url`` enforces
+        ``pattern=_HTTPS_URL_PATTERN`` so plain-http URLs 422 at the
+        Pydantic parse layer instead of falling through to the handler's
+        400 path. Either rejection is acceptable.
+        """
         address = registered_agent["address"]
         resp = client.put(
             f"/api/v1/agents/{address}/webhook",
             json={"webhook_url": "http://example.com/hook"},
             headers={"Authorization": f"Bearer {registered_agent['token']}"},
         )
-        assert resp.status_code == 400
+        assert resp.status_code in (400, 422)
 
     @patch("uam.relay.webhook_validator.is_public_ip", return_value=False)
     def test_set_webhook_rejects_private_ip(self, _mock_ip, client, registered_agent):
@@ -222,7 +228,13 @@ class TestRegisterWithWebhookUrl:
         assert get_resp.json()["webhook_url"] == "https://hooks.example.com/uam"
 
     def test_register_with_invalid_webhook_url(self, client):
-        """Registration with HTTP webhook_url returns 400."""
+        """Registration with HTTP webhook_url is rejected.
+
+        T6.2 (Phase 46): ``RegisterRequest.webhook_url`` enforces
+        ``pattern=_HTTPS_URL_PATTERN`` so plain-http URLs 422 at the
+        Pydantic parse layer (the registration handler's webhook validator
+        path is unreached). Either rejection is acceptable.
+        """
         sk, vk = generate_keypair()
         pk_str = serialize_verify_key(vk)
 
@@ -234,7 +246,7 @@ class TestRegisterWithWebhookUrl:
                 "webhook_url": "http://example.com/hook",
             },
         )
-        assert resp.status_code == 400
+        assert resp.status_code in (400, 422)
 
     def test_register_without_webhook_url(self, client):
         """Registration without webhook_url works (backward compatible)."""

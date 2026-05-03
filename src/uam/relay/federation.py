@@ -18,9 +18,16 @@ import dns.resolver
 import dns.exception
 import httpx
 
+from urllib.parse import urlparse
+
 from uam.protocol.types import utc_timestamp
 from uam.relay.relay_auth import sign_federation_request
-from uam.relay.ssrf import SSRFBlockedError, validate_outbound_target
+from uam.relay.ssrf import (
+    SSRFBlockedError,
+    build_pinned_url,
+    resolve_pinned,
+    validate_outbound_target,
+)
 
 from uam.db.crud.federation import get_known_relay, log_federation, upsert_known_relay
 from uam.db.session import async_session_factory
@@ -194,14 +201,33 @@ class FederationService:
                 "T5.1: refusing federation .well-known fetch %s: %s", url, exc
             )
             return None
+        # R-46-01 (Phase 46): resolve-once-pin to defeat DNS rebind between
+        # validate-time and request-time.  Caller passes IP-literal URL +
+        # original Host header + sni_hostname extension to httpx so cert
+        # validation chains against the original hostname.
         try:
-            resp = await self._client.get(url, timeout=10.0)
+            original_host, pinned_ip = resolve_pinned(host, allowed_ports=(443, 8443))
+        except SSRFBlockedError as exc:
+            logger.warning(
+                "R-46-01: refusing federation .well-known fetch %s (pin failed): %s",
+                url, exc,
+            )
+            return None
+        pinned_url = build_pinned_url(url, pinned_ip)
+        try:
+            resp = await self._client.get(
+                pinned_url,
+                timeout=10.0,
+                headers={"Host": original_host},
+                extensions={"sni_hostname": original_host},
+            )
             resp.raise_for_status()
             data = resp.json()
             return data.get("public_key")
         except Exception:
             logger.debug(
-                "Failed to fetch .well-known from %s", url, exc_info=True
+                "Failed to fetch .well-known from %s (pinned %s)",
+                url, pinned_url, exc_info=True,
             )
             return None
 
@@ -219,8 +245,25 @@ class FederationService:
                 "T5.1: refusing federation discovery fetch %s: %s", url, exc
             )
             return None
+        # R-46-01 (Phase 46): resolve-once-pin DNS to defeat rebind.
         try:
-            resp = await self._client.get(url, timeout=10.0)
+            original_host, pinned_ip = resolve_pinned(
+                domain, allowed_ports=(443, 8443)
+            )
+        except SSRFBlockedError as exc:
+            logger.warning(
+                "R-46-01: refusing federation discovery fetch %s (pin failed): %s",
+                url, exc,
+            )
+            return None
+        pinned_url = build_pinned_url(url, pinned_ip)
+        try:
+            resp = await self._client.get(
+                pinned_url,
+                timeout=10.0,
+                headers={"Host": original_host},
+                extensions={"sni_hostname": original_host},
+            )
             resp.raise_for_status()
             data = resp.json()
             federation_endpoint = data.get("federation_endpoint")
@@ -336,12 +379,49 @@ class FederationService:
             return ForwardResult(
                 delivered=False, queued=False, error=error_detail
             )
+        # R-46-01 (Phase 46): resolve-once-pin the federation_url's host.
+        # The federation_url came from peer-controlled DNS/.well-known, so
+        # an attacker can return a public IP at validate-time and a private
+        # IP (e.g. 169.254.169.254) at request-time without pinning.  Since
+        # the relay's signing key is in-process, an SSRF here could exfil
+        # IAM credentials -- this is the highest-stakes outbound site.
+        federation_url = relay_info["federation_url"]
+        parsed = urlparse(federation_url)
+        try:
+            original_host, pinned_ip = resolve_pinned(
+                parsed.hostname, allowed_ports=(443, 8443)
+            )
+        except SSRFBlockedError as exc:
+            error_detail = f"SSRF refused (pin failed): {exc}"
+            logger.warning(
+                "R-46-01: refusing federation forward to %s (pin failed): %s",
+                federation_url, exc,
+            )
+            async with factory() as session:
+                await log_federation(
+                    session,
+                    message_id,
+                    from_relay,
+                    target_domain,
+                    "outbound",
+                    hop_count + 1,
+                    "failed",
+                    error=error_detail,
+                )
+            return ForwardResult(
+                delivered=False, queued=False, error=error_detail
+            )
+        pinned_url = build_pinned_url(federation_url, pinned_ip)
+        # Preserve original headers; merge Host so the remote vhost sees the
+        # right name and TLS SNI uses the original hostname.
+        post_headers = {**headers, "Host": original_host}
         try:
             resp = await self._client.post(
-                relay_info["federation_url"],
+                pinned_url,
                 json=body,
-                headers=headers,
+                headers=post_headers,
                 timeout=30.0,
+                extensions={"sni_hostname": original_host},
             )
             if resp.status_code in (200, 201):
                 async with factory() as session:

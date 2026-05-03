@@ -31,7 +31,12 @@ from uam.db.engine import get_engine
 # re-export preserves every existing import path
 # (`from uam.relay.verification import is_public_ip` — used by
 # uam.relay.webhook_validator and several test files).
-from uam.relay.ssrf import is_public_ip  # noqa: F401  — back-compat re-export
+from uam.relay.ssrf import (  # noqa: F401  — back-compat re-export
+    SSRFBlockedError,
+    build_pinned_url,
+    is_public_ip,
+    resolve_pinned,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -148,13 +153,28 @@ async def verify_domain_ownership(
         return (False, "", "No valid verification found at DNS TXT or HTTPS .well-known")
 
     url = f"https://{domain}/.well-known/uam.json"
+    # R-46-01 (Phase 46): resolve-once-pin to defeat DNS rebind between the
+    # is_public_ip check above and the actual httpx connect below.
+    try:
+        original_host, pinned_ip = resolve_pinned(domain, allowed_ports=(443, 8443))
+    except SSRFBlockedError as exc:
+        logger.warning(
+            "R-46-01: refusing HTTPS .well-known fetch %s (pin failed): %s",
+            url, exc,
+        )
+        return (False, "", "No valid verification found at DNS TXT or HTTPS .well-known")
+    pinned_url = build_pinned_url(url, pinned_ip)
     try:
         # T5.2 (Phase 45): follow_redirects=False — RFC 8615 .well-known does
         # NOT require redirect support, and an attacker-controlled 30x to a
         # private IP would bypass the public-IP check above. Refuse 3xx
         # explicitly with an SSRF-specific reason for operator clarity.
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
-            resp = await client.get(url)
+            resp = await client.get(
+                pinned_url,
+                headers={"Host": original_host},
+                extensions={"sni_hostname": original_host},
+            )
             if resp.status_code in (301, 302, 303, 307, 308):
                 logger.info(
                     "T5.2: refusing to follow redirect from %s "

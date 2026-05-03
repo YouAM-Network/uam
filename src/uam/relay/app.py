@@ -591,12 +591,31 @@ def create_app() -> FastAPI:
             },
         )
 
-    # CORS
+    # CORS (innermost — runs LAST on inbound, FIRST on outbound)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
         allow_methods=["*"],
         allow_headers=["*"],
+    )
+
+    # T6.1 Phase 46: HTTP body-size cap (wraps CORS, runs second on inbound)
+    from uam.relay.middleware.body_size import BodySizeLimitMiddleware
+    app.add_middleware(
+        BodySizeLimitMiddleware,
+        max_bytes=settings.max_http_body_bytes,
+    )
+
+    # T6.1 Phase 46: trusted-proxy XFF rewriting (OUTERMOST — added LAST = runs FIRST
+    # on inbound, sees the real TCP peer to decide whether to honor X-Forwarded-For.
+    # Every downstream middleware AND every route's request.client.host then sees
+    # the rewritten IP. Starlette applies user_middleware in reverse-add order, so
+    # the LAST add_middleware call becomes the OUTERMOST layer — do not reorder.)
+    from uam.relay.middleware.proxy_headers import TrustedProxyMiddleware
+    _trusted_cidrs = [c.strip() for c in settings.trusted_proxies.split(",") if c.strip()]
+    app.add_middleware(
+        TrustedProxyMiddleware,
+        trusted_cidrs=_trusted_cidrs,
     )
 
     # REST routes with /api/v1 prefix

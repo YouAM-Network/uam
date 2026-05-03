@@ -98,12 +98,24 @@ class TestCreateReservation:
         resp = client.post("/api/v1/reserve", json={"name": "reserve5"})
         assert resp.status_code == 429
 
-    def test_reserve_name_normalized(self, client):
-        """Name is stripped and lowercased."""
-        resp = client.post("/api/v1/reserve", json={"name": " Scout "})
+    def test_reserve_lowercase_name_round_trip(self, client):
+        """Lowercase name reserves and round-trips into address.
+
+        T6.2 (Phase 46): ``ReserveRequest.name`` enforces
+        ``pattern=_AGENT_NAME_PATTERN`` (strict lowercase). Mixed-case or
+        whitespace-padded names are now rejected by Pydantic 422 instead of
+        being silently normalized by the handler's ``.strip().lower()``.
+        Callers MUST send already-lowercased names.
+        """
+        resp = client.post("/api/v1/reserve", json={"name": "scout"})
         assert resp.status_code == 201
         data = resp.json()
         assert data["address"] == "scout::test.local"
+
+    def test_reserve_mixed_case_name_rejected(self, client):
+        """T6.2 (Phase 46): mixed-case / whitespace-padded names → 422."""
+        resp = client.post("/api/v1/reserve", json={"name": " Scout "})
+        assert resp.status_code == 422
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +204,13 @@ class TestClaimReservation:
         assert data["public_key"] == pk_str
 
     def test_claim_with_invalid_public_key(self, client):
-        """Claim with invalid public key returns 400."""
+        """Claim with invalid public key is rejected.
+
+        T6.2 (Phase 46): ``ReserveClaimRequest.public_key`` enforces
+        ``pattern=_PUBKEY_B64_PATTERN`` so bad keys 422 at parse instead
+        of falling through to the handler's ``deserialize_verify_key`` 400.
+        Either rejection is acceptable.
+        """
         res = client.post("/api/v1/reserve", json={"name": "scout"})
         claim_token = res.json()["claim_token"]
 
@@ -200,7 +218,7 @@ class TestClaimReservation:
             "claim_token": claim_token,
             "public_key": "not-a-real-key",
         })
-        assert resp.status_code == 400
+        assert resp.status_code in (400, 422)
 
 
 # ---------------------------------------------------------------------------

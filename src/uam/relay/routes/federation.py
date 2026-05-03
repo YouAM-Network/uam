@@ -36,7 +36,12 @@ from uam.relay.models import (
 )
 from uam.relay.peer_key_cache import peer_key_cache
 from uam.relay.relay_auth import verify_federation_signature
-from uam.relay.ssrf import SSRFBlockedError, validate_outbound_target
+from uam.relay.ssrf import (
+    SSRFBlockedError,
+    build_pinned_url,
+    resolve_pinned,
+    validate_outbound_target,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -388,10 +393,28 @@ async def _rediscover_relay_key(session: AsyncSession, from_relay: str) -> str |
             "T5.1: refusing relay key re-discover %s: %s", url, exc
         )
         return None
+    # R-46-01 (Phase 46): resolve-once-pin to defeat DNS rebind.  ``from_relay``
+    # is fully attacker-controlled (inbound header value), so the rebind
+    # attack surface here is identical to FederationService outbound paths.
+    try:
+        original_host, pinned_ip = resolve_pinned(
+            from_relay, allowed_ports=(443, 8443)
+        )
+    except SSRFBlockedError as exc:
+        logger.warning(
+            "R-46-01: refusing relay key re-discover %s (pin failed): %s",
+            url, exc,
+        )
+        return None
+    pinned_url = build_pinned_url(url, pinned_ip)
     try:
         # T5.1 — explicit follow_redirects=False (don't trust httpx default).
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
-            resp = await client.get(url)
+            resp = await client.get(
+                pinned_url,
+                headers={"Host": original_host},
+                extensions={"sni_hostname": original_host},
+            )
             resp.raise_for_status()
             data = resp.json()
             public_key = data.get("public_key")
@@ -489,8 +512,28 @@ async def _resolve_remote_sender_key(
             "T5.1: refusing remote-sender-key fetch %s: %s", url, exc
         )
         return None
+    # R-46-01 (Phase 46): resolve-once-pin to defeat DNS rebind on the
+    # peer-key fetch.  ``parsed.hostname`` came from peer-controlled
+    # discovery output (above), so the rebind window is the same as for
+    # forward()/_fetch_well_known_key().
     try:
-        resp = await federation_service._client.get(url, timeout=10.0)
+        original_host, pinned_ip = resolve_pinned(
+            parsed.hostname, allowed_ports=(443, 8443)
+        )
+    except SSRFBlockedError as exc:
+        logger.warning(
+            "R-46-01: refusing remote-sender-key fetch %s (pin failed): %s",
+            url, exc,
+        )
+        return None
+    pinned_url = build_pinned_url(url, pinned_ip)
+    try:
+        resp = await federation_service._client.get(
+            pinned_url,
+            timeout=10.0,
+            headers={"Host": original_host},
+            extensions={"sni_hostname": original_host},
+        )
         resp.raise_for_status()
         data = resp.json()
         public_key = data.get("public_key")

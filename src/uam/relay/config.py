@@ -17,6 +17,15 @@ class Settings:
         # existing bearer token (or a dual-pepper rolling rotation, which
         # is deferred per 43-RESEARCH.md Open Question 1).
         self.token_pepper: str = self._require("UAM_TOKEN_PEPPER")
+        # T6.5 Phase 46: relay_domain — in production, env var MUST be set
+        # explicitly (default 'youam.network' would falsely claim production
+        # identity in federation signing).
+        if Settings._is_production() and "UAM_RELAY_DOMAIN" not in os.environ:
+            raise RuntimeError(
+                "UAM_RELAY_DOMAIN must be set explicitly in production "
+                "(UAM_ENV=production). The default 'youam.network' would "
+                "falsely claim production identity in federation signing."
+            )
         self.relay_domain: str = os.getenv("UAM_RELAY_DOMAIN", "youam.network")
         self.relay_ws_url: str = os.getenv(
             "UAM_RELAY_WS_URL", "wss://relay.youam.network/ws"
@@ -27,7 +36,30 @@ class Settings:
         self.database_path: str = os.getenv("UAM_DB_PATH", "relay.db")
         self.host: str = os.getenv("UAM_HOST", "0.0.0.0")
         self.port: int = int(os.getenv("UAM_PORT", "8000"))
-        self.cors_origins: str = os.getenv("UAM_CORS_ORIGINS", "*")
+        # T6.5 Phase 46: cors_origins — in production, refuse "*" wildcard.
+        # Wildcard CORS exposes authenticated endpoints to JS on any origin.
+        cors_raw = os.getenv("UAM_CORS_ORIGINS", "*")
+        if Settings._is_production() and cors_raw.strip() == "*":
+            raise RuntimeError(
+                "UAM_CORS_ORIGINS='*' refused in production "
+                "(UAM_ENV=production). Set an explicit comma-separated "
+                "allow-list of origins (e.g. 'https://app.example.com')."
+            )
+        self.cors_origins: str = cors_raw
+        # T6.1 Phase 46: HTTP body-size cap (1 MiB default — fits vCard PHOTO base64 + slack)
+        self.max_http_body_bytes: int = int(
+            os.getenv("UAM_MAX_HTTP_BODY_BYTES", str(1024 * 1024))
+        )
+        # T6.1 Phase 46: trusted-proxy CIDR allow-list (comma-separated, "" = no proxies)
+        # When empty, TrustedProxyMiddleware short-circuits and request.client.host
+        # is the actual TCP peer IP. Set this in production behind any LB.
+        # T6.5 Phase 46: in production, env var MUST be set explicitly (use empty
+        # string '' to declare 'no trusted proxies'). This prevents silent
+        # XFF-spoofing if an operator deploys to prod without thinking about
+        # proxy trust at all.
+        self.trusted_proxies: str = self._require_explicit_in_production(
+            "UAM_TRUSTED_PROXIES"
+        )
         self.log_level: str = os.getenv("UAM_LOG_LEVEL", "INFO").upper()
         self.debug: bool = os.getenv("UAM_DEBUG", "").lower() in ("1", "true", "yes")
         self.domain_verification_ttl_hours: int = int(
@@ -104,6 +136,37 @@ class Settings:
                 f"python -c 'import secrets; print(secrets.token_urlsafe(48))'"
             )
         return v
+
+    @staticmethod
+    def _is_production() -> bool:
+        """True if UAM_ENV=production. Default 'development' (safe-by-default).
+
+        T6.5 Phase 46: opt-in production gate. Operators must EXPLICITLY set
+        UAM_ENV=production to enable strict required-secrets checks.
+        """
+        return os.getenv("UAM_ENV", "development").lower() == "production"
+
+    @staticmethod
+    def _require_explicit_in_production(name: str) -> str:
+        """In production, the env var MUST be set explicitly (even to empty
+        string). In development, returns the value or empty string.
+
+        T6.5 Phase 46: Distinction vs ``_require``: this helper allows empty
+        string in production (e.g. ``UAM_TRUSTED_PROXIES=''`` declares 'no
+        trusted proxies'). ``_require`` rejects empty string and requires a
+        non-empty value. Use this for fields where 'empty is a valid choice
+        the operator must explicitly make' (e.g. trusted_proxies CIDR list).
+        """
+        if Settings._is_production():
+            if name not in os.environ:
+                raise RuntimeError(
+                    f"Required env var {name} is not set in production "
+                    f"(UAM_ENV=production). Set explicitly — use empty string "
+                    f"'' to declare no value (e.g. {name}='' = explicitly no "
+                    f"entries). This prevents silent misconfiguration when "
+                    f"deploying to prod without thinking about this setting."
+                )
+        return os.getenv(name, "")
 
 
 # ---------------------------------------------------------------------------
