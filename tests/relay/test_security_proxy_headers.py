@@ -134,6 +134,11 @@ def test_register_rate_limits_per_real_ip(tmp_path):
 
     With a trusted-proxy configuration, 6 register requests from spoofed
     XFF IP A hit the 5/min bucket, but IP B's first request is still fresh.
+
+    Phase 48-00 inherited test-fix (Group 3): agent names use hyphens
+    instead of underscores. RegisterRequest.agent_name pattern is
+    ``^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$`` — underscores fail the
+    Pydantic regex with 422 BEFORE rate limiting fires.
     """
     os.environ["UAM_DB_PATH"] = str(tmp_path / "px.db")
     os.environ["UAM_RELAY_DOMAIN"] = "test.local"
@@ -149,7 +154,7 @@ def test_register_rate_limits_per_real_ip(tmp_path):
                 r = c.post(
                     "/api/v1/register",
                     json={
-                        "agent_name": f"ipa_{i}",
+                        "agent_name": f"ipa-{i}",
                         "public_key": serialize_verify_key(vk),
                     },
                     headers={"X-Forwarded-For": "198.51.100.1"},
@@ -164,7 +169,7 @@ def test_register_rate_limits_per_real_ip(tmp_path):
             r_b = c.post(
                 "/api/v1/register",
                 json={
-                    "agent_name": "ipb_0",
+                    "agent_name": "ipb-0",
                     "public_key": serialize_verify_key(vk_b),
                 },
                 headers={"X-Forwarded-For": "198.51.100.2"},
@@ -178,7 +183,11 @@ def test_register_rate_limits_per_real_ip(tmp_path):
 
 
 def test_register_rate_limits_per_proxy_ip_when_untrusted(tmp_path):
-    """Without trusted proxies, all XFF-spoofed requests share one bucket."""
+    """Without trusted proxies, all XFF-spoofed requests share one bucket.
+
+    Phase 48-00 inherited test-fix (Group 3): same hyphens-not-underscores
+    fix as the sibling test above.
+    """
     os.environ["UAM_DB_PATH"] = str(tmp_path / "px2.db")
     os.environ["UAM_RELAY_DOMAIN"] = "test.local"
     os.environ["UAM_TRUSTED_PROXIES"] = ""  # nothing trusted
@@ -192,7 +201,7 @@ def test_register_rate_limits_per_proxy_ip_when_untrusted(tmp_path):
                 r = c.post(
                     "/api/v1/register",
                     json={
-                        "agent_name": f"spoof_{i}",
+                        "agent_name": f"spoof-{i}",
                         "public_key": serialize_verify_key(vk),
                     },
                     headers={"X-Forwarded-For": f"198.51.100.{i + 1}"},

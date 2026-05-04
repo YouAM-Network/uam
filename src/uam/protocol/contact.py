@@ -7,7 +7,9 @@ so that any recipient can verify authenticity using the embedded public key.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from nacl.signing import SigningKey
@@ -23,6 +25,8 @@ from uam.protocol.crypto import (
 )
 from uam.protocol.errors import InvalidContactCardError
 from uam.protocol.types import UAM_VERSION
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -46,6 +50,11 @@ class ContactCard:
     # the card's signature.  Presence of this field signals v0.2 capability;
     # the version string stays at UAM_VERSION ("0.1") for now.
     relays: Optional[list[str]] = None
+    # Phase 48 (Q2) -- ISO-8601 UTC expiry. ``None`` = transitional (treated
+    # as ``imported_at + 365d`` by ``check_card_expiry``). Included in
+    # ``_build_signable_dict`` so an attacker cannot extend a captured
+    # card's expiry by editing this field.
+    not_after: Optional[str] = None
 
 
 def _build_signable_dict(card: ContactCard) -> dict:
@@ -67,6 +76,11 @@ def _build_signable_dict(card: ContactCard) -> dict:
         d["system"] = card.system
     if card.connection_endpoint is not None:
         d["connection_endpoint"] = card.connection_endpoint
+    # Phase 48 (Q2) -- include not_after BEFORE verified_domain so the trailing
+    # verified_domain block remains the last addition (mirrors historical
+    # ordering documented in 48-00 SUMMARY hint).
+    if card.not_after is not None:
+        d["not_after"] = card.not_after
     if card.verified_domain is not None:
         d["verified_domain"] = card.verified_domain
     return d
@@ -85,6 +99,8 @@ def contact_card_to_dict(card: ContactCard) -> dict:
         d["fingerprint"] = card.fingerprint
     if card.relays is not None:
         d["relays"] = card.relays
+    if card.not_after is not None:
+        d["not_after"] = card.not_after
     return d
 
 
@@ -118,6 +134,7 @@ def contact_card_from_dict(d: dict, *, verify: bool = True) -> ContactCard:
         payload_formats=d.get("payload_formats"),
         fingerprint=d.get("fingerprint"),
         relays=d.get("relays"),
+        not_after=d.get("not_after"),  # Phase 48 (Q2)
     )
 
     if verify:
@@ -138,6 +155,7 @@ def create_contact_card(
     verified_domain: str | None = None,
     payload_formats: list[str] | None = None,
     relays: list[str] | None = None,
+    not_after: str | None = None,
 ) -> ContactCard:
     """Create a self-signed contact card.
 
@@ -174,9 +192,10 @@ def create_contact_card(
         payload_formats=payload_formats,
         fingerprint=fp,
         relays=relays,
+        not_after=not_after,
     )
 
-    # Sign (payload_formats and fingerprint are NOT in signable dict)
+    # Sign (payload_formats and fingerprint are NOT in signable dict; not_after IS)
     signable = _build_signable_dict(temp_card)
     signature = sign_message(canonicalize(signable), signing_key)
 
@@ -195,6 +214,7 @@ def create_contact_card(
         payload_formats=payload_formats,
         fingerprint=fp,
         relays=relays,
+        not_after=not_after,
     )
 
 
@@ -217,3 +237,65 @@ def verify_contact_card(card: ContactCard) -> None:
     # Verify signature
     signable = _build_signable_dict(card)
     verify_signature(canonicalize(signable), card.signature, vk)
+
+
+def check_card_expiry(
+    card: ContactCard,
+    *,
+    now: Optional[datetime] = None,
+    transitional_ttl: timedelta = timedelta(days=365),
+    imported_at: Optional[datetime] = None,
+) -> None:
+    """Raise :class:`ContactCardExpired` if the card has expired.
+
+    Phase 48 (Q2) -- Transitional behavior: cards without ``not_after`` are
+    treated as ``imported_at + transitional_ttl`` (default 365 days). A
+    WARNING is logged on every transitional encounter so operators see the
+    upgrade pressure.
+
+    Args:
+        card: The contact card to check.
+        now: Optional override for the current UTC time (defaults to now).
+        transitional_ttl: How long to treat a card-without-``not_after`` as
+            valid after import (default 365d).
+        imported_at: When this card was first imported. Required to apply
+            the transitional TTL; if absent, transitional cards are
+            considered valid indefinitely (only a WARNING is emitted).
+
+    Raises:
+        ContactCardExpired: When the card's ``not_after`` is past, or when
+            the transitional TTL has elapsed since ``imported_at``.
+        ValidationError: When ``not_after`` is present but is not a parseable
+            ISO-8601 timestamp.
+    """
+    from uam.protocol.errors import ContactCardExpired, ValidationError
+
+    now = now or datetime.now(tz=timezone.utc)
+
+    if card.not_after is not None:
+        # Tolerate trailing 'Z' (Python's fromisoformat accepts it on 3.11+
+        # but we replace defensively for older runtimes / consistency).
+        iso = card.not_after.replace("Z", "+00:00")
+        try:
+            not_after = datetime.fromisoformat(iso)
+        except ValueError as exc:
+            raise ValidationError(
+                f"contact card {card.address!r} has invalid not_after "
+                f"{card.not_after!r}: {exc}"
+            ) from exc
+        if now > not_after:
+            raise ContactCardExpired(card.address, card.not_after)
+        return
+
+    # Transitional path: absent not_after.
+    logger.warning(
+        "Contact card for %s has no not_after; treating as transitional "
+        "(TTL %s). Card SHOULD be re-issued with an explicit not_after.",
+        card.address,
+        transitional_ttl,
+    )
+    if imported_at is not None and now > imported_at + transitional_ttl:
+        raise ContactCardExpired(
+            card.address,
+            (imported_at + transitional_ttl).isoformat().replace("+00:00", "Z"),
+        )

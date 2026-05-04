@@ -196,10 +196,27 @@ class TestWebSocketExpiry:
 
 @pytest.fixture()
 async def db_session():
-    """Create an in-memory async engine with SQLModel tables and yield a session."""
+    """Create an in-memory async engine with SQLModel tables and yield a session.
+
+    Phase 48-00 (inherited from 47-11): seed parent agents
+    ``alice::test.local`` and ``bob::test.local`` BEFORE yielding so the
+    ``messages`` rows that reference them as ``from_addr/to_addr`` satisfy
+    the alembic 0006 FOREIGN KEY constraint enforced by the autouse
+    ``_install_sqlite_fk_listener`` fixture (PRAGMA foreign_keys=ON).
+    """
+    from sqlalchemy import text
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
     async with engine.begin() as conn:
         await conn.run_sync(SQLModel.metadata.create_all)
+        # Seed FK-target parent agents (mirror tests/db/conftest.py::seed_agents).
+        for addr in ("alice::test.local", "bob::test.local"):
+            await conn.execute(text(
+                "INSERT OR IGNORE INTO agents "
+                "(address, public_key, token_hash, status, "
+                " created_at, updated_at) "
+                "VALUES (:addr, 'fixture-pk', :hsh, 'active', "
+                "        datetime('now'), datetime('now'))"
+            ), {"addr": addr, "hsh": f"fixture-hash-{addr}"})
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with factory() as sess:
         yield sess

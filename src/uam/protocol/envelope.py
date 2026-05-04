@@ -24,6 +24,7 @@ from uam.protocol.crypto import (
 )
 from uam.protocol.errors import EnvelopeTooLargeError, InvalidEnvelopeError
 from uam.protocol.types import MAX_ENVELOPE_SIZE, UAM_VERSION, MessageType, utc_timestamp
+from uam.protocol.versioning import check_version
 
 from nacl.signing import SigningKey, VerifyKey
 
@@ -111,8 +112,22 @@ def from_wire_dict(d: dict) -> MessageEnvelope:
     """Restore an envelope from a wire-format dict.
 
     Raises:
-        InvalidEnvelopeError: If any required field is missing.
+        InvalidEnvelopeError: If ``uam_version`` is missing, or any other
+            required field is missing.
+        IncompatibleVersionError: If the envelope's MAJOR version is not in
+            :data:`uam.protocol.versioning.SUPPORTED_MAJOR_VERSIONS`.
+        ValidationError: If ``uam_version`` has malformed shape.
     """
+    # Phase 48 Q4 — Reject unknown MAJOR versions BEFORE the required-fields
+    # check so version mismatches surface even when other fields are bogus
+    # (peer-relay version negotiation runs before any other parsing). The
+    # missing-uam_version path raises InvalidEnvelopeError (caller-friendly,
+    # consistent with the existing missing-fields error type) instead of the
+    # bare KeyError that ``d["uam_version"]`` would raise.
+    if "uam_version" not in d:
+        raise InvalidEnvelopeError("Missing required field: 'uam_version'")
+    check_version(d["uam_version"])
+
     missing = _REQUIRED_WIRE_FIELDS - set(d.keys())
     if missing:
         raise InvalidEnvelopeError(f"Missing required fields: {sorted(missing)}")

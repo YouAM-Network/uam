@@ -8,5 +8,10 @@ every route's request.client.host sees the real client IP.
 
 from uam.relay.middleware.body_size import BodySizeLimitMiddleware
 from uam.relay.middleware.proxy_headers import TrustedProxyMiddleware
+from uam.relay.middleware.request_id import RequestIDMiddleware
 
-__all__ = ["BodySizeLimitMiddleware", "TrustedProxyMiddleware"]
+__all__ = [
+    "BodySizeLimitMiddleware",
+    "TrustedProxyMiddleware",
+    "RequestIDMiddleware",
+]

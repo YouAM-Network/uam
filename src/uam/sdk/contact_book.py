@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 import aiosqlite
 
+from uam.protocol.contact import ContactCard, check_card_expiry, verify_contact_card
 from uam.protocol.errors import KeyPinningError
 
 logger = logging.getLogger(__name__)
@@ -266,6 +269,70 @@ class ContactBook:
         )
         await self._db.commit()
         self._known_addresses.add(address)
+
+    async def import_card(
+        self,
+        card: ContactCard,
+        *,
+        trust_state: str = "trusted",
+        now: Optional[datetime] = None,
+    ) -> None:
+        """Import a self-signed contact card into the book.
+
+        Phase 48 (Q2) -- Verifies the card's signature, checks expiry, then
+        persists via :meth:`add_contact`. Cards without ``not_after`` fall
+        through the transitional 365d path (see
+        :func:`uam.protocol.contact.check_card_expiry`); the import event
+        anchors the transitional TTL, and a WARNING is logged so operators
+        see upgrade pressure.
+
+        ``trust_source`` is set to ``"import_card:<iso-utc>"`` to provide a
+        forensic record of when this card was first imported. The existing
+        ``trust_source`` text column is repurposed -- no schema migration
+        is required.
+
+        Args:
+            card: A deserialized :class:`ContactCard` (e.g. via
+                :func:`contact_card_from_dict`).
+            trust_state: Initial trust state to record (default ``"trusted"``).
+            now: Test override for the current UTC time.
+
+        Raises:
+            SignatureVerificationError: The card signature does not verify.
+            ContactCardExpired: The card's ``not_after`` is past, or the
+                transitional TTL has elapsed since import.
+            KeyPinningError: An existing pinned/verified contact under this
+                address has a different ``public_key`` (propagated from
+                :meth:`add_contact`; pass ``force=True`` via a future rotation
+                API to override).
+            RuntimeError: ContactBook is not open.
+        """
+        if self._db is None:
+            raise RuntimeError("ContactBook not open. Call open() first.")
+
+        # 1) Verify signature first -- raises SignatureVerificationError on
+        #    bad sig (the card is untrusted input from the network).
+        verify_contact_card(card)
+
+        # 2) Check expiry -- raises ContactCardExpired on past not_after.
+        #    For transitional cards (no not_after) we anchor the 365d TTL at
+        #    this import event so future check_card_expiry calls measure
+        #    age from "first seen by this book".
+        now = now or datetime.now(tz=timezone.utc)
+        check_card_expiry(card, now=now, imported_at=now)
+
+        # 3) Persist via the existing add_contact path (preserves the
+        #    pinned-overwrite gate from Phase 43 T1.3).
+        imported_at_iso = now.isoformat().replace("+00:00", "Z")
+        await self.add_contact(
+            address=card.address,
+            public_key=card.public_key,
+            display_name=card.display_name,
+            trust_state=trust_state,
+            trust_source=f"import_card:{imported_at_iso}",
+            relay=card.relay,
+            relays=card.relays,
+        )
 
     async def list_contacts(self) -> list[dict]:
         """Return all contacts with address, display_name, trust_state, first_seen, last_seen."""

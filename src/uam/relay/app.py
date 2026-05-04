@@ -172,16 +172,26 @@ async def _retention_worker_loop(app: FastAPI) -> None:
 
     Step 1 is handled by _expired_message_sweep_loop (every 5 min).
     This worker handles step 2 (every 1 hour).
+
+    Phase 48 Q5: in addition to the 90-day catch-all above, also runs the
+    per-category sweep from :mod:`uam.relay.retention` (delivered=1d,
+    undelivered=7d, fed_nonces=1h, demo=1h, challenges=5min — all env-
+    tunable). The two layers are independent: the catch-all guarantees a
+    hard upper bound; the per-category sweeps keep hot tables tighter.
+    A failure in either layer logs and the loop continues to the next
+    iteration.
     """
     from uam.db.crud.messages import purge_expired
     from uam.db.retry import is_transient_error
     from uam.db.session import async_session_factory
     from uam.db.engine import get_engine
+    from uam.relay.retention import run_retention_sweep
 
     retention_days = int(os.environ.get("MESSAGE_RETENTION_DAYS", str(_DEFAULT_RETENTION_DAYS)))
 
     while True:
         await asyncio.sleep(_RETENTION_PURGE_INTERVAL)
+        # Phase 36 catch-all (90d soft-deleted/expired/delivered).
         try:
             factory = async_session_factory(get_engine())
             async with factory() as session:
@@ -193,6 +203,17 @@ async def _retention_worker_loop(app: FastAPI) -> None:
                 logger.warning("Transient DB error in retention worker, will retry next cycle: %s", exc)
             else:
                 logger.exception("Error in retention worker loop")
+
+        # Phase 48 Q5 per-category sweeps (independent failure modes —
+        # ``run_retention_sweep`` already isolates each category in its
+        # own session). Wrapped in an outer try/except so any unexpected
+        # error in the dispatch path itself does not break the loop.
+        try:
+            factory = async_session_factory(get_engine())
+            results = await run_retention_sweep(factory)
+            logger.info("Retention per-category sweep: %s", results)
+        except Exception:
+            logger.exception("Error in per-category retention sweep")
 
 
 # How often to sweep expired reservations (seconds)
@@ -462,6 +483,27 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     yield
 
+    # ===== POST-YIELD TEARDOWN =====
+
+    # Phase 48 Q7 — graceful drain BEFORE cancelling background tasks.
+    # 1. Sets app.state.drain_manager.draining (DrainBlockMiddleware starts
+    #    returning 503 + Retry-After:30 for non-/health paths).
+    # 2. Broadcasts {"type":"shutdown","drain_seconds":N} to every connected
+    #    WS via ConnectionManager.send_to (Phase 44 LockedWebSocket -> per-
+    #    connection lock; gather(return_exceptions=True) tolerates dead WS).
+    # 3. Sleeps drain_seconds (default 15s, env UAM_DRAIN_SECONDS) so well-
+    #    behaved clients can disconnect cleanly.
+    # Failures here are logged and swallowed — teardown MUST proceed even
+    # if drain misbehaves (e.g. ConnectionManager already torn down).
+    try:
+        await app.state.drain_manager.begin_drain(app.state.manager)
+    except AttributeError:
+        # Defensive — older test setups may not have wired both pieces.
+        logger.warning("shutdown.no_connection_manager_skipping_drain")
+        app.state.drain_manager.draining.set()
+    except Exception:
+        logger.exception("shutdown.drain_failed_continuing_teardown")
+
     # Cancel federation retry loop (FED-10)
     if federation_retry_task:
         federation_retry_task.cancel()
@@ -550,6 +592,12 @@ def create_app() -> FastAPI:
     if settings.debug:
         logging.getLogger("uam").setLevel(logging.DEBUG)
 
+    # Phase 48 Q6: opt-in JSON logging via UAM_LOG_FORMAT=json. No-op when
+    # the env var is unset/non-json so the basicConfig plain-text format
+    # above remains in effect (RESEARCH OQ4 — backward-compat).
+    from uam.relay.logging_config import configure_logging
+    configure_logging()
+
     app = FastAPI(
         title="UAM Relay",
         version="0.1.0",
@@ -558,6 +606,15 @@ def create_app() -> FastAPI:
 
     # Store settings on app.state so lifespan and routes can access it
     app.state.settings = settings
+
+    # Phase 48 Q7 — graceful drain coordinator. Instantiated here (before
+    # middleware registration) so DrainBlockMiddleware can hold a reference
+    # to the same instance the lifespan teardown calls begin_drain on.
+    # The asyncio.Event inside is created lazily-bound to the running loop
+    # at construct time on Python 3.10+; FastAPI/uvicorn instantiates the
+    # app inside the loop that will serve it, so this is safe.
+    from uam.relay.shutdown import DrainingShutdownManager, DrainBlockMiddleware
+    app.state.drain_manager = DrainingShutdownManager()
 
     # Consistent JSON error shape: {"error": "<code>", "detail": "<message>"}
     _STATUS_TO_ERROR = {
@@ -570,6 +627,14 @@ def create_app() -> FastAPI:
         429: "rate_limited",
         503: "service_unavailable",
     }
+
+    # Phase 48 Q1: central UAMError handler — maps every UAMError subclass to
+    # a consistent (status, code) pair with a stable JSON envelope. Registered
+    # BEFORE the HTTPException / RequestValidationError handlers below; they
+    # cover Starlette/Pydantic types which are NOT UAMError subclasses, so
+    # there is no overlap.
+    from uam.relay.exception_handlers import register_uam_handler
+    register_uam_handler(app)
 
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
@@ -606,17 +671,34 @@ def create_app() -> FastAPI:
         max_bytes=settings.max_http_body_bytes,
     )
 
-    # T6.1 Phase 46: trusted-proxy XFF rewriting (OUTERMOST — added LAST = runs FIRST
-    # on inbound, sees the real TCP peer to decide whether to honor X-Forwarded-For.
-    # Every downstream middleware AND every route's request.client.host then sees
-    # the rewritten IP. Starlette applies user_middleware in reverse-add order, so
-    # the LAST add_middleware call becomes the OUTERMOST layer — do not reorder.)
+    # T6.1 Phase 46: trusted-proxy XFF rewriting. Sees the real TCP peer to
+    # decide whether to honor X-Forwarded-For; every downstream middleware AND
+    # every route's request.client.host then sees the rewritten IP.
+    # Starlette applies user_middleware in reverse-add order, so this used to
+    # be OUTERMOST — Phase 48 Q6 (below) now wraps it so request_id_var is
+    # set before TrustedProxy logs anything. TrustedProxy still runs BEFORE
+    # the route, so request.client.host is unaffected.
     from uam.relay.middleware.proxy_headers import TrustedProxyMiddleware
     _trusted_cidrs = [c.strip() for c in settings.trusted_proxies.split(",") if c.strip()]
     app.add_middleware(
         TrustedProxyMiddleware,
         trusted_cidrs=_trusted_cidrs,
     )
+
+    # Phase 48 Q7: drain block. Returns 503 + Retry-After: 30 for non-/health
+    # paths once app.state.drain_manager.draining is set (from the lifespan
+    # teardown). Added BEFORE RequestIDMiddleware so RequestID remains the
+    # OUTERMOST layer (per 48-05 contract); the 503 response still gets
+    # tagged with the request_id by RequestID's outbound pass.
+    app.add_middleware(DrainBlockMiddleware, drain_manager=app.state.drain_manager)
+
+    # Phase 48 Q6: RequestIDMiddleware OUTERMOST (added LAST = runs FIRST on
+    # inbound) so request_id_var is set BEFORE every other middleware/handler
+    # logs anything. The downstream UAMError handler reads the contextvar via
+    # _safe_get_request_id() to populate the request_id field in error
+    # envelopes, giving client-server log correlation.
+    from uam.relay.middleware.request_id import RequestIDMiddleware
+    app.add_middleware(RequestIDMiddleware)
 
     # REST routes with /api/v1 prefix
     from uam.relay.routes.register import router as register_router

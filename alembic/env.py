@@ -67,7 +67,16 @@ from uam.db.models import *  # noqa: F401, F403, E402
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # Phase 48 (Q2): pass ``disable_existing_loggers=False`` so the
+    # alembic.ini ``[loggers]`` section does not silently disable every
+    # already-imported logger (the default fileConfig behavior). Without
+    # this, calling ``create_app()`` -> alembic migrations during a test
+    # fixture leaves ``uam.protocol.*`` loggers ``disabled=True``, which
+    # breaks pytest ``caplog`` capture for any subsequent test in the same
+    # session. See tests/test_contact.py::
+    # test_card_without_not_after_warns_and_uses_imported_at for the
+    # reproducer that exposed this.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = SQLModel.metadata
 

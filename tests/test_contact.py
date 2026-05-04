@@ -730,3 +730,83 @@ class TestMultiRelay:
         verify_contact_card(restored)
         assert restored.relays == urls
         assert restored == card
+
+
+# ===========================================================================
+# Q2 — ContactCard.not_after expiry tests (Phase 48 Wave 0)
+#
+# RED on purpose: ``not_after`` kwarg + ``check_card_expiry`` helper are added
+# in Wave 1 (48-02). Until then ``create_contact_card(... not_after=...)``
+# raises TypeError and ``from uam.protocol.contact import check_card_expiry``
+# raises ImportError — both are intended Wave 0 red signals.
+# ===========================================================================
+
+from datetime import datetime as _dt2, timedelta as _td2, timezone as _tz2
+
+
+def _build_card_with_not_after(not_after_iso):
+    """Build a signed ContactCard with optional not_after.
+
+    Wave 1 (48-02) will add ``not_after`` to ``ContactCard`` and to
+    ``create_contact_card``'s kwargs (and to ``_build_signable_dict``).
+    Until then this construction call fails with TypeError, which is the
+    intended Wave 0 red.
+    """
+    sk, _vk = generate_keypair()
+    return create_contact_card(
+        address="alice::test.local",
+        display_name="Alice",
+        relay="wss://relay.test",
+        signing_key=sk,
+        not_after=not_after_iso,  # NEW kwarg in Wave 1
+    )
+
+
+def test_card_expired_raises():
+    past = (_dt2.now(_tz2.utc) - _td2(days=1)).isoformat().replace("+00:00", "Z")
+    card = _build_card_with_not_after(past)
+    from uam.protocol.contact import check_card_expiry  # NEW in Wave 1
+    from uam.protocol.errors import ContactCardExpired   # NEW in Wave 1
+    with pytest.raises(ContactCardExpired):
+        check_card_expiry(card)
+
+
+def test_card_not_expired_passes():
+    future = (_dt2.now(_tz2.utc) + _td2(days=30)).isoformat().replace("+00:00", "Z")
+    card = _build_card_with_not_after(future)
+    from uam.protocol.contact import check_card_expiry
+    check_card_expiry(card)  # must not raise
+
+
+def test_card_without_not_after_warns_and_uses_imported_at(caplog):
+    card = _build_card_with_not_after(None)
+    from uam.protocol.contact import check_card_expiry
+    imported_at = _dt2.now(_tz2.utc) - _td2(days=10)
+    with caplog.at_level("WARNING"):
+        check_card_expiry(card, imported_at=imported_at)
+    assert any(
+        ("no not_after" in r.message) or ("transitional" in r.message)
+        for r in caplog.records
+    )
+
+
+def test_card_without_not_after_old_imported_at_raises():
+    card = _build_card_with_not_after(None)
+    from uam.protocol.contact import check_card_expiry
+    from uam.protocol.errors import ContactCardExpired
+    imported_at = _dt2.now(_tz2.utc) - _td2(days=400)  # > 365d default
+    with pytest.raises(ContactCardExpired):
+        check_card_expiry(card, imported_at=imported_at)
+
+
+def test_not_after_in_signature_scope():
+    """Mutating not_after on a signed card MUST fail verify (defends against
+    expiry-extension attack — i.e. extending a stale card by editing its
+    expiry without re-signing).
+    """
+    past = (_dt2.now(_tz2.utc) - _td2(days=1)).isoformat().replace("+00:00", "Z")
+    future = (_dt2.now(_tz2.utc) + _td2(days=400)).isoformat().replace("+00:00", "Z")
+    card = _build_card_with_not_after(past)
+    tampered = dataclasses.replace(card, not_after=future)
+    with pytest.raises(SignatureVerificationError):
+        verify_contact_card(tampered)

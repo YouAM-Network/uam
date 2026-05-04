@@ -6,6 +6,10 @@ import os
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlmodel import SQLModel
+
+import uam.db.models  # noqa: F401 -- registers tables with SQLModel.metadata
 
 from uam.protocol import (
     MessageType,
@@ -15,6 +19,53 @@ from uam.protocol import (
     to_wire_dict,
 )
 from uam.relay.app import create_app
+
+
+# ---------------------------------------------------------------------------
+# Phase 48 Q5 (48-04) — local ``session_factory`` fixture for retention tests
+#
+# The ``session_factory`` fixture in ``tests/db/conftest.py`` is not visible
+# to ``tests/relay/`` (pytest only loads conftest.py files from ancestor
+# directories). Wave 0 of Phase 48 noted this gap in 48-00-SUMMARY.md and
+# left the retention contract tests as ``pytest.fail`` stubs. Wave 2 (this
+# plan) ships a sibling fixture so the retention sweep can be exercised
+# against a real file-backed SQLite engine without depending on the
+# ``tests/db/`` ancestry.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def relay_file_engine(tmp_path):
+    """File-backed SQLite async engine with all SQLModel tables created.
+
+    File-backed (not in-memory) so the session_factory below can hand out
+    multiple sessions that see each other's writes — required by the
+    retention sweep, which opens its own session via the factory while the
+    test's setup session has already committed.
+    """
+    db_path = tmp_path / "retention.db"
+    eng = create_async_engine(
+        f"sqlite+aiosqlite:///{db_path}",
+        echo=False,
+        connect_args={"check_same_thread": False, "timeout": 30},
+    )
+    async with eng.begin() as conn:
+        await conn.run_sync(SQLModel.metadata.create_all)
+    yield eng
+    await eng.dispose()
+
+
+@pytest.fixture
+def session_factory(relay_file_engine):
+    """``async_sessionmaker`` callable bound to ``relay_file_engine``.
+
+    Mirrors the ``tests/db/conftest.py`` fixture of the same name so the
+    retention contract tests can call ``run_retention_sweep(session_factory)``
+    just like production code calls ``run_retention_sweep(app.state.session_factory)``.
+    """
+    return async_sessionmaker(
+        relay_file_engine, class_=AsyncSession, expire_on_commit=False
+    )
 
 
 @pytest.fixture()

@@ -1,6 +1,7 @@
 """Health check endpoints for the UAM relay.
 
 - ``GET /health`` — Simple liveness check (no auth).
+- ``GET /api/v1/versions`` — Protocol version policy (no auth, Phase 48 Q4).
 - ``GET /admin/health`` — Comprehensive diagnostics (admin key required).
 """
 
@@ -13,6 +14,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from uam.db.session import get_session
+from uam.protocol.types import UAM_VERSION
+from uam.protocol.versioning import SUPPORTED_MAJOR_VERSIONS
 from uam.relay.models import AdminHealthResponse, HealthResponse
 from uam.relay.routes.admin import verify_admin_key
 
@@ -29,6 +32,24 @@ async def health(request: Request) -> HealthResponse:
         agents_online=manager.online_count,
         version="0.1.0",
     )
+
+
+@router.get("/api/v1/versions")
+async def get_versions() -> dict:
+    """Expose protocol version policy for peer-relay version negotiation.
+
+    Phase 48 Q4 — public endpoint, no auth required. Peer relays call this
+    before attempting federation to discover the supported MAJOR-version set.
+
+    .. note::
+       The ``health_router`` is included into the FastAPI app WITHOUT a
+       ``/api/v1`` prefix (see ``uam.relay.app.create_app``), so the full
+       path is hard-coded here rather than relying on a router prefix.
+    """
+    return {
+        "uam_version": UAM_VERSION,
+        "supported_major_versions": list(SUPPORTED_MAJOR_VERSIONS),
+    }
 
 
 @router.get("/admin/health", response_model=AdminHealthResponse)

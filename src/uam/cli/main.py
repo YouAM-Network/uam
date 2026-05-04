@@ -75,11 +75,39 @@ def _trust_indicator(trust_state: str) -> str:
     default=None,
     help="Agent name (auto-detected from ~/.uam/keys/).",
 )
+@click.option(
+    "--debug",
+    is_flag=True,
+    default=False,
+    help="Show full tracebacks on error (default: friendly one-line message).",
+)
+@click.option(
+    "--json",
+    "json_output",
+    is_flag=True,
+    default=False,
+    help="Emit JSON output for scripting (where supported by the subcommand).",
+)
+@click.option(
+    "--quiet",
+    is_flag=True,
+    default=False,
+    help="Suppress non-essential output.",
+)
 @click.pass_context
-def cli(ctx: click.Context, name: str | None) -> None:
+def cli(
+    ctx: click.Context,
+    name: str | None,
+    debug: bool,
+    json_output: bool,
+    quiet: bool,
+) -> None:
     """UAM -- Universal Agent Messaging CLI."""
     ctx.ensure_object(dict)
     ctx.obj["name"] = name
+    ctx.obj["debug"] = debug
+    ctx.obj["json"] = json_output
+    ctx.obj["quiet"] = quiet
 
 
 # ---------------------------------------------------------------------------

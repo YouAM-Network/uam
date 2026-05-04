@@ -3,20 +3,31 @@
 Tests call the MCP tool functions directly (not via MCP transport)
 with real Agent instances talking to an in-process relay via ASGI.
 This validates the full stack: tool function -> Agent -> relay -> crypto.
+
+Phase 48 (Q9): All tools now return ``{"ok": True, "data": ...}`` or
+``{"ok": False, "error": {"code": ..., "message": ...}}`` dicts (never
+prose strings). The legacy ``_safe_error`` helper has been replaced by
+``_error_envelope`` + ``_error_code``. Existing assertions updated to
+match the new envelope shape.
 """
 
 from __future__ import annotations
 
-import json
 import os
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from uam.mcp import server as mcp_server
-from uam.mcp.server import _safe_error, create_server
+from uam.mcp.server import (
+    NotConfiguredError,
+    _error_code,
+    _error_envelope,
+    _ok_envelope,
+    create_server,
+)
 from uam.protocol.contact import contact_card_from_dict
 from uam.relay.app import create_app
 from uam.sdk.agent import Agent
@@ -149,8 +160,12 @@ class TestUamSend:
                 message="Hello from MCP!",
             )
 
-        assert "Message sent successfully" in result
-        assert "ID:" in result
+        # Phase 48 Q9: success envelope shape.
+        assert isinstance(result, dict)
+        assert result["ok"] is True
+        assert "data" in result
+        assert "message_id" in result["data"]
+        assert isinstance(result["data"]["message_id"], str)
 
         # Verify receiver got the message
         messages = await receiver.inbox()
@@ -164,7 +179,16 @@ class TestUamSend:
     async def test_uam_send_returns_error_on_invalid_address(
         self, relay_app, tmp_path
     ):
-        """Malformed address produces an error string, not an exception."""
+        """Phase 48 Q9: malformed/unresolvable address yields an error envelope.
+
+        The SDK currently raises a generic ``UAMError`` for both shape
+        validation failures and resolver "agent not found" lookups, which
+        both map to the catch-all ``"internal_error"`` code via MRO walk.
+        Assert the envelope shape is correct and the code is one of the
+        expected stable codes -- typed-error refinement (e.g. raising
+        InvalidAddressError specifically for shape violations) is tracked
+        for a future plan (Q1 follow-up).
+        """
         sender = await _make_agent(relay_app, tmp_path, "errbot")
 
         with patch.object(mcp_server, "_agent", sender):
@@ -173,7 +197,21 @@ class TestUamSend:
                 message="This should fail",
             )
 
-        assert result.startswith("Error sending message:")
+        assert isinstance(result, dict)
+        assert result["ok"] is False
+        assert "error" in result
+        # Stable code from the canonical mapping table (mirrors
+        # uam.relay.exception_handlers status map). Until the SDK uses
+        # typed exceptions consistently, the catch-all code is acceptable.
+        assert result["error"]["code"] in {
+            "invalid_address",
+            "validation_error",
+            "internal_error",
+        }
+        assert "message" in result["error"]
+        assert isinstance(result["error"]["message"], str)
+        # No prose-string fallback path -- ensure the entire result is dict-shaped.
+        assert "ok" in result and isinstance(result["ok"], bool)
 
         await sender.close()
 
@@ -198,22 +236,32 @@ class TestUamInbox:
         with patch.object(mcp_server, "_agent", receiver):
             result = await mcp_server.uam_inbox(limit=50)
 
-        assert "From:" in result
-        assert sender.address in result
-        assert "MCP inbox test message" in result
-        assert "--- Message 1/" in result
+        # Phase 48 Q9: success envelope shape with structured message dicts.
+        assert isinstance(result, dict)
+        assert result["ok"] is True
+        assert "data" in result
+        assert isinstance(result["data"], list)
+        assert len(result["data"]) >= 1
+        first = result["data"][0]
+        assert first["from_address"] == sender.address
+        assert first["content"] == "MCP inbox test message"
+        assert "message_id" in first
+        assert "timestamp" in first
+        assert "verified" in first
 
         await sender.close()
         await receiver.close()
 
     async def test_uam_inbox_empty(self, relay_app, tmp_path):
-        """An agent with no pending messages gets 'No pending messages.'"""
+        """Phase 48 Q9: empty inbox returns ``{"ok": True, "data": []}``."""
         agent = await _make_agent(relay_app, tmp_path, "emptybot")
 
         with patch.object(mcp_server, "_agent", agent):
             result = await mcp_server.uam_inbox()
 
-        assert result == "No pending messages."
+        assert isinstance(result, dict)
+        assert result["ok"] is True
+        assert result["data"] == []
 
         await agent.close()
 
@@ -227,13 +275,15 @@ class TestUamContactCard:
     """MCP-03: uam_contact_card tool returns a valid signed contact card."""
 
     async def test_uam_contact_card_returns_valid_json(self, relay_app, tmp_path):
-        """Contact card output is valid JSON with required fields."""
+        """Phase 48 Q9: contact card lives under ``data`` in the success envelope."""
         agent = await _make_agent(relay_app, tmp_path, "cardbot")
 
         with patch.object(mcp_server, "_agent", agent):
             result = await mcp_server.uam_contact_card()
 
-        card = json.loads(result)
+        assert isinstance(result, dict)
+        assert result["ok"] is True
+        card = result["data"]
         assert "version" in card
         assert "address" in card
         assert "display_name" in card
@@ -251,7 +301,9 @@ class TestUamContactCard:
         with patch.object(mcp_server, "_agent", agent):
             result = await mcp_server.uam_contact_card()
 
-        card_dict = json.loads(result)
+        # Phase 48 Q9: card dict is now under result["data"], not json.loads(result).
+        assert result["ok"] is True
+        card_dict = result["data"]
         # contact_card_from_dict with verify=True raises if signature is bad
         card = contact_card_from_dict(card_dict, verify=True)
         assert card.address == agent.address
@@ -278,30 +330,68 @@ class TestCreateServer:
 
 
 # ---------------------------------------------------------------------------
-# Tests: _safe_error (credential sanitisation)
+# Tests: error envelope helpers (Phase 48 Q9)
 # ---------------------------------------------------------------------------
 
 
-class TestSafeError:
-    """Error messages returned to MCP clients must not leak credentials."""
+class TestErrorEnvelope:
+    """Structured error envelope replaces the legacy ``_safe_error`` prose helper.
 
-    def test_safe_type_preserves_message(self):
-        """Known-safe exception types include their message."""
-        err = RuntimeError("Agent not connected")
-        result = _safe_error(err)
-        assert "Agent not connected" in result
-        assert "RuntimeError" in result
+    Phase 48 Q9 -- error codes mirror ``uam.relay.exception_handlers``
+    so MCP and HTTP surfaces report the same code for the same exception.
+    Stable codes are part of the contract; LLM clients match on them.
+    """
 
-    def test_unsafe_type_redacts_message(self):
-        """Unknown exception types get a generic message (no leak)."""
-        err = ConnectionError("https://relay.example.com?token=sk-secret-123")
-        result = _safe_error(err)
-        assert "sk-secret-123" not in result
-        assert "internal error" in result.lower()
-
-    def test_uam_error_preserves_message(self):
-        """UAMError is a safe type and includes its message."""
+    def test_uam_error_maps_to_internal_error(self):
+        """Unmapped UAMError subclasses return the catch-all code."""
         from uam.protocol import UAMError
-        err = UAMError("Agent not found: bob::test.local")
-        result = _safe_error(err)
-        assert "Agent not found" in result
+
+        env = _error_envelope(UAMError("Agent not found: bob::test.local"))
+        assert env["ok"] is False
+        assert env["error"]["code"] == "internal_error"
+        # Message is preserved for diagnostic visibility.
+        assert "Agent not found" in env["error"]["message"]
+
+    def test_invalid_address_error_maps_to_invalid_address(self):
+        """Mapped subclass yields its stable code (mirrors HTTP map)."""
+        from uam.protocol.errors import InvalidAddressError
+
+        assert _error_code(InvalidAddressError("bad")) == "invalid_address"
+
+    def test_validation_error_maps_to_validation_error(self):
+        """ValidationError -> ``validation_error`` (matches HTTP 400 map)."""
+        from uam.protocol.errors import ValidationError
+
+        assert _error_code(ValidationError("bad input")) == "validation_error"
+
+    def test_signature_verification_error_maps_to_signature_invalid(self):
+        """SignatureVerificationError -> ``signature_invalid``."""
+        from uam.protocol.errors import SignatureVerificationError
+
+        assert _error_code(SignatureVerificationError("bad sig")) == "signature_invalid"
+
+    def test_not_configured_error_maps_to_not_configured(self):
+        """MCP-only NotConfiguredError -> ``not_configured`` code."""
+        assert _error_code(NotConfiguredError("UAM_AGENT_NAME unset")) == "not_configured"
+
+    def test_connection_error_maps_to_network_error(self):
+        """Stdlib ConnectionError -> ``network_error`` (transport class)."""
+        assert _error_code(ConnectionError("relay unreachable")) == "network_error"
+
+    def test_unknown_exception_maps_to_internal_error(self):
+        """Anything not in the map degrades to ``internal_error``."""
+        assert _error_code(RuntimeError("surprise")) == "internal_error"
+
+    def test_envelope_message_is_str_not_traceback(self):
+        """T-48-08-01: only ``str(exc)`` leaks to the client; never a traceback."""
+        try:
+            raise ValueError("boom")
+        except ValueError as exc:
+            env = _error_envelope(exc)
+        assert env["error"]["message"] == "boom"
+        assert "Traceback" not in env["error"]["message"]
+
+    def test_ok_envelope_round_trip(self):
+        """``_ok_envelope(payload)`` produces ``{ok: True, data: payload}``."""
+        env = _ok_envelope({"hello": "world"})
+        assert env == {"ok": True, "data": {"hello": "world"}}

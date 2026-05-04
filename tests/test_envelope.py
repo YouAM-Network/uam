@@ -626,3 +626,56 @@ class TestImmutability:
     def test_envelope_is_frozen(self, sample_envelope):
         with pytest.raises(AttributeError):
             sample_envelope.from_address = "eve::youam.network"  # type: ignore[misc]
+
+
+# ===========================================================================
+# Q4 — Envelope from_wire_dict version negotiation (Phase 48 Wave 0)
+#
+# RED on purpose: ``IncompatibleVersionError`` does not exist on this branch
+# (added in Wave 1 / 48-01) and ``from_wire_dict`` does not call
+# ``check_version`` yet (wired in Wave 2 / 48-03).
+# ===========================================================================
+
+
+def _minimal_wire_dict(version: str) -> dict:
+    """Minimal wire shape that satisfies the required-fields check.
+
+    Signature is bogus on purpose — the version-negotiation tests only need
+    to exercise the version-check branch, which must fire BEFORE signature
+    verification (per RESEARCH Pattern 1).
+    """
+    return {
+        "uam_version": version,
+        "message_id": "00000000-0000-0000-0000-000000000000",
+        "from": "alice::test",
+        "to": "bob::test",
+        "timestamp": "2026-01-01T00:00:00Z",
+        "type": "message",
+        # 24 zero bytes b64url-encoded (no padding) = 32-char string
+        "nonce": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "payload": "AAAA",
+        "signature": "AAAA",
+    }
+
+
+def test_from_wire_rejects_unknown_major():
+    from uam.protocol.errors import IncompatibleVersionError  # NEW in Wave 1
+    with pytest.raises(IncompatibleVersionError):
+        from_wire_dict(_minimal_wire_dict("99.0"))
+
+
+def test_from_wire_accepts_unknown_minor():
+    """Unknown MINOR should be accepted permissively.
+
+    May still raise other errors (e.g. signature) but NEVER
+    IncompatibleVersionError for ``0.99``.
+    """
+    from uam.protocol.errors import IncompatibleVersionError
+    try:
+        from_wire_dict(_minimal_wire_dict("0.99"))
+    except IncompatibleVersionError:
+        pytest.fail("Unknown minor on a supported major should be accepted")
+    except Exception:
+        # Other failures (e.g. bogus signature) are fine — we only assert that
+        # version negotiation does not reject ``0.99``.
+        pass

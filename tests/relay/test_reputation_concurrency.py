@@ -52,6 +52,22 @@ async def manager(tmp_path, monkeypatch) -> AsyncIterator[ReputationManager]:
     factory = await init_session_factory(eng)
     await create_tables(eng)
 
+    # Phase 48-00 (inherited from 47-11): seed parent agent BEFORE
+    # ``init_reputation`` runs. The Phase 47 alembic 0006 migration added a
+    # FK from ``reputation.address`` to ``agents.address``; the autouse
+    # ``_install_sqlite_fk_listener`` (tests/db/conftest.py) turns
+    # PRAGMA foreign_keys=ON for SQLite so the FK actually fires. Without
+    # this seed the reputation INSERT fails with IntegrityError.
+    from sqlalchemy import text
+    async with eng.begin() as conn:
+        await conn.execute(text(
+            "INSERT OR IGNORE INTO agents "
+            "(address, public_key, token_hash, status, "
+            " created_at, updated_at) "
+            "VALUES (:addr, 'fixture-pk', :hsh, 'active', "
+            "        datetime('now'), datetime('now'))"
+        ), {"addr": ADDR, "hsh": f"fixture-hash-{ADDR}"})
+
     async with factory() as session:
         await init_reputation(session, ADDR, score=50)
         await session.commit()

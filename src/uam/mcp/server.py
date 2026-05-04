@@ -18,14 +18,26 @@ Configuration via environment variables:
   - ``UAM_DISPLAY_NAME`` (optional) -- display name override
   - ``UAM_TRANSPORT`` (optional, default ``"http"``) -- transport type
   - ``UAM_TRUST_POLICY`` (optional, default ``"auto-accept"``) -- trust policy
+
+Phase 48 (Q9) -- Structured response envelope.
+================================================
+Every tool returns a dict, never a prose string. Shape:
+
+  Success: ``{"ok": True, "data": <payload>}``
+  Failure: ``{"ok": False, "error": {"code": "<stable_code>", "message": "<msg>"}}``
+
+Error codes mirror the HTTP status map in
+:mod:`uam.relay.exception_handlers` for cross-surface consistency. The
+MCP-only ``"not_configured"`` code is added for the "no agent set up"
+path, which has no HTTP analog.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
+from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
@@ -34,18 +46,93 @@ from uam.sdk.agent import Agent
 logger = logging.getLogger(__name__)
 
 
-def _safe_error(exc: Exception) -> str:
-    """Return a sanitised error string that never leaks credentials.
+# ===========================================================================
+# Phase 48 (Q9) -- Structured error envelope.
+# ===========================================================================
 
-    Only exposes the exception class name and a generic description.
-    The full traceback is logged server-side via logger.exception().
+
+class NotConfiguredError(Exception):
+    """No active UAM agent configured for this MCP session.
+
+    MCP-only sentinel exception; deliberately does NOT inherit from
+    UAMError so it cannot accidentally be caught by FastAPI's central
+    UAMError handler (which is HTTP-only). T-48-08-03.
     """
-    cls = type(exc).__name__
-    # Allow through known-safe error types with their message
-    safe_types = ("UAMError", "RuntimeError", "ValueError", "TimeoutError")
-    if cls in safe_types:
-        return f"{cls}: {exc}"
-    return f"{cls}: An internal error occurred. Check server logs for details."
+
+
+def _error_code(exc: Exception) -> str:
+    """Resolve a stable error code by walking the exception's MRO.
+
+    Mirrors the HTTP status map in :mod:`uam.relay.exception_handlers`
+    so an MCP client and an HTTP client see the SAME ``code`` value for
+    the same underlying exception type.
+
+    Returns ``"not_configured"`` for the MCP-only NotConfiguredError,
+    ``"network_error"`` for stdlib transport errors, and falls back to
+    ``"internal_error"`` for everything else (T-48-08-01: never leaks
+    class names of unmapped types into the envelope).
+    """
+    # Lazy import to avoid pulling protocol.errors at module load time.
+    from uam.protocol.errors import (
+        ContactCardExpired,
+        EnvelopeExpiredError,
+        EnvelopeTooLargeError,
+        IncompatibleVersionError,
+        InvalidAddressError,
+        InvalidContactCardError,
+        InvalidEnvelopeError,
+        KeyPinningError,
+        ReplayDetected,
+        SignatureVerificationError,
+        UAMError,
+        ValidationError,
+    )
+
+    # Most specific subclasses first; MRO walk picks the first match.
+    _MAP: dict[type, str] = {
+        ContactCardExpired: "contact_card_expired",
+        IncompatibleVersionError: "incompatible_version",
+        EnvelopeTooLargeError: "envelope_too_large",
+        InvalidContactCardError: "invalid_contact_card",
+        InvalidAddressError: "invalid_address",
+        InvalidEnvelopeError: "invalid_envelope",
+        EnvelopeExpiredError: "envelope_expired",
+        ValidationError: "validation_error",
+        SignatureVerificationError: "signature_invalid",
+        KeyPinningError: "key_pinning_violation",
+        ReplayDetected: "replay_detected",
+    }
+    for cls in type(exc).__mro__:
+        if cls in _MAP:
+            return _MAP[cls]
+    if isinstance(exc, NotConfiguredError):
+        return "not_configured"
+    if isinstance(exc, (ConnectionError, TimeoutError)):
+        return "network_error"
+    if isinstance(exc, UAMError):
+        return "internal_error"
+    return "internal_error"
+
+
+def _error_envelope(exc: Exception) -> dict[str, Any]:
+    """Build the ``{ok: false, error: {code, message}}`` envelope.
+
+    Logs the exception server-side at WARNING; never leaks a traceback
+    into the LLM-visible message (T-48-08-01).
+    """
+    logger.warning("MCP error: %s", exc)
+    return {
+        "ok": False,
+        "error": {
+            "code": _error_code(exc),
+            "message": str(exc),
+        },
+    }
+
+
+def _ok_envelope(data: Any) -> dict[str, Any]:
+    """Build the ``{ok: true, data: ...}`` success envelope."""
+    return {"ok": True, "data": data}
 
 
 # Module-level cached Agent instance (lazy-initialized).
@@ -62,6 +149,10 @@ async def _get_agent() -> Agent:
     acquiring the lock; slow-path acquires ``_agent_lock``, re-checks the cached
     value, then constructs + connects if needed. Concurrent FastMCP tool
     invocations all share the same Agent instance.
+
+    Raises:
+        NotConfiguredError: when ``UAM_AGENT_NAME`` is unset. Mapped to
+            error code ``"not_configured"`` by ``_error_code``.
     """
     global _agent
 
@@ -76,7 +167,7 @@ async def _get_agent() -> Agent:
 
         name = os.environ.get("UAM_AGENT_NAME")
         if not name:
-            raise RuntimeError(
+            raise NotConfiguredError(
                 "UAM_AGENT_NAME environment variable is required. "
                 "Set it to the agent name before starting the MCP server."
             )
@@ -117,7 +208,7 @@ async def uam_send(
     to_address: str,
     message: str,
     thread_id: str | None = None,
-) -> str:
+) -> dict[str, Any]:
     """Send an encrypted, signed UAM message to another agent.
 
     Args:
@@ -126,67 +217,96 @@ async def uam_send(
         thread_id: Optional thread ID for conversation threading.
 
     Returns:
-        A confirmation string with the message ID, or an error description.
+        Envelope dict.
+
+        Success::
+
+            {"ok": True, "data": {"message_id": "<uuid>"}}
+
+        Failure::
+
+            {"ok": False, "error": {"code": "<stable_code>", "message": "..."}}
+
+        Common error codes: ``invalid_address``, ``not_configured``,
+        ``signature_invalid``, ``network_error``, ``internal_error``.
     """
     try:
         agent = await _get_agent()
         message_id = await agent.send(to_address, message, thread_id=thread_id)
-        return f"Message sent successfully. ID: {message_id}"
+        return _ok_envelope({"message_id": str(message_id)})
     except Exception as exc:
-        logger.exception("uam_send failed")
-        return f"Error sending message: {_safe_error(exc)}"
+        return _error_envelope(exc)
 
 
-async def uam_inbox(limit: int = 50) -> str:
+async def uam_inbox(limit: int = 50) -> dict[str, Any]:
     """Retrieve and decrypt pending UAM messages.
 
     Args:
         limit: Maximum number of messages to retrieve (default 50).
 
     Returns:
-        Formatted message list, "No pending messages.", or an error description.
+        Envelope dict.
+
+        Success::
+
+            {"ok": True, "data": [{"message_id": ..., "from_address": ...,
+                                   "to_address": ..., "content": ...,
+                                   "timestamp": ..., "type": ...,
+                                   "thread_id": ..., "reply_to": ...,
+                                   "media_type": ..., "verified": ...}, ...]}
+
+        Empty inbox: ``{"ok": True, "data": []}``.
+
+        Failure: standard error envelope.
     """
     try:
         agent = await _get_agent()
         messages = await agent.inbox(limit=limit)
-
-        if not messages:
-            return "No pending messages."
-
-        total = len(messages)
-        parts: list[str] = []
-        for i, msg in enumerate(messages, 1):
-            parts.append(
-                f"--- Message {i}/{total} ---\n"
-                f"From: {msg.from_address}\n"
-                f"Time: {msg.timestamp}\n"
-                f"Type: {msg.type}\n"
-                f"Thread: {msg.thread_id or 'none'}\n"
-                f"Content: {msg.content}"
-            )
-        return "\n\n".join(parts)
+        data = [
+            {
+                "message_id": msg.message_id,
+                "from_address": msg.from_address,
+                "to_address": msg.to_address,
+                "content": msg.content,
+                "timestamp": msg.timestamp,
+                "type": msg.type,
+                "thread_id": msg.thread_id,
+                "reply_to": msg.reply_to,
+                "media_type": msg.media_type,
+                "verified": msg.verified,
+            }
+            for msg in messages
+        ]
+        return _ok_envelope(data)
     except Exception as exc:
-        logger.exception("uam_inbox failed")
-        return f"Error checking inbox: {_safe_error(exc)}"
+        return _error_envelope(exc)
 
 
-async def uam_contact_card() -> str:
+async def uam_contact_card() -> dict[str, Any]:
     """Get a signed contact card for this agent.
 
-    Returns the agent's contact card as a JSON string containing
+    Returns the agent's contact card as a structured dict containing
     address, public key, relay endpoint, and a cryptographic signature.
     Share this with other agents so they can verify your identity.
 
     Returns:
-        JSON string of the signed contact card, or an error description.
+        Envelope dict.
+
+        Success::
+
+            {"ok": True, "data": {"version": ..., "address": ...,
+                                  "display_name": ..., "relay": ...,
+                                  "public_key": ..., "signature": ...,
+                                  ...}}
+
+        Failure: standard error envelope.
     """
     try:
         agent = await _get_agent()
         card = agent.contact_card()
-        return json.dumps(card, indent=2)
+        return _ok_envelope(card)
     except Exception as exc:
-        logger.exception("uam_contact_card failed")
-        return f"Error generating contact card: {_safe_error(exc)}"
+        return _error_envelope(exc)
 
 
 # ---------------------------------------------------------------------------
