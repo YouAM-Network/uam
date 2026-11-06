@@ -1,0 +1,108 @@
+# Release: publish to PyPI and npm with trusted publishing (no stored tokens).
+#
+# Lives in the PUBLIC repo youam-network/uam at .github/workflows/release.yml.
+# The private-to-public sync keeps the public repo's .github as it is, so this
+# file is changed here, by PR on the public repo.
+#
+#   v1.0.1          -> builds and publishes the `youam` Python package to PyPI
+#   ts-sdk-v0.2.1   -> builds, tests and publishes `@youam/sdk` to npm
+#
+# Each publish job runs in a GitHub environment (pypi, npm) limited to its tag
+# pattern, with Amir as required reviewer. PyPI and npm each trust exactly
+# this repo + this file + that environment.
+
+name: Release
+
+on:
+  push:
+    tags: ['v*', 'ts-sdk-v*']
+
+permissions:
+  contents: read
+
+jobs:
+  python-build:
+    name: Build youam
+    if: startsWith(github.ref_name, 'v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check the tag matches the package version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          meta=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
+          code=$(python -c "import re; print(re.search(r'__version__\s*=\s*\"([^\"]+)\"', open('src/uam/__init__.py').read()).group(1))")
+          echo "tag=$tag pyproject=$meta __version__=$code"
+          [ "$tag" = "$meta" ] && [ "$tag" = "$code" ]
+      - name: Build
+        run: |
+          pip install --upgrade build twine
+          python -m build
+          twine check --strict dist/*
+      - name: Check the wheel contains only public code
+        run: |
+          if python -m zipfile -l dist/*.whl | grep -E 'uam/registrar/'; then
+            echo "private code in the wheel"; exit 1
+          fi
+      - name: Install the wheel and import it
+        run: |
+          python -m venv /tmp/smoke
+          /tmp/smoke/bin/pip install dist/*.whl
+          /tmp/smoke/bin/python -c "import uam, sys; assert uam.__version__ == sys.argv[1], uam.__version__" "${GITHUB_REF_NAME#v}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-dist
+          path: dist/
+          if-no-files-found: error
+
+  python-publish:
+    name: Publish youam to PyPI
+    needs: python-build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/youam/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  npm-publish:
+    name: Publish @youam/sdk to npm
+    if: startsWith(github.ref_name, 'ts-sdk-v')
+    runs-on: ubuntu-latest
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/@youam/sdk
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: ts-sdk
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # Trusted publishing needs Node 22.14+ and npm 11.5.1+.
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+      - run: npm install -g 'npm@^11.5.1'
+      - name: Check the tag matches the package version
+        run: |
+          tag="${GITHUB_REF_NAME#ts-sdk-v}"
+          pkg=$(node -p "require('./package.json').version")
+          echo "tag=$tag package.json=$pkg"
+          [ "$tag" = "$pkg" ]
+      - run: npm ci
+      - run: npm run build
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm publish --access public
