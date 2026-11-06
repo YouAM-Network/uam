@@ -10,6 +10,13 @@
 # Each publish job runs in a GitHub environment (pypi, npm) limited to its tag
 # pattern, with Amir as required reviewer. PyPI and npm each trust exactly
 # this repo + this file + that environment.
+#
+# Build jobs run the package's own code and hold no publish token. Publish jobs
+# hold the token and run only pinned actions on the built artifact.
+#
+# The "tag is on main" check lives in this file, so a tag on another branch
+# could carry a copy without it. The tag ruleset and the environment reviewers
+# are what stop that; the check catches honest mistakes.
 
 name: Release
 
@@ -26,8 +33,14 @@ jobs:
     if: startsWith(github.ref_name, 'v')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Check the tag is on main
+        run: |
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
       - name: Check the tag matches the package version
@@ -42,17 +55,20 @@ jobs:
           pip install --upgrade build twine
           python -m build
           twine check --strict dist/*
-      - name: Check the wheel contains only public code
+      - name: Check the wheel and sdist contain only public code
         run: |
           if python -m zipfile -l dist/*.whl | grep -E 'uam/registrar/'; then
             echo "private code in the wheel"; exit 1
+          fi
+          if tar -tzf dist/*.tar.gz | grep -E 'uam/registrar/'; then
+            echo "private code in the sdist"; exit 1
           fi
       - name: Install the wheel and import it
         run: |
           python -m venv /tmp/smoke
           /tmp/smoke/bin/pip install dist/*.whl
           /tmp/smoke/bin/python -c "import uam, sys; assert uam.__version__ == sys.argv[1], uam.__version__" "${GITHUB_REF_NAME#v}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: python-dist
           path: dist/
@@ -68,33 +84,30 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: python-dist
           path: dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
 
-  npm-publish:
-    name: Publish @youam/sdk to npm
+  npm-build:
+    name: Build @youam/sdk
     if: startsWith(github.ref_name, 'ts-sdk-v')
     runs-on: ubuntu-latest
-    environment:
-      name: npm
-      url: https://www.npmjs.com/package/@youam/sdk
-    permissions:
-      contents: read
-      id-token: write
     defaults:
       run:
         working-directory: ts-sdk
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Trusted publishing needs Node 22.14+ and npm 11.5.1+.
+          fetch-depth: 0
+      - name: Check the tag is on main
+        run: |
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
           node-version: '22'
-          registry-url: 'https://registry.npmjs.org'
-      - run: npm install -g 'npm@^11.5.1'
       - name: Check the tag matches the package version
         run: |
           tag="${GITHUB_REF_NAME#ts-sdk-v}"
@@ -105,4 +118,32 @@ jobs:
       - run: npm run build
       - run: npm run typecheck
       - run: npm test
-      - run: npm publish --access public
+      - run: npm pack
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: npm-dist
+          path: ts-sdk/*.tgz
+          if-no-files-found: error
+
+  # No checkout and no install here: this job holds the publish token, so it
+  # runs only the tarball built above and the npm that ships with Node.
+  npm-publish:
+    name: Publish @youam/sdk to npm
+    needs: npm-build
+    runs-on: ubuntu-latest
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/@youam/sdk
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: npm-dist
+          path: dist/
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          # Trusted publishing needs npm 11.5.1+; this Node ships npm 11.19.1.
+          node-version: '24.22.0'
+          registry-url: 'https://registry.npmjs.org'
+      - run: npm publish dist/*.tgz --access public --ignore-scripts
