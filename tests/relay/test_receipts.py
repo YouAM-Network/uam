@@ -237,86 +237,171 @@ class TestAntiLoopGuard:
 
 
 # ---------------------------------------------------------------------------
-# Rate-limit exemption for receipt types (MSG-05)
+# Receipt lanes (MSG-05): bound receipts skip limits, unbound ones are capped
 # ---------------------------------------------------------------------------
 
 
-class TestReceiptRateLimitExemption:
-    """Receipt types must skip rate limits."""
+def _receipt_wire(from_agent: dict, to_agent: dict, reply_to: str | None) -> dict:
+    """A signed receipt.read from *from_agent* about message *reply_to*."""
+    return to_wire_dict(create_envelope(
+        from_address=from_agent["address"],
+        to_address=to_agent["address"],
+        message_type=MessageType.RECEIPT_READ,
+        payload_plaintext=b"read",
+        signing_key=from_agent["signing_key"],
+        recipient_verify_key=to_agent["verify_key"],
+        reply_to=reply_to,
+    ))
 
-    def test_receipt_types_skip_rate_limits(self, client):
-        """Exhaust sender rate limit, then send receipt type -- should NOT be rate-limited."""
-        alice = _register(client, "ratelimita")
-        bob = _register(client, "ratelimitb")
+
+def _post(client, sender: dict, wire: dict):
+    return client.post(
+        "/api/v1/send",
+        json={"envelope": wire},
+        headers={"Authorization": f"Bearer {sender['token']}"},
+    )
+
+
+def _inbox_ids(client, agent: dict) -> list[str]:
+    resp = client.get(
+        f"/api/v1/inbox/{agent['address']}",
+        headers={"Authorization": f"Bearer {agent['token']}"},
+    )
+    assert resp.status_code == 200, resp.text
+    return [m["message_id"] for m in resp.json()["messages"]]
+
+
+def _close(client, limiter_name: str) -> None:
+    """Swap in a limiter that refuses everything (callers that pass no
+    per-call ``limit``: recipient_limiter, receipt_limiter)."""
+    from uam.relay.rate_limit import SlidingWindowCounter
+
+    setattr(client.app.state, limiter_name, SlidingWindowCounter(limit=0, window_seconds=60.0))
+
+
+def _exhaust_sender_limit(client, address: str) -> None:
+    """Use up *address*'s sender bucket on the app's own event loop."""
+    limiter = client.app.state.sender_limiter
+
+    async def _drain() -> None:
+        while await limiter.check(address):
+            pass
+
+    client.portal.call(_drain)
+
+
+class TestBoundReceipts:
+    """A receipt whose signed reply_to names a message the relay routed the
+    other way (to the receipt's sender, from its recipient) is bound: it is
+    not held to the sender's rate limit or reputation, up to 3 per message."""
+
+    def _routed_message(self, client, alice, bob) -> str:
+        wire = _make_wire(alice, bob)
+        assert _post(client, alice, wire).status_code == 200
+        _inbox_ids(client, bob)  # bob picks it up
+        return wire["message_id"]
+
+    def test_bound_receipt_skips_exhausted_sender_limit(self, client):
+        alice, bob = _register(client, "bounda"), _register(client, "boundb")
         _boost(client, alice["address"])
         _boost(client, bob["address"])
+        message_id = self._routed_message(client, alice, bob)
+        _exhaust_sender_limit(client, bob["address"])
+        _close(client, "receipt_limiter")
 
-        # Exhaust the sender rate limit (default 60/min, score=80 -> limit=60)
-        # T4.2 (Phase 44 Plan 02): SlidingWindowCounter.check is now async.
-        # Drive the coroutine via asyncio.run for this sync test scope.
-        import asyncio
+        assert _send(client, bob, alice).status_code == 429
+        receipt = _receipt_wire(bob, alice, reply_to=message_id)
+        resp = _post(client, bob, receipt)
 
-        limiter = client.app.state.sender_limiter
+        assert resp.status_code == 200, resp.text
+        assert receipt["message_id"] in _inbox_ids(client, alice)
 
-        async def _exhaust() -> None:
-            for _ in range(60):
-                await limiter.check(alice["address"])
+    def test_bound_receipt_skips_reputation_floor(self, client):
+        alice, bob = _register(client, "boundrepa"), _register(client, "boundrepb")
+        _boost(client, alice["address"])
+        message_id = self._routed_message(client, alice, bob)
+        _boost(client, bob["address"], score=0)
+        _close(client, "receipt_limiter")
 
-        asyncio.run(_exhaust())
+        assert _send(client, bob, alice).status_code == 403
+        receipt = _receipt_wire(bob, alice, reply_to=message_id)
 
-        # Normal message should fail
-        resp = _send(client, alice, bob)
-        assert resp.status_code == 429, f"Expected 429 but got {resp.status_code}"
+        assert _post(client, bob, receipt).status_code == 200
+        assert receipt["message_id"] in _inbox_ids(client, alice)
 
-        # Receipt type should succeed despite exhausted rate limit
-        envelope = create_envelope(
-            from_address=alice["address"],
-            to_address=bob["address"],
-            message_type=MessageType.RECEIPT_DELIVERED,
-            payload_plaintext=b"receipt",
-            signing_key=alice["signing_key"],
-            recipient_verify_key=bob["verify_key"],
-        )
-        wire = to_wire_dict(envelope)
-        wire["type"] = "receipt.delivered"
+    def test_receipt_about_a_message_routed_the_same_way_is_not_bound(self, client):
+        alice, bob = _register(client, "samewaya"), _register(client, "samewayb")
+        _boost(client, alice["address"])
+        message_id = self._routed_message(client, alice, bob)
+        _close(client, "receipt_limiter")
 
-        resp = client.post(
-            "/api/v1/send",
-            json={"envelope": wire},
-            headers={"Authorization": f"Bearer {alice['token']}"},
-        )
-        assert resp.status_code == 200, f"Receipt should bypass rate limit: {resp.text}"
+        # alice -> bob about alice's own message to bob: not a reply to anything
+        receipt = _receipt_wire(alice, bob, reply_to=message_id)
 
-    def test_receipt_types_skip_reputation_check(self, client):
-        """Sender with reputation 0 can still send receipt type."""
-        alice = _register(client, "lowrepa")
-        bob = _register(client, "lowrepb")
-        # Set alice to blocked reputation
-        _boost(client, alice["address"], score=0)
+        assert _post(client, alice, receipt).status_code == 200
+        assert receipt["message_id"] not in _inbox_ids(client, bob)
+
+    def test_at_most_three_receipts_per_message_are_bound(self, client):
+        alice, bob = _register(client, "threea"), _register(client, "threeb")
+        _boost(client, alice["address"])
         _boost(client, bob["address"])
+        message_id = self._routed_message(client, alice, bob)
+        _close(client, "receipt_limiter")
 
-        # Normal message should fail (reputation too low)
-        resp = _send(client, alice, bob)
-        assert resp.status_code == 403, f"Expected 403 but got {resp.status_code}"
+        receipts = [_receipt_wire(bob, alice, reply_to=message_id) for _ in range(4)]
+        for r in receipts:
+            assert _post(client, bob, r).status_code == 200
 
-        # Receipt type should succeed
-        envelope = create_envelope(
-            from_address=alice["address"],
-            to_address=bob["address"],
-            message_type=MessageType.RECEIPT_DELIVERED,
-            payload_plaintext=b"receipt",
-            signing_key=alice["signing_key"],
-            recipient_verify_key=bob["verify_key"],
-        )
-        wire = to_wire_dict(envelope)
-        wire["type"] = "receipt.delivered"
+        delivered = set(_inbox_ids(client, alice))
+        assert [r["message_id"] in delivered for r in receipts] == [True, True, True, False]
 
-        resp = client.post(
-            "/api/v1/send",
-            json={"envelope": wire},
-            headers={"Authorization": f"Bearer {alice['token']}"},
-        )
-        assert resp.status_code == 200, f"Receipt should bypass reputation check: {resp.text}"
+
+class TestUnboundReceipts:
+    """Receipts without a bound reply_to get their own small per-sender
+    bucket: they never use the sender's or recipient's message capacity,
+    and past the bucket they are accepted (200) but not delivered."""
+
+    def test_unbound_receipt_skips_message_limits(self, client):
+        alice, bob = _register(client, "unbounda"), _register(client, "unboundb")
+        _boost(client, alice["address"])
+        _exhaust_sender_limit(client, alice["address"])
+        _close(client, "recipient_limiter")
+        assert _send(client, alice, bob).status_code == 429
+
+        receipt = _receipt_wire(alice, bob, reply_to=None)
+        resp = _post(client, alice, receipt)
+
+        assert resp.status_code == 200, resp.text
+        assert _inbox_ids(client, bob) == [receipt["message_id"]]
+
+    def test_unbound_receipt_past_its_bucket_is_accepted_not_delivered(self, client):
+        alice, bob = _register(client, "overa"), _register(client, "overb")
+        _boost(client, alice["address"])
+        _close(client, "receipt_limiter")
+        score = client.app.state.reputation_manager.get_score(alice["address"])
+
+        receipt = _receipt_wire(alice, bob, reply_to=None)
+        resp = _post(client, alice, receipt)
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["delivered"] is False
+        assert _inbox_ids(client, bob) == []
+        assert client.app.state.reputation_manager.get_score(alice["address"]) == score
+
+    def test_unbound_receipt_past_its_bucket_over_websocket(self, client):
+        alice, bob = _register(client, "overwsa"), _register(client, "overwsb")
+        _boost(client, alice["address"])
+        _close(client, "receipt_limiter")
+
+        receipt = _receipt_wire(alice, bob, reply_to=None)
+        with client.websocket_connect(
+            "/ws", headers={"Authorization": f"Bearer {alice['token']}"}
+        ) as ws:
+            ws.send_json(receipt)
+            ack = ws.receive_json()
+
+        assert ack == {"type": "ack", "message_id": receipt["message_id"], "delivered": False}
+        assert _inbox_ids(client, bob) == []
 
 
 # ---------------------------------------------------------------------------

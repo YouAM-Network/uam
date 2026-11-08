@@ -270,3 +270,26 @@ class TestReceiptRead:
         assert payload["message_id"] == original_msg_id
 
         await agent._contact_book.close()
+
+    async def test_receipt_read_names_the_message_in_reply_to(self, tmp_path):
+        """reply_to (signed, visible to the relay) names the message read, so
+        the relay can bind the receipt to a message it routed."""
+        sk_a, vk_a = generate_keypair()
+        agent = await _make_agent(tmp_path)
+
+        await agent._contact_book.add_contact(
+            "alice::test.local", serialize_verify_key(vk_a)
+        )
+
+        wire, original_msg_id = _create_message_envelope(
+            sk_a, vk_a, agent._key_manager.verify_key
+        )
+        agent._transport.receive = AsyncMock(return_value=[wire])
+
+        await agent.inbox()
+
+        sent_envelope = from_wire_dict(agent._transport.send.call_args[0][0])
+        assert sent_envelope.reply_to == original_msg_id
+        verify_envelope(sent_envelope, agent._key_manager.verify_key)  # reply_to is signed
+
+        await agent._contact_book.close()

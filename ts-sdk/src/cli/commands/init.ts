@@ -31,7 +31,8 @@ export async function initCommand(options: {
 
     if (existsSync(keyPath)) {
       km.loadOrGenerate(agentName);
-      const address = `${agentName}::${cfg.relayDomain}`;
+      const address =
+        km.loadAddress(agentName, cfg.relayUrl) ?? `${agentName}::${cfg.relayDomain}`;
       const fp = publicKeyFingerprint(km.verifyKey);
       console.log(`Agent already initialized: ${address}`);
       console.log(`Fingerprint: ${fp}`);

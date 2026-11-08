@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, readFileSync, statSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, statSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -125,5 +125,82 @@ describe("KeyManager", () => {
     km.loadOrGenerate("deeptest");
 
     expect(existsSync(join(nestedDir, "deeptest.key"))).toBe(true);
+  });
+});
+
+describe("KeyManager token and relay", () => {
+  const RELAY = "http://relay.test";
+  let dir: string;
+  let km: KeyManager;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "uam-token-relay-"));
+    km = new KeyManager(dir);
+    km.saveToken("bob", "a-token");
+  });
+
+  afterEach(() => {
+    delete process.env["UAM_TOKEN"];
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function addressFile(content: string): void {
+    writeFileSync(join(dir, "bob.address"), content);
+  }
+
+  it("gives the token to the relay that issued it", () => {
+    km.saveAddress("bob", "bob::youam.test", RELAY);
+    expect(km.loadToken("bob", RELAY)).toBe("a-token");
+  });
+
+  it("ignores trailing slashes on either side", () => {
+    km.saveAddress("bob", "bob::youam.test", `${RELAY}/`);
+    expect(km.loadToken("bob", RELAY)).toBe("a-token");
+    expect(km.loadToken("bob", `${RELAY}//`)).toBe("a-token");
+  });
+
+  it("keeps it from a different relay", () => {
+    km.saveAddress("bob", "bob::youam.test", RELAY);
+    expect(km.loadToken("bob", "http://elsewhere.test")).toBeNull();
+  });
+
+  it("keeps a legacy .api_key from a different relay too", () => {
+    rmSync(join(dir, "bob.token"));
+    writeFileSync(join(dir, "bob.api_key"), "old-key");
+    km.saveAddress("bob", "bob::youam.test", RELAY);
+    expect(km.loadToken("bob", "http://elsewhere.test")).toBeNull();
+    expect(km.loadToken("bob", RELAY)).toBe("old-key");
+  });
+
+  it("lets UAM_TOKEN win whatever the file says", () => {
+    km.saveAddress("bob", "bob::youam.test", RELAY);
+    process.env["UAM_TOKEN"] = "env-token";
+    expect(km.loadToken("bob", "http://elsewhere.test")).toBe("env-token");
+  });
+
+  it("has no objection when there is no address file", () => {
+    expect(km.loadToken("bob", "http://elsewhere.test")).toBe("a-token");
+  });
+
+  it.each([
+    ["an old plain-text address", "bob::youam.test"],
+    ["broken JSON", '{"address": '],
+    ["a JSON null", "null"],
+    ["a JSON list", "[]"],
+    ["no relay", JSON.stringify({ address: "bob::youam.test" })],
+    ["a relay that isn't a string", JSON.stringify({ relay_url: 42 })],
+  ])("has no objection to a file with %s", (_name, content) => {
+    addressFile(content);
+    expect(km.loadToken("bob", "http://elsewhere.test")).toBe("a-token");
+  });
+
+  it("has no objection to an address file it can't read", () => {
+    mkdirSync(join(dir, "bob.address"));
+    expect(km.loadToken("bob", "http://elsewhere.test")).toBe("a-token");
+  });
+
+  it("loads the token for showing when no relay is named", () => {
+    km.saveAddress("bob", "bob::youam.test", RELAY);
+    expect(km.loadToken("bob")).toBe("a-token");
   });
 });

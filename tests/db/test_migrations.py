@@ -61,7 +61,8 @@ def _get_current_rev(db_path: Path) -> str | None:
 
 # Phase 47: derived from src/uam/db/models.py table census.
 # Update this list when a new table is added to models.py + an alembic migration.
-# 19 tables total: 17 from Phase 33 + reservations (0002) + federation_nonces (0004).
+# 20 tables total: 17 from Phase 33 + reservations (0002) + federation_nonces (0004)
+# + routed_messages (0010).
 EXPECTED_TABLES = sorted([
     "agents", "messages", "handshakes", "contacts", "audit_log",
     "seen_message_ids", "domain_verifications", "webhook_deliveries",
@@ -70,7 +71,8 @@ EXPECTED_TABLES = sorted([
     "relay_reputation", "federation_queue",
     "reservations",          # +1 from 0002
     "federation_nonces",     # +1 from 0004 (Phase 45)
-])  # 19 tables
+    "routed_messages",       # +1 from 0010
+])  # 20 tables
 
 
 class TestMigrationUpgrade:
@@ -392,3 +394,72 @@ class TestDropTokenPlaintextPreflight:
             f"T7.5 contract: 0007 pre-flight must reject NULL token_hash with "
             f"a descriptive RuntimeError. Got: {exc_info.value!r}"
         )
+
+
+# ===========================================================================
+# 0009 — sender FKs dropped; downgrade refuses while federated rows exist
+# ===========================================================================
+
+
+class TestDropSenderForeignKeysDowngrade:
+    """0009 downgrade re-adds the sender FKs, so it must refuse first when a
+    stored row names a sender that is not a local agent."""
+
+    def test_0009_downgrade_rejects_remote_sender_rows(self, alembic_cfg):
+        cfg, db_path = alembic_cfg
+        command.upgrade(cfg, "0009_drop_sender_foreign_keys")
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(
+                "INSERT INTO seen_message_ids (message_id, from_addr, seen_at) "
+                "VALUES (?, ?, datetime('now'))",
+                ("fed-seen-1", "carol::remote.example"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with pytest.raises(RuntimeError, match="Cannot downgrade 0009"):
+            command.downgrade(cfg, "0008_server_default_timestamps")
+        assert _get_current_rev(db_path) == "0009_drop_sender_foreign_keys"
+
+
+# ===========================================================================
+# 0011 — webhook secrets
+# ===========================================================================
+
+
+class TestWebhookSecretMigration:
+    """Every agent with a webhook gets its own secret; others get none."""
+
+    def test_0011_gives_each_existing_webhook_a_secret(self, alembic_cfg):
+        cfg, db_path = alembic_cfg
+        command.upgrade(cfg, "0010_add_routed_messages")
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.executemany(
+                "INSERT INTO agents (address, public_key, token_hash, status, webhook_url, "
+                "created_at, updated_at) "
+                "VALUES (?, 'pk', ?, 'active', ?, datetime('now'), datetime('now'))",
+                [
+                    ("a::test.local", "h1", "https://a.example/hook"),
+                    ("b::test.local", "h2", "https://b.example/hook"),
+                    ("c::test.local", "h3", None),
+                ],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        command.upgrade(cfg, "0011_add_webhook_secret")
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            secrets = dict(conn.execute("SELECT address, webhook_secret FROM agents"))
+        finally:
+            conn.close()
+        assert secrets["c::test.local"] is None
+        assert len(secrets["a::test.local"]) >= 32
+        assert secrets["a::test.local"] != secrets["b::test.local"]

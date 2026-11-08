@@ -7,7 +7,7 @@ These tests RED at HEAD because alembic/versions/0006_foreign_keys.py does not
 exist. They GREEN after 47-07 lands the FK migration.
 
 ondelete policy reference (per RESEARCH Pattern 3):
-    messages.from_addr           -> ondelete=RESTRICT (block agent delete)
+    messages.from_addr           -> NO FK since 0009 (sender may be remote)
     messages.to_addr             -> ondelete=RESTRICT
     handshakes.from_addr         -> ondelete=RESTRICT
     handshakes.to_addr           -> ondelete=RESTRICT
@@ -15,7 +15,7 @@ ondelete policy reference (per RESEARCH Pattern 3):
     contacts.contact_address     -> ondelete=SET NULL (delete contact -> NULL ref)
     webhook_deliveries.agent     -> ondelete=CASCADE
     domain_verifications.agent   -> ondelete=CASCADE
-    seen_message_ids.from_addr   -> ondelete=CASCADE
+    seen_message_ids.from_addr   -> NO FK since 0009 (sender may be remote)
     reputation.address           -> ondelete=CASCADE
     audit_log.actor_address      -> ondelete=SET NULL (audit row survives)
     reservations.address         -> NO FK (RESEARCH OQ3 — denormalized)
@@ -77,8 +77,24 @@ def _seed_agent(conn, address="alice::test.local"):
 
 # ---- RESTRICT: messages.from_addr / to_addr ---------------------------------
 
-def test_messages_from_addr_restrict_blocks_orphan_insert(db_with_head):
-    """T7.3a: insert message with non-existent from_addr -> IntegrityError."""
+def test_messages_from_remote_sender_can_be_stored(db_with_head):
+    """0009: a stored message's sender may live on another relay, so
+    messages.from_addr must not reference the local agents table."""
+    conn = _conn(db_with_head)
+    _seed_agent(conn, "alice::test.local")
+    conn.execute(
+        "INSERT INTO messages (message_id, envelope, status, from_addr, "
+        "to_addr, retry_count, created_at) VALUES "
+        "(?, ?, ?, ?, ?, 0, datetime('now'))",
+        ("m1", "{}", "queued", "carol::remote.example", "alice::test.local"),
+    )
+    conn.commit()
+    n = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+    assert n == 1
+
+
+def test_messages_to_unknown_local_recipient_rejected(db_with_head):
+    """T7.3a: messages.to_addr still must be a local agent."""
     conn = _conn(db_with_head)
     _seed_agent(conn, "alice::test.local")
     with pytest.raises(sqlite3.IntegrityError):
@@ -86,14 +102,14 @@ def test_messages_from_addr_restrict_blocks_orphan_insert(db_with_head):
             "INSERT INTO messages (message_id, envelope, status, from_addr, "
             "to_addr, retry_count, created_at) VALUES "
             "(?, ?, ?, ?, ?, 0, datetime('now'))",
-            ("m1", "{}", "queued", "ghost::nowhere.example",
-             "alice::test.local"),
+            ("m1", "{}", "queued", "alice::test.local", "ghost::test.local"),
         )
         conn.commit()
 
 
-def test_messages_delete_agent_with_messages_blocked(db_with_head):
-    """T7.3a RESTRICT: DELETE agent with messages -> IntegrityError."""
+def test_messages_delete_recipient_with_messages_blocked(db_with_head):
+    """T7.3a RESTRICT: DELETE an agent that still has stored inbound
+    messages -> IntegrityError."""
     conn = _conn(db_with_head)
     _seed_agent(conn, "alice::test.local")
     _seed_agent(conn, "bob::test.local")
@@ -105,7 +121,7 @@ def test_messages_delete_agent_with_messages_blocked(db_with_head):
     )
     conn.commit()
     with pytest.raises(sqlite3.IntegrityError):
-        conn.execute("DELETE FROM agents WHERE address = ?", ("alice::test.local",))
+        conn.execute("DELETE FROM agents WHERE address = ?", ("bob::test.local",))
         conn.commit()
 
 
@@ -215,22 +231,21 @@ def test_domain_verifications_cascade_on_agent_delete(db_with_head):
     assert n == 0
 
 
-# ---- CASCADE: seen_message_ids.from_addr ------------------------------------
+# ---- seen_message_ids.from_addr (no FK since 0009) --------------------------
 
-def test_seen_message_ids_cascade_on_agent_delete(db_with_head):
-    """T7.3a CASCADE: delete agent -> seen_message_ids rows deleted."""
+def test_seen_message_ids_accepts_remote_sender(db_with_head):
+    """0009: dedup rows are recorded for federated senders that are not
+    local agents; an FK here made every federated message look like a
+    duplicate."""
     conn = _conn(db_with_head)
-    _seed_agent(conn, "alice::test.local")
     conn.execute(
         "INSERT INTO seen_message_ids (message_id, from_addr, seen_at) "
         "VALUES (?, ?, datetime('now'))",
-        ("seen-1", "alice::test.local"),
+        ("seen-1", "carol::remote.example"),
     )
     conn.commit()
-    conn.execute("DELETE FROM agents WHERE address = ?", ("alice::test.local",))
-    conn.commit()
     n = conn.execute("SELECT COUNT(*) FROM seen_message_ids").fetchone()[0]
-    assert n == 0
+    assert n == 1
 
 
 # ---- CASCADE: reputation.address --------------------------------------------

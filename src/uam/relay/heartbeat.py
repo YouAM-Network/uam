@@ -93,7 +93,7 @@ class HeartbeatManager:
                         address,
                         now - last,
                     )
-                    await self._manager.disconnect(address)
+                    await self._manager.drop(address)
                     self._last_pong.pop(address, None)
                 else:
                     await self._manager.send_to(address, {"type": "ping", "ts": now})

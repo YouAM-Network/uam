@@ -55,7 +55,7 @@ class SessionManager:
         If the session store is at capacity, the oldest session is evicted.
         """
         sk, vk = generate_keypair()
-        agent_name = f"demo-{secrets.token_urlsafe(6)}"
+        agent_name = f"demo-{secrets.token_hex(6)}"
         session_id = secrets.token_urlsafe(32)
         token = secrets.token_urlsafe(32)
         address = f"{agent_name}::{relay_domain}"

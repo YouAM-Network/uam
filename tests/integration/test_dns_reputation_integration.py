@@ -163,10 +163,12 @@ class TestReverificationFailureDowngradesReputation:
 
         async def _expire_and_downgrade():
             import aiosqlite
-            from uam.relay.database import (
+            from uam.db.crud.domain_verification import (
                 downgrade_verification,
-                get_expired_verifications,
+                list_expired,
             )
+            from uam.db.engine import create_async_engine_from_url
+            from uam.db.session import async_session_factory
 
             db = await aiosqlite.connect(db_path)
             db.row_factory = aiosqlite.Row
@@ -181,8 +183,14 @@ class TestReverificationFailureDowngradesReputation:
             )
             await db.commit()
 
+            await db.close()
+
+            engine = create_async_engine_from_url(os.environ["DATABASE_URL"])
+            factory = async_session_factory(engine)
+
             # Fetch expired verifications
-            expired = await get_expired_verifications(db)
+            async with factory() as session:
+                expired = await list_expired(session)
             assert len(expired) == 1, f"Expected 1 expired verification, got {len(expired)}"
 
             # Mock failed re-verification and run the downgrade path
@@ -193,13 +201,14 @@ class TestReverificationFailureDowngradesReputation:
             ):
                 # Simulate what reverification_loop does on failure
                 for verification in expired:
-                    await downgrade_verification(db, verification["id"])
+                    async with factory() as session:
+                        await downgrade_verification(session, verification.id)
                     # This is what our new code in reverification_loop does
                     await reputation_manager.set_score(
-                        verification["agent_address"], 30
+                        verification.agent_address, 30
                     )
 
-            await db.close()
+            await engine.dispose()
 
         asyncio.run(_expire_and_downgrade())
 
@@ -255,10 +264,12 @@ class TestFullDnsReputationLifecycle:
 
         async def _downgrade():
             import aiosqlite
-            from uam.relay.database import (
+            from uam.db.crud.domain_verification import (
                 downgrade_verification,
-                get_expired_verifications,
+                list_expired,
             )
+            from uam.db.engine import create_async_engine_from_url
+            from uam.db.session import async_session_factory
 
             db = await aiosqlite.connect(db_path)
             db.row_factory = aiosqlite.Row
@@ -272,16 +283,22 @@ class TestFullDnsReputationLifecycle:
             )
             await db.commit()
 
-            expired = await get_expired_verifications(db)
+            await db.close()
+
+            engine = create_async_engine_from_url(os.environ["DATABASE_URL"])
+            factory = async_session_factory(engine)
+            async with factory() as session:
+                expired = await list_expired(session)
             assert len(expired) == 1
 
             for verification in expired:
-                await downgrade_verification(db, verification["id"])
+                async with factory() as session:
+                    await downgrade_verification(session, verification.id)
                 await reputation_manager.set_score(
-                    verification["agent_address"], 30
+                    verification.agent_address, 30
                 )
 
-            await db.close()
+            await engine.dispose()
 
         asyncio.run(_downgrade())
 

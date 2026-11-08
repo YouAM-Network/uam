@@ -82,6 +82,16 @@ class Settings:
         self.reputation_dns_verified_score: int = int(
             os.getenv("UAM_REPUTATION_DNS_VERIFIED_SCORE", "60")
         )
+        # What to do with a message type the protocol does not define:
+        # "log" delivers it with a warning, "reject" refuses it (400).
+        self.unknown_message_types: str = os.getenv(
+            "UAM_UNKNOWN_MESSAGE_TYPES", "log"
+        ).lower()
+        if self.unknown_message_types not in ("log", "reject"):
+            raise RuntimeError(
+                "UAM_UNKNOWN_MESSAGE_TYPES must be 'log' or 'reject', "
+                f"got {self.unknown_message_types!r}"
+            )
         # Federation settings (FED-01 through FED-10)
         self.relay_key_path: str = os.getenv("UAM_RELAY_KEY_PATH", "relay_key.pem")
         self.federation_enabled: bool = os.getenv(

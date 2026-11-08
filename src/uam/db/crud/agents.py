@@ -6,6 +6,7 @@ Read queries filter ``deleted_at IS NULL`` by default.
 
 from __future__ import annotations
 
+import secrets
 from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -94,6 +95,29 @@ async def update_agent(
     else:
         await session.flush()
     return agent
+
+
+async def set_webhook(
+    session: AsyncSession, address: str, webhook_url: str, *, commit: bool = True
+) -> str | None:
+    """Point *address* at *webhook_url* and return its signing secret.
+
+    An agent keeps its secret when the URL changes, so a receiver that moves
+    does not have to be re-keyed.  Returns ``None`` if the agent is not found.
+    """
+    agent = await get_agent_by_address(session, address)
+    if agent is None:
+        return None
+    secret = agent.webhook_secret or secrets.token_urlsafe(32)
+    await update_agent(
+        session, address, commit=commit, webhook_url=webhook_url, webhook_secret=secret
+    )
+    return secret
+
+
+async def clear_webhook(session: AsyncSession, address: str) -> None:
+    """Remove the webhook and retire its secret: setting one again makes a new one."""
+    await update_agent(session, address, webhook_url=None, webhook_secret=None)
 
 
 async def deactivate_agent(

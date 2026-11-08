@@ -11,6 +11,11 @@ from starlette.websockets import WebSocket
 logger = logging.getLogger(__name__)
 
 
+# How long one frame may take.  Live sends run inside the sender's open
+# transaction, so a socket that stops reading must not hold it for long.
+SEND_TIMEOUT_SECONDS = 5.0
+
+
 class LockedWebSocket:
     """Wraps a Starlette WebSocket so every send/close is serialized
     on a per-connection asyncio.Lock (T4.1).
@@ -102,6 +107,7 @@ class ConnectionManager:
     def __init__(self) -> None:
         self._connections: dict[str, LockedWebSocket] = {}
         self._lock = asyncio.Lock()
+        self._closing: set[asyncio.Task[None]] = set()
 
     async def connect(self, address: str, websocket: WebSocket) -> LockedWebSocket:
         """Register a WebSocket connection for *address*.
@@ -144,10 +150,24 @@ class ConnectionManager:
                 pass  # old connection may already be dead
         return wrapped
 
-    async def disconnect(self, address: str) -> None:
-        """Remove the connection for *address*."""
+    async def disconnect(
+        self, address: str, ws: LockedWebSocket | None = None
+    ) -> None:
+        """Remove the connection for *address*.
+
+        With *ws*, only if that is still the one registered: by the time a
+        socket's owner cleans up, the client may have reconnected.
+        """
         async with self._lock:
-            self._connections.pop(address, None)
+            if ws is None or self._connections.get(address) is ws:
+                self._connections.pop(address, None)
+
+    async def drop(self, address: str) -> None:
+        """Remove the connection for *address* and close it, without waiting."""
+        async with self._lock:
+            ws = self._connections.pop(address, None)
+        if ws is not None:
+            self._close_in_background(ws)
 
     def is_online(self, address: str) -> bool:
         """Return True if *address* has an active WebSocket connection."""
@@ -169,12 +189,34 @@ class ConnectionManager:
         if ws is None:
             return False
         try:
-            await ws.send_json(data)
+            await asyncio.wait_for(ws.send_json(data), SEND_TIMEOUT_SECONDS)
             return True
+        except asyncio.TimeoutError:
+            logger.warning("Send to %s stalled, disconnecting", address)
+            await self.disconnect(address, ws)
+            self._close_in_background(ws)
+            return False
         except Exception:
             logger.debug("Send to %s failed, disconnecting", address)
-            await self.disconnect(address)
+            await self.disconnect(address, ws)
             return False
+
+    def _close_in_background(self, ws: LockedWebSocket) -> None:
+        """Close a dead socket, so the client notices and reconnects.
+
+        Nothing is waiting on this: a socket that has stalled may not close
+        either, and the caller still holds its transaction.
+        """
+
+        async def close() -> None:
+            try:
+                await asyncio.wait_for(ws.close(code=1011), SEND_TIMEOUT_SECONDS)
+            except Exception:
+                logger.debug("Closing a dead socket failed", exc_info=True)
+
+        task = asyncio.create_task(close())
+        self._closing.add(task)
+        task.add_done_callback(self._closing.discard)
 
     @property
     def online_count(self) -> int:

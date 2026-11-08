@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
+import uuid
 
 import pytest
 from fastapi.testclient import TestClient
@@ -68,11 +70,41 @@ def session_factory(relay_file_engine):
     )
 
 
+def _run_on_postgres(url: str, statement: str) -> None:
+    async def run() -> None:
+        import asyncpg
+
+        conn = await asyncpg.connect(url.replace("postgresql+asyncpg://", "postgresql://"))
+        try:
+            await conn.execute(statement)
+        finally:
+            await conn.close()
+
+    asyncio.run(run())
+
+
 @pytest.fixture()
-def app(tmp_path):
+def relay_database_url(tmp_path):
+    """A fresh relay database: SQLite, or Postgres when CI provides one.
+
+    Set UAM_TEST_RELAY_POSTGRES_URL to run the relay's own tests on Postgres.
+    """
+    postgres = os.environ.get("UAM_TEST_RELAY_POSTGRES_URL")
+    if not postgres:
+        yield f"sqlite+aiosqlite:///{tmp_path / 'test.db'}"
+        return
+
+    name = f"relay_{uuid.uuid4().hex}"
+    _run_on_postgres(postgres, f'CREATE DATABASE "{name}"')
+    yield f"{postgres.rsplit('/', 1)[0]}/{name}"
+    _run_on_postgres(postgres, f'DROP DATABASE "{name}" WITH (FORCE)')
+
+
+@pytest.fixture()
+def app(tmp_path, relay_database_url):
     """Create a relay app backed by a temporary database."""
     db_path = str(tmp_path / "test.db")
-    os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{db_path}"
+    os.environ["DATABASE_URL"] = relay_database_url
     os.environ["UAM_DB_PATH"] = db_path  # backward compat with Settings
     os.environ["UAM_RELAY_DOMAIN"] = "test.local"
 

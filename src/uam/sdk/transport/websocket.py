@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 BASE_DELAY = 1.0    # Initial delay in seconds
 MAX_DELAY = 60.0    # Maximum delay cap
 JITTER_RANGE = 1.0  # Random jitter 0 to JITTER_RANGE
+SEND_SETTLE_SECONDS = 5.0  # How long a close waits for the relay to answer sends
 
 
 class WebSocketTransport(TransportBase):
@@ -48,6 +49,9 @@ class WebSocketTransport(TransportBase):
         self._listen_task: asyncio.Task | None = None
         self._pending: list[dict] = []  # Messages received before explicit receive()
         self._connected = asyncio.Event()
+        self._unanswered = 0  # Envelopes sent that the relay hasn't answered yet
+        self._all_answered = asyncio.Event()
+        self._all_answered.set()
 
     async def connect(self) -> None:
         """Start the WebSocket connection with automatic reconnection."""
@@ -56,7 +60,15 @@ class WebSocketTransport(TransportBase):
         await asyncio.wait_for(self._connected.wait(), timeout=30.0)
 
     async def disconnect(self) -> None:
-        """Close the WebSocket connection."""
+        """Close the WebSocket connection, once the relay has answered what was sent.
+
+        The relay stops reading a socket when it can't write an ack to it, so
+        closing straight after send() loses every frame but the first.
+        """
+        try:
+            await asyncio.wait_for(self._all_answered.wait(), timeout=SEND_SETTLE_SECONDS)
+        except asyncio.TimeoutError:
+            logger.warning("Closing with %d sends unanswered", self._unanswered)
         if self._listen_task:
             self._listen_task.cancel()
             try:
@@ -70,7 +82,19 @@ class WebSocketTransport(TransportBase):
         """Send an envelope dict over the WebSocket."""
         if self._ws is None:
             raise RuntimeError("WebSocket not connected")
-        await self._ws.send(json.dumps(envelope))
+        # Counted first: the ack can arrive before this send returns.
+        self._unanswered += 1
+        self._all_answered.clear()
+        try:
+            await self._ws.send(json.dumps(envelope))
+        except BaseException:
+            self._answered()
+            raise
+
+    def _answered(self) -> None:
+        self._unanswered = max(0, self._unanswered - 1)
+        if self._unanswered == 0:
+            self._all_answered.set()
 
     async def receive(self, limit: int = 50) -> list[dict[str, Any]]:
         """Drain pending messages (received via WebSocket push)."""
@@ -110,6 +134,8 @@ class WebSocketTransport(TransportBase):
             ) as exc:
                 self._connected.clear()
                 self._ws = None
+                self._unanswered = 0  # Their answers went with the socket
+                self._all_answered.set()
                 attempt += 1
                 delay = min(BASE_DELAY * (2**attempt), MAX_DELAY)
                 jitter = random.uniform(0, JITTER_RANGE)
@@ -129,7 +155,14 @@ class WebSocketTransport(TransportBase):
         """Route incoming WebSocket messages by type."""
         msg_type = msg.get("type")
 
-        if msg_type == "ping":
+        # First: an envelope's type and keys are the sender's to choose.
+        if "uam_version" in msg:
+            if self._on_message:
+                await self._on_message(msg)
+            else:
+                self._pending.append(msg)
+
+        elif msg_type == "ping":
             # Respond to relay heartbeat
             if self._ws:
                 await self._ws.send(json.dumps({"type": "pong"}))
@@ -140,6 +173,7 @@ class WebSocketTransport(TransportBase):
                 msg.get("message_id"),
                 msg.get("delivered"),
             )
+            self._answered()
 
         elif msg_type == "error" or "error" in msg:
             logger.error(
@@ -147,10 +181,4 @@ class WebSocketTransport(TransportBase):
                 msg.get("error") or msg.get("code"),
                 msg.get("detail"),
             )
-
-        elif "uam_version" in msg:
-            # Inbound envelope
-            if self._on_message:
-                await self._on_message(msg)
-            else:
-                self._pending.append(msg)
+            self._answered()

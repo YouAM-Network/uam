@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import Response
 
-from uam.db.crud.agents import create_agent, get_agent_by_address
+from uam.db.crud.agents import create_agent, get_agent_by_address, set_webhook
 from uam.db.crud.reservations import (
     AddressAlreadyReserved,
     check_address_available,
@@ -34,7 +34,7 @@ from uam.cards.avatars import fetch_avatar
 from uam.cards.image import render_card
 from uam.cards.vcard import generate_reservation_vcard
 from uam.relay.token_hashing import hash_token
-from uam.relay.webhook_validator import validate_webhook_url
+from uam.relay.webhook_validator import async_validate_webhook_url
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +161,7 @@ async def reserve_claim(
 
     # Validate webhook URL if provided
     if body.webhook_url is not None:
-        valid, reason = validate_webhook_url(body.webhook_url)
+        valid, reason = await async_validate_webhook_url(body.webhook_url)
         if not valid:
             raise HTTPException(status_code=400, detail=f"Invalid webhook URL: {reason}")
 
@@ -200,8 +200,12 @@ async def reserve_claim(
             body.public_key,
             token_hash=agent_token_hash,
             commit=False,
-            webhook_url=body.webhook_url,
         )
+        webhook_secret = None
+        if body.webhook_url is not None:
+            webhook_secret = await set_webhook(
+                session, reservation.address, body.webhook_url, commit=False
+            )
 
         # Single commit for both claim + agent creation
         await session.commit()
@@ -222,6 +226,7 @@ async def reserve_claim(
         address=reservation.address,
         token=agent_token,
         relay=settings.relay_ws_url,
+        webhook_secret=webhook_secret,
     )
 
 

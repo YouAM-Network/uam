@@ -3,19 +3,21 @@
  *
  * Small utility for webhook receivers to verify that incoming webhook
  * payloads were signed by the UAM relay.  Uses HMAC-SHA256 with the
- * agent's token as the shared secret.
+ * agent's webhook secret, which the relay returns when the webhook is set
+ * (PUT /api/v1/agents/{address}/webhook).  Setting the same URL again
+ * returns it again.
  *
  * Matches Python webhook_verify.py API surface.
  *
  * Usage:
  *
- *     import { verifyWebhookSignature } from "uam";
+ *     import { verifyWebhookSignature } from "@youam/sdk";
  *
  *     const payload = Buffer.from(requestBody);
  *     const signature = request.headers["x-uam-signature"];
- *     const token = "your-agent-token";
+ *     const secret = "your-webhook-secret";
  *
- *     if (verifyWebhookSignature(payload, signature, token)) {
+ *     if (verifyWebhookSignature(payload, signature, secret)) {
  *       // payload is authentic
  *     }
  */
@@ -27,7 +29,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
  *
  * @param payload - Raw request body bytes
  * @param signatureHeader - "sha256=<hex>" format (X-UAM-Signature header)
- * @param token - Shared secret (agent token)
+ * @param secret - The agent's webhook secret
  * @returns `true` if valid, `false` otherwise.
  *
  * Uses `crypto.timingSafeEqual()` for constant-time comparison
@@ -36,13 +38,13 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 export function verifyWebhookSignature(
   payload: Buffer | Uint8Array,
   signatureHeader: string,
-  token: string
+  secret: string
 ): boolean {
   if (!signatureHeader.startsWith("sha256=")) {
     return false;
   }
 
-  const expected = createHmac("sha256", token)
+  const expected = createHmac("sha256", secret)
     .update(payload)
     .digest("hex");
   const received = signatureHeader.slice("sha256=".length);

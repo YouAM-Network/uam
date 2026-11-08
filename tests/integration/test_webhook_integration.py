@@ -133,11 +133,11 @@ class TestThreeTierWebhookFallback:
         bob = _register_agent(client, "bob")
 
         # Set bob's webhook URL
-        client.put(
+        webhook_secret = client.put(
             f"/api/v1/agents/{bob['address']}/webhook",
             json={"webhook_url": "https://hooks.example.com/uam"},
             headers={"Authorization": f"Bearer {bob['token']}"},
-        )
+        ).json()["webhook_secret"]
 
         # Mock the httpx client used by WebhookDeliveryService
         captured_requests = []
@@ -196,7 +196,7 @@ class TestThreeTierWebhookFallback:
             # Verify X-UAM-Signature header is present and valid
             sig_header = req["headers"]["X-UAM-Signature"]
             assert sig_header.startswith("sha256=")
-            assert verify_webhook_signature(payload_bytes, sig_header, bob["token"])
+            assert verify_webhook_signature(payload_bytes, sig_header, webhook_secret)
         finally:
             webhook_service._http_client = original_client
 
@@ -282,7 +282,9 @@ class TestWebhookCircuitBreakerIntegration:
                     new_callable=AsyncMock,
                     return_value=(True, ""),
                 ),
-                patch("asyncio.sleep", new_callable=AsyncMock),
+                # Not asyncio.sleep: patching that swaps it process-wide, and
+                # the relay's heartbeat loop then spins on the mock forever.
+                patch("uam.relay.webhook.RETRY_DELAYS", [0, 0, 0, 0, 0]),
             ):
                 # Send 5 messages that will all fail webhook delivery
                 # Each message exhausts all 5 retry attempts -> record_failure
@@ -295,9 +297,11 @@ class TestWebhookCircuitBreakerIntegration:
                     )
                     assert resp.status_code == 200
 
-                # Give background tasks time to complete
+                # Wait for the background deliveries
                 import time
-                time.sleep(0.3)
+                deadline = time.monotonic() + 30
+                while webhook_service._active_tasks and time.monotonic() < deadline:
+                    time.sleep(0.02)
 
             # After 5 delivery failures (each exhausting retries), circuit should be open
             # The next message should go to store-and-forward (delivered=False)

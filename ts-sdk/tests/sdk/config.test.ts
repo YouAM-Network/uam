@@ -39,6 +39,21 @@ describe("SDKConfig", () => {
     expect(cfg.relayUrl).toBe("https://relay.youam.network");
   });
 
+  it("strips trailing slashes from the relay URL", () => {
+    const cfg = new SDKConfig({ name: "test", relayUrl: "http://relay.test//" });
+    expect(cfg.relayUrl).toBe("http://relay.test");
+    expect(cfg.relayWsUrl).toBe("ws://relay.test/ws");
+  });
+
+  it("strips them from UAM_RELAY_URL too", () => {
+    process.env["UAM_RELAY_URL"] = "http://env.test/";
+    try {
+      expect(new SDKConfig({ name: "test" }).relayUrl).toBe("http://env.test");
+    } finally {
+      delete process.env["UAM_RELAY_URL"];
+    }
+  });
+
   it("derives relayWsUrl from relayUrl", () => {
     const cfg = new SDKConfig({ name: "alice" });
     expect(cfg.relayWsUrl).toBe("wss://relay.youam.network/ws");

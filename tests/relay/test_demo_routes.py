@@ -212,3 +212,13 @@ class TestDemoInboxFiltering:
         assert resp.status_code == 200
         inbox = resp.json()
         assert len(inbox["messages"]) == 0
+
+
+async def test_every_demo_address_is_a_valid_address():
+    from uam.protocol.address import parse_address
+    from uam.relay.demo_sessions import SessionManager
+
+    manager = SessionManager(max_sessions=500)
+    for _ in range(500):
+        session = await manager.create("youam.network")
+        assert parse_address(session.address).full == session.address

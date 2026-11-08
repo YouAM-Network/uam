@@ -6,6 +6,7 @@
 
 import { UAMError } from "../protocol/index.js";
 import { parseAddress } from "../protocol/address.js";
+import { AddressResolver } from "./resolver-base.js";
 import { Tier3Resolver, type Tier3Config } from "./tier3.js";
 import {
   queryUamTxt,
@@ -14,21 +15,7 @@ import {
   resolveKeyViaHttps,
 } from "./dns-verifier.js";
 
-/**
- * Pluggable address resolver interface.
- */
-export abstract class AddressResolver {
-  /**
-   * Resolve an agent address to its public key (base64).
-   *
-   * @throws {UAMError} If the address cannot be resolved.
-   */
-  abstract resolvePublicKey(
-    address: string,
-    token: string,
-    relayUrl: string
-  ): Promise<string>;
-}
+export { AddressResolver } from "./resolver-base.js";
 
 /**
  * Tier 1: resolve via relay HTTP API.
@@ -102,14 +89,14 @@ export class Tier2Resolver extends AddressResolver {
  *   - domain has no dots     -> Tier 3 (on-chain namespace lookup)
  */
 export class SmartResolver extends AddressResolver {
-  private _relayDomain: string;
+  relayDomain: string;
   private _tier1: Tier1Resolver;
   private _tier2: Tier2Resolver;
   private _tier3: Tier3Resolver | null;
 
   constructor(relayDomain: string, tier3Config?: Tier3Config) {
     super();
-    this._relayDomain = relayDomain;
+    this.relayDomain = relayDomain;
     this._tier1 = new Tier1Resolver();
     this._tier2 = new Tier2Resolver();
     this._tier3 = tier3Config ? new Tier3Resolver(tier3Config) : null;
@@ -123,7 +110,7 @@ export class SmartResolver extends AddressResolver {
     const parsed = parseAddress(address);
     const domain = parsed.domain;
 
-    if (domain === this._relayDomain) {
+    if (domain === this.relayDomain) {
       return this._tier1.resolvePublicKey(address, token, relayUrl);
     }
 

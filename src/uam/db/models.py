@@ -36,7 +36,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Column, DateTime, ForeignKey, String, UniqueConstraint, func
+from sqlalchemy import JSON, Column, DateTime, ForeignKey, Integer, String, UniqueConstraint, func
 from sqlmodel import Field, SQLModel
 
 # ---------------------------------------------------------------------------
@@ -63,6 +63,8 @@ class Agent(SQLModel, table=True):
     contact_card: dict | None = Field(default=None, sa_type=JSON)
     status: str = Field(default="active")
     webhook_url: str | None = None
+    # Signs this agent's webhooks.  Set exactly when webhook_url is set.
+    webhook_secret: str | None = Field(default=None, repr=False)
     relay_endpoint: str | None = None
     last_seen: datetime | None = Field(
         default=None,
@@ -98,17 +100,9 @@ class Message(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     message_id: str = Field(index=True, unique=True)
-    # T7.3a: ForeignKey to agents.address with ON DELETE RESTRICT — audit
-    # data must survive (sender identity is part of the record). See
-    # alembic/versions/0006_foreign_keys.py and RESEARCH Pattern 3 +
-    # Pitfall 7 (sa_column form required to surface ondelete kwarg).
-    from_addr: str = Field(
-        sa_column=Column(
-            String,
-            ForeignKey("agents.address", ondelete="RESTRICT", name="fk_messages_from_addr"),
-            nullable=False,
-        ),
-    )
+    # No FK: the sender of a stored message may be an agent on another
+    # relay (federation). 0006 added one; 0009 drops it.
+    from_addr: str = Field(sa_column=Column(String, nullable=False))
     to_addr: str = Field(
         sa_column=Column(
             String,
@@ -283,20 +277,43 @@ class SeenMessageId(SQLModel, table=True):
     __tablename__ = "seen_message_ids"
 
     message_id: str = Field(primary_key=True)
-    # T7.3a: per-recipient dedup state cascades on agent delete.
-    from_addr: str = Field(
-        sa_column=Column(
-            String,
-            ForeignKey("agents.address", ondelete="CASCADE", name="fk_seen_messages_from"),
-            nullable=False,
-        ),
-    )
+    # No FK: federated senders are not local agents. 0006 added one;
+    # 0009 drops it.
+    from_addr: str = Field(sa_column=Column(String, nullable=False))
     seen_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(
             DateTime(timezone=True),
             server_default=func.now(),
             nullable=False,
+        ),
+    )
+
+
+class RoutedMessage(SQLModel, table=True):
+    """Messages this relay accepted for delivery, so a receipt can be
+    matched to the message it answers (MSG-05).
+
+    A receipt from B to A whose signed ``reply_to`` names a row routed
+    A -> B is bound; ``receipt_count`` caps how many receipts one message
+    can bind. No FKs: either side may be on another relay.
+    """
+
+    __tablename__ = "routed_messages"
+
+    message_id: str = Field(primary_key=True)
+    from_addr: str = Field(sa_column=Column(String, nullable=False))
+    to_addr: str = Field(sa_column=Column(String, nullable=False))
+    receipt_count: int = Field(
+        default=0, sa_column=Column(Integer, nullable=False, server_default="0")
+    )
+    routed_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True),
+            server_default=func.now(),
+            nullable=False,
+            index=True,
         ),
     )
 

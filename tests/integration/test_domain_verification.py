@@ -278,10 +278,12 @@ class TestReverificationDowngrade:
 
     def test_expired_verification_downgrades_to_tier1(self, client, agent):
         """Manually expire a verification, then check downgrade logic."""
-        from uam.relay.database import (
+        from uam.db.crud.domain_verification import (
             downgrade_verification,
-            get_expired_verifications,
+            list_expired,
         )
+        from uam.db.engine import create_async_engine_from_url
+        from uam.db.session import async_session_factory
         import aiosqlite
         import asyncio
 
@@ -326,16 +328,23 @@ class TestReverificationDowngrade:
             )
             await db.commit()
 
-            # get_expired_verifications should find it
-            expired = await get_expired_verifications(db)
+            await db.close()
+
+            engine = create_async_engine_from_url(os.environ["DATABASE_URL"])
+            factory = async_session_factory(engine)
+
+            # list_expired should find it
+            async with factory() as session:
+                expired = await list_expired(session)
             assert len(expired) == 1
-            assert expired[0]["domain"] == "verified.com"
-            assert expired[0]["agent_address"] == agent["address"]
+            assert expired[0].domain == "verified.com"
+            assert expired[0].agent_address == agent["address"]
 
             # Downgrade it
-            await downgrade_verification(db, expired[0]["id"])
+            async with factory() as session:
+                await downgrade_verification(session, expired[0].id)
 
-            await db.close()
+            await engine.dispose()
 
         asyncio.run(_expire_and_downgrade())
 

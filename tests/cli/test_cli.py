@@ -7,6 +7,8 @@ Online commands (init, send, inbox) mock the Agent sync wrappers.
 
 from __future__ import annotations
 
+from importlib.metadata import version
+
 import asyncio
 import json
 from pathlib import Path
@@ -56,7 +58,7 @@ def test_cli_version(runner: CliRunner):
     """--version prints version string."""
     result = runner.invoke(cli, ["--version"])
     assert result.exit_code == 0
-    assert "0.1.0" in result.output
+    assert version("youam") in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +101,24 @@ def test_whoami_with_keys(runner: CliRunner, uam_home: Path):
             fp = line.split(":", 1)[1].strip()
             assert len(fp) == 64
             assert all(c in "0123456789abcdef" for c in fp)
+
+
+def test_whoami_shows_the_address_the_relay_gave(runner: CliRunner, uam_home: Path):
+    """The relay's domain can differ from the host in the relay URL."""
+    key_dir = uam_home / "keys"
+    key_dir.mkdir(parents=True)
+
+    km = KeyManager(key_dir)
+    km.load_or_generate("testagent")
+    km.save_address("testagent", "testagent::youam.network", "https://other.example")
+
+    result = runner.invoke(
+        cli,
+        ["--name", "testagent", "whoami"],
+        env={"UAM_HOME": str(uam_home)},
+    )
+    assert result.exit_code == 0
+    assert "Address:     testagent::youam.network\n" in result.output
 
 
 # ---------------------------------------------------------------------------

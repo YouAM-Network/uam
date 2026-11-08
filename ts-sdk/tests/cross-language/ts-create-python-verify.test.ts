@@ -6,9 +6,10 @@
  * 2. Writes them to the fixtures/ directory for Python tests to consume
  * 3. Verifies that TypeScript-derived keys match Python-derived keys (same seed -> same output)
  */
-import { writeFileSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { describe, it, expect, beforeAll } from "vitest";
+import { writeFileSync, readFileSync, mkdtempSync, rmSync } from "node:fs";
+import { resolve, join } from "node:path";
+import { tmpdir } from "node:os";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import sodium from "libsodium-wrappers";
 import {
   sodiumReady,
@@ -27,13 +28,32 @@ import {
 
 const FIXTURES_DIR = resolve(__dirname, "fixtures");
 
+// Generated ts-*.json fixtures go to a throwaway directory unless
+// UAM_WRITE_FIXTURES=1 is set, so a normal test run never rewrites the
+// committed fixtures that tests/cross_language/ (pytest) consumes.
+// Regenerate the committed copies with: UAM_WRITE_FIXTURES=1 npx vitest run
+const OUTPUT_DIR =
+  process.env["UAM_WRITE_FIXTURES"] === "1"
+    ? FIXTURES_DIR
+    : mkdtempSync(join(tmpdir(), "uam-ts-fixtures-"));
+
+afterAll(() => {
+  if (OUTPUT_DIR !== FIXTURES_DIR) {
+    rmSync(OUTPUT_DIR, { recursive: true, force: true });
+  }
+});
+
 function loadFixture(name: string): Record<string, unknown> {
   return JSON.parse(readFileSync(resolve(FIXTURES_DIR, name), "utf-8"));
 }
 
+function loadOutput(name: string): Record<string, unknown> {
+  return JSON.parse(readFileSync(resolve(OUTPUT_DIR, name), "utf-8"));
+}
+
 function writeFixture(name: string, data: unknown): void {
   writeFileSync(
-    resolve(FIXTURES_DIR, name),
+    resolve(OUTPUT_DIR, name),
     JSON.stringify(data, null, 2),
     "utf-8",
   );
@@ -91,7 +111,7 @@ describe("TypeScript creates fixtures for Python verification", () => {
     writeFixture("ts-envelope.json", wireDict);
 
     // Verify the fixture was written
-    const loaded = loadFixture("ts-envelope.json") as Record<string, unknown>;
+    const loaded = loadOutput("ts-envelope.json") as Record<string, unknown>;
     expect(loaded["from"]).toBe("alice::test.example.com");
     expect(loaded["to"]).toBe("bob::test.example.com");
     expect(loaded["type"]).toBe("message");
@@ -110,7 +130,7 @@ describe("TypeScript creates fixtures for Python verification", () => {
     writeFixture("ts-contact-card.json", cardDict);
 
     // Verify the fixture was written
-    const loaded = loadFixture("ts-contact-card.json") as Record<string, unknown>;
+    const loaded = loadOutput("ts-contact-card.json") as Record<string, unknown>;
     expect(loaded["address"]).toBe("alice::test.example.com");
     expect(loaded["display_name"]).toBe("Alice (TypeScript)");
   });
@@ -131,7 +151,7 @@ describe("TypeScript creates fixtures for Python verification", () => {
     });
 
     // Verify the fixture was written
-    const loaded = loadFixture("ts-box-payload.json") as {
+    const loaded = loadOutput("ts-box-payload.json") as {
       plaintext: string;
       ciphertext_b64: string;
     };
@@ -153,7 +173,7 @@ describe("TypeScript creates fixtures for Python verification", () => {
     });
 
     // Verify the fixture was written
-    const loaded = loadFixture("ts-sealedbox-payload.json") as {
+    const loaded = loadOutput("ts-sealedbox-payload.json") as {
       plaintext: string;
       ciphertext_b64: string;
     };

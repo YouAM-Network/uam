@@ -15,17 +15,27 @@ import hmac
 import json
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 import httpx
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from uam import __version__
 from uam.relay.config import Settings
 from uam.relay.connections import ConnectionManager
+from uam.relay.policy import is_receipt, parse_expires
 from uam.relay.webhook_validator import async_validate_webhook_url
 
 from uam.db.crud.agents import get_agent_by_address
-from uam.db.crud.webhooks import create_delivery, record_attempt, complete_delivery
+from uam.db.crud.messages import store_message
+from uam.db.crud.webhooks import (
+    complete_delivery,
+    create_delivery,
+    get_unfinished_deliveries,
+    record_attempt,
+)
 from uam.db.session import async_session_factory
 from uam.db.engine import get_engine
 
@@ -46,10 +56,8 @@ _NON_RETRIABLE_4XX = set(range(400, 500)) - {408, 429}
 def compute_webhook_signature(payload_bytes: bytes, signing_key: str) -> str:
     """Compute HMAC-SHA256 signature for a webhook payload.
 
-    Phase 47 T7.5 + RESEARCH OQ1 option (a): callers pass the per-agent
-    ``token_hash`` value as the signing key (the plaintext token column was
-    dropped in alembic 0007). Returns the signature in ``sha256=<hex>`` format
-    for the ``X-UAM-Signature`` header.
+    Callers pass the agent's ``webhook_secret`` as the signing key. Returns the
+    signature in ``sha256=<hex>`` format for the ``X-UAM-Signature`` header.
 
     Callers MUST use compact JSON serialization
     (``json.dumps(data, separators=(",", ":"))```) for deterministic output.
@@ -127,10 +135,8 @@ class WebhookCircuitBreaker:
         """Record a failed delivery -- opens circuit at threshold."""
         state = self._get(address)
         state.consecutive_failures += 1
-        if (
-            not state.is_open
-            and state.consecutive_failures >= self.FAILURE_THRESHOLD
-        ):
+        if state.consecutive_failures >= self.FAILURE_THRESHOLD:
+            # Also when already open: a failed probe starts the cooldown again.
             state.is_open = True
             state.opened_at = time.monotonic()
             logger.warning(
@@ -143,6 +149,21 @@ class WebhookCircuitBreaker:
 # ---------------------------------------------------------------------------
 # Delivery service (HOOK-02, HOOK-04)
 # ---------------------------------------------------------------------------
+
+
+async def _store_for_pickup(
+    session: AsyncSession, address: str, envelope_dict: dict
+) -> None:
+    """The webhook gave up: leave the message for the agent to fetch."""
+    await store_message(
+        session,
+        envelope_dict.get("message_id", ""),
+        envelope_dict.get("from", ""),
+        address,
+        json.dumps(envelope_dict),
+        expires_at=parse_expires(envelope_dict.get("expires")),
+        commit=False,
+    )
 
 
 class WebhookDeliveryService:
@@ -177,6 +198,32 @@ class WebhookDeliveryService:
         )
         logger.info("WebhookDeliveryService started")
 
+    async def recover_interrupted(self) -> None:
+        """Move deliveries a restart cut short to the agents' inboxes.
+
+        Retries live in tasks, so a restart ends them.  Call at startup.  If
+        the old instance is still running a retry, the recipient can get the
+        message twice; its replay cache drops the second.
+        """
+        factory = async_session_factory(get_engine())
+        while True:
+            async with factory() as session:
+                rows = await get_unfinished_deliveries(session, limit=100)
+                if not rows:
+                    return
+                for row in rows:
+                    try:
+                        async with session.begin_nested():
+                            await _store_for_pickup(
+                                session, row.agent_address, json.loads(row.envelope)
+                            )
+                    except Exception:
+                        logger.exception("Could not recover webhook delivery %s", row.id)
+                    await complete_delivery(
+                        session, row.id, "failed", "Relay restarted", commit=False
+                    )
+                await session.commit()
+
     async def stop(self) -> None:
         """Cancel active tasks and close the HTTP client."""
         for task in list(self._active_tasks):
@@ -189,62 +236,58 @@ class WebhookDeliveryService:
             self._http_client = None
         logger.info("WebhookDeliveryService stopped")
 
-    async def try_deliver(
+    async def prepare(
         self,
+        session: AsyncSession,
         address: str,
         envelope_dict: dict,
-    ) -> bool:
-        """Attempt webhook delivery for *address*.
+    ) -> Callable[[], None] | None:
+        """Add a webhook delivery for *address* to the caller's transaction.
 
-        Returns ``True`` if delivery was initiated (background task
-        created), ``False`` if the circuit is open or no webhook is
-        configured.  Note: ``True`` does NOT mean delivery succeeded --
+        Returns a function that starts the delivery, to be called once the
+        caller has committed.  Returns ``None`` if the circuit is open or no
+        webhook is configured.  Starting does NOT mean delivery succeeded --
         it runs asynchronously.
+
+        The row is written on the caller's *session* because every caller
+        holds a write transaction here: on SQLite a second session could not
+        write until the first commits.
         """
         if not self._circuit_breaker.is_available(address):
             logger.debug("Circuit open for %s, skipping webhook delivery", address)
-            return False
+            return None
 
-        factory = async_session_factory(get_engine())
-        # --- Transaction-wrapped DB section (RES-01) ---
-        # Agent lookup + delivery creation in a single session/commit.
-        async with factory() as session:
-            agent = await get_agent_by_address(session, address)
-            if agent is None or not agent.webhook_url:
-                return False
+        agent = await get_agent_by_address(session, address)
+        if agent is None or not agent.webhook_url:
+            return None
 
-            webhook_url: str = agent.webhook_url
-            # Phase 47 T7.5 + RESEARCH OQ1 option (a): HMAC signing key is now
-            # the per-agent token_hash (HMAC-SHA-256 of the original token +
-            # server pepper, already stored). The plaintext column was dropped
-            # in alembic 0007. Internal-storage-only change: external webhook
-            # receivers MUST be re-keyed to verify against token_hash rather
-            # than the plaintext they were given at registration time
-            # (T-47-08-02 — operator notification required pre-deploy).
-            signing_key: str = agent.token_hash
+        if not agent.webhook_secret:
+            # Should not happen: the two columns are set together.  The message
+            # stays in the inbox, where the agent can still fetch it.
+            logger.warning("No webhook secret for %s, skipping webhook delivery", address)
+            return None
 
-            envelope_json = json.dumps(envelope_dict, separators=(",", ":"))
-            message_id = envelope_dict.get("id", "unknown")
+        webhook_url: str = agent.webhook_url
+        signing_key: str = agent.webhook_secret
 
-            try:
-                delivery = await create_delivery(
-                    session, address, str(message_id), envelope_json, commit=False
-                )
-                await session.commit()
-            except Exception:
-                await session.rollback()
-                raise
+        envelope_json = json.dumps(envelope_dict, separators=(",", ":"))
+        message_id = envelope_dict.get("message_id", "unknown")
+
+        delivery = await create_delivery(
+            session, address, str(message_id), envelope_json, commit=False
+        )
         delivery_id = delivery.id
 
-        task = asyncio.create_task(
-            self._deliver_with_retries(
-                address, envelope_dict, webhook_url, signing_key, delivery_id
+        def start() -> None:
+            task = asyncio.create_task(
+                self._deliver_with_retries(
+                    address, envelope_dict, webhook_url, signing_key, delivery_id
+                )
             )
-        )
-        self._active_tasks.add(task)
-        task.add_done_callback(self._active_tasks.discard)
+            self._active_tasks.add(task)
+            task.add_done_callback(self._active_tasks.discard)
 
-        return True
+        return start
 
     async def _deliver_with_retries(
         self,
@@ -260,17 +303,18 @@ class WebhookDeliveryService:
         defense (the URL could become dangerous between registration
         and delivery).
 
-        ``signing_key`` is the per-agent HMAC secret. Phase 47 T7.5 + RESEARCH
-        OQ1 option (a): the relay now signs with ``agent.token_hash``; external
-        receivers must be re-keyed accordingly (T-47-08-02).
+        ``signing_key`` is the agent's ``webhook_secret``.
         """
         if self._http_client is None:
             logger.error("HTTP client not initialized -- call start() first")
             factory = async_session_factory(get_engine())
             async with factory() as session:
+                await _store_for_pickup(session, address, envelope_dict)
                 await complete_delivery(
-                    session, delivery_id, "failed", "HTTP client not initialized"
+                    session, delivery_id, "failed", "HTTP client not initialized",
+                    commit=False,
                 )
+                await session.commit()
             return
 
         factory = async_session_factory(get_engine())
@@ -291,12 +335,15 @@ class WebhookDeliveryService:
                     reason,
                 )
                 async with factory() as session:
+                    await _store_for_pickup(session, address, envelope_dict)
                     await complete_delivery(
                         session,
                         delivery_id,
                         "failed",
                         f"URL re-validation failed: {reason}",
+                        commit=False,
                     )
+                    await session.commit()
                 return
 
             try:
@@ -306,11 +353,11 @@ class WebhookDeliveryService:
                     headers={
                         "Content-Type": "application/json",
                         "X-UAM-Signature": signature,
-                        "User-Agent": "UAM-Relay/0.1.0",
+                        "User-Agent": f"UAM-Relay/{__version__}",
                     },
                 )
                 status_code = resp.status_code
-            except httpx.HTTPError as exc:
+            except (httpx.HTTPError, httpx.InvalidURL) as exc:
                 # Network error -- retriable
                 error_msg = f"{type(exc).__name__}: {exc}"
                 logger.debug(
@@ -348,9 +395,12 @@ class WebhookDeliveryService:
                 self._circuit_breaker.record_success(address)
 
                 # Send receipt.delivered to original sender (MSG-05 anti-loop guard)
-                msg_type = str(envelope_dict.get("type", ""))
                 original_from = envelope_dict.get("from", "")
-                if self._manager and original_from and not msg_type.startswith("receipt."):
+                if (
+                    self._manager
+                    and original_from
+                    and not is_receipt(envelope_dict.get("type"))
+                ):
                     receipt = {
                         "type": "receipt.delivered",
                         "message_id": envelope_dict.get("message_id", ""),
@@ -374,6 +424,7 @@ class WebhookDeliveryService:
                         await record_attempt(
                             session, delivery_id, status_code=status_code, error=None, commit=False
                         )
+                        await _store_for_pickup(session, address, envelope_dict)
                         await complete_delivery(
                             session, delivery_id, "failed", error_msg, commit=False
                         )
@@ -405,7 +456,9 @@ class WebhookDeliveryService:
             len(RETRY_DELAYS),
         )
         async with factory() as session:
+            await _store_for_pickup(session, address, envelope_dict)
             await complete_delivery(
-                session, delivery_id, "failed", "All retries exhausted"
+                session, delivery_id, "failed", "All retries exhausted", commit=False
             )
+            await session.commit()
         self._circuit_breaker.record_failure(address)

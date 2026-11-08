@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "youam"
-version = "1.0.0"
+version = "1.0.1"
 description = "Universal Agent Messaging — encrypted, trust-on-first-use messaging for AI agents"
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -89,7 +89,7 @@ relay = [
     "alembic>=1.14.0",
 ]
 mcp = [
-    "mcp>=1.0",
+    "mcp>=1.0,<2",
 ]
 cards = [
     "Pillow>=10.0",
@@ -110,7 +110,7 @@ all = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.34",
     "web3>=7.0",
-    "mcp>=1.0",
+    "mcp>=1.0,<2",
     "litellm>=1.30",
     "Pillow>=10.0",
     "sqlmodel>=0.0.22",
@@ -131,6 +131,7 @@ dev = [
     "pytest-cov",
     "pytest-asyncio>=0.25",
     "pytest-httpx>=0.35",
+    "pytest-timeout>=2.3",
     "httpx>=0.28",
     "jsonschema>=4.20",
     "testcontainers[postgres]>=4.13",
@@ -149,4 +150,5 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
     "postgres: Tests requiring a PostgreSQL container (skipped if Docker unavailable)",
+    "interop: Cross-SDK and cross-relay interoperability tests",
 ]

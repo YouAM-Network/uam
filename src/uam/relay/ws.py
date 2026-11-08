@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-
-# Grace period for clock skew when checking expiry (seconds)
-_EXPIRY_GRACE_SECONDS = 30
+from starlette.websockets import WebSocketState
 
 from uam.protocol import (
     InvalidEnvelopeError,
@@ -18,8 +17,20 @@ from uam.protocol import (
     from_wire_dict,
     verify_envelope,
 )
+from uam.protocol.errors import IncompatibleVersionError
 from uam.relay.auth import verify_token_ws
 from uam.relay.connections import ConnectionManager, LockedWebSocket
+from uam.relay.federation import forward_to_peer
+from uam.relay.models import check_envelope_size
+from uam.relay.policy import (
+    DeliveryDenied,
+    authorize_delivery,
+    charge_duplicate,
+    goes_to_peer,
+    is_receipt,
+    refuse_early,
+)
+from uam.relay.relay_meta import mark_stored, stamp
 
 from uam.db.crud.agents import get_agent_by_address, update_agent
 from uam.db.crud.messages import get_inbox, mark_delivered, store_message
@@ -49,38 +60,49 @@ async def _deliver_stored_messages(
     and we abort the rest of the drain — the unsent messages remain in
     storage and will be redelivered on the next reconnect (RELAY-03).
     """
-    async with factory() as session:
-        stored = await get_inbox(session, address)
-    if not stored:
-        return
-
-    ids: list[int] = []
-    for msg in stored:
-        envelope_data = json.loads(msg.envelope)
-        delivered = await manager.send_to(address, envelope_data)
-        if not delivered:
-            # Connection died mid-drain; abort. Unsent messages stay in
-            # storage and will be redelivered on the next reconnect.
-            logger.warning("Drain aborted for %s: connection lost", address)
-            break
-        ids.append(msg.id)
-
-        # Send receipt.delivered to the original sender (MSG-05 anti-loop guard)
-        original_from = envelope_data.get("from", "")
-        msg_type = str(envelope_data.get("type", ""))
-        if original_from and not msg_type.startswith("receipt."):
-            receipt = {
-                "type": "receipt.delivered",
-                "message_id": envelope_data.get("message_id", ""),
-                "timestamp": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
-                "to": address,
-            }
-            await manager.send_to(original_from, receipt)
-
-    if ids:
+    while True:
         async with factory() as session:
-            await mark_delivered(session, ids)
-        logger.info("Delivered %d stored messages to %s", len(ids), address)
+            stored = await get_inbox(session, address)
+        if not stored:
+            return
+
+        ids: list[int] = []
+        for msg in stored:
+            envelope_data = mark_stored(json.loads(msg.envelope))
+            delivered = await manager.send_to(address, envelope_data)
+            if not delivered:
+                # Connection died mid-drain; abort. Unsent messages stay in
+                # storage and will be redelivered on the next reconnect.
+                logger.warning("Drain aborted for %s: connection lost", address)
+                break
+            ids.append(msg.id)
+
+            # Send receipt.delivered to the original sender (MSG-05 anti-loop guard)
+            original_from = envelope_data.get("from", "")
+            if original_from and not is_receipt(envelope_data.get("type")):
+                receipt = {
+                    "type": "receipt.delivered",
+                    "message_id": envelope_data.get("message_id", ""),
+                    "timestamp": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+                    "to": address,
+                }
+                await manager.send_to(original_from, receipt)
+
+        if ids:
+            async with factory() as session:
+                await mark_delivered(session, ids)
+            logger.info("Delivered %d stored messages to %s", len(ids), address)
+        if len(ids) < len(stored):
+            return
+
+
+async def _record_last_seen(address: str, factory) -> None:
+    """Note when *address* was last connected.  Best effort."""
+    try:
+        async with factory() as session:
+            await update_agent(session, address, last_seen=datetime.now(timezone.utc))
+    except Exception:
+        logger.debug("Failed to update last_seen for %s on disconnect", address)
 
 
 async def handle_inbound_message(
@@ -98,56 +120,32 @@ async def handle_inbound_message(
     webhook receipt forwarding — preventing frame interleave under
     concurrent send pressure (T4.1).
 
-    Order of operations (DoS-resistant):
-    1.  Blocklist check (SPAM-01 -- O(1) set lookup)
-    2.  Allowlist check (SPAM-01 -- O(1), sets skip_reputation flag)
-    3.  Adaptive sender rate limit (SPAM-04 -- reputation-based)
-    4.  Parse envelope
-    5.  Sender identity match
-    6.  Domain rate limit (SPAM-03 -- relay domain exempt)
-    7.  Recipient rate limit (RELAY-05)
-    8.  Reputation score check (SPAM-06 -- before crypto)
-    9.  Signature verification (expensive -- LAST)
-    10. Route or store
+    Order of operations:
+    1. Early refusal (relay/policy.py): blocklist, reputation, sender limit
+    2. Parse envelope
+    3. Sender identity match
+    4. Dedup (MSG-03) -- a duplicate is acked again, idempotently
+    5. Delivery checks (relay/policy.py): blocklist, expiry, reputation,
+       sender / domain / recipient rate limits
+    6. Signature verification (expensive -- after the cheap checks)
+    7. Route or store
+
+    Steps 4-7 share one transaction: a refusal rolls back the dedup row,
+    so the sender can send the same message again later.
     """
-    sender_limiter = wrapped_ws.app.state.sender_limiter
-    recipient_limiter = wrapped_ws.app.state.recipient_limiter
-    spam_filter = wrapped_ws.app.state.spam_filter
-    reputation_manager = wrapped_ws.app.state.reputation_manager
-    domain_limiter = wrapped_ws.app.state.domain_limiter
-    settings = wrapped_ws.app.state.settings
-
     # Receipt type detection -- check raw dict before full parsing (MSG-05)
-    is_receipt = str(raw.get("type", "")).startswith("receipt.")
+    receipt = is_receipt(raw.get("type"))
 
-    # Blocklist check (SPAM-01)
-    if spam_filter.is_blocked(sender_address):
-        await wrapped_ws.send_json({"error": "blocked", "detail": "Sender is blocked"})
+    try:
+        await refuse_early(wrapped_ws.app.state, sender_address, receipt=receipt)
+    except DeliveryDenied as denied:
+        await wrapped_ws.send_json({"error": denied.code, "detail": denied.detail})
         return
-
-    # Allowlist check (SPAM-01)
-    is_allowlisted = spam_filter.is_allowed(sender_address)
-
-    # Adaptive sender rate limit (SPAM-04) -- receipt types exempt
-    if is_receipt:
-        pass  # receipts skip all rate limits and reputation checks
-    elif not is_allowlisted:
-        send_limit = reputation_manager.get_send_limit(sender_address)
-        if send_limit == 0:
-            await wrapped_ws.send_json({"error": "reputation_blocked", "detail": "Sender reputation too low"})
-            return
-        if not await sender_limiter.check(sender_address, limit=send_limit):
-            await wrapped_ws.send_json({"error": "rate_limited", "detail": "Sender rate limit exceeded"})
-            return
-    else:
-        if not await sender_limiter.check(sender_address):
-            await wrapped_ws.send_json({"error": "rate_limited", "detail": "Sender rate limit exceeded"})
-            return
 
     # Parse envelope
     try:
         envelope = from_wire_dict(raw)
-    except InvalidEnvelopeError as exc:
+    except (InvalidEnvelopeError, IncompatibleVersionError) as exc:
         await wrapped_ws.send_json({
             "error": "invalid_envelope",
             "detail": str(exc),
@@ -162,108 +160,116 @@ async def handle_inbound_message(
         })
         return
 
-    # Dedup check (MSG-03) -- before expensive delivery chain
-    async with factory() as session:
-        is_new = await record_message_id(session, envelope.message_id, sender_address)
-    if not is_new:
-        # Silently ACK duplicate -- idempotent for the sender
-        await wrapped_ws.send_json({
-            "type": "ack",
-            "message_id": envelope.message_id,
-            "delivered": True,
-        })
-        return
+    # What the relay delivers and stores: the envelope with this relay's
+    # relay_meta in place of any relay_* keys the sender sent.
+    wire = stamp(raw, wrapped_ws.app.state.settings.relay_domain)
 
-    # Expiry check (MSG-04) -- reject if expires timestamp is in the past
-    expires_str: str | None = envelope.expires
-    if expires_str is not None:
+    async with factory() as session:
         try:
-            exp_ts = datetime.fromisoformat(expires_str.replace("Z", "+00:00"))
-            now = datetime.now(timezone.utc)
-            if exp_ts + timedelta(seconds=_EXPIRY_GRACE_SECONDS) < now:
+            # Dedup check (MSG-03) -- before expensive delivery chain
+            is_new = await record_message_id(
+                session, envelope.message_id, sender_address, commit=False
+            )
+            if not is_new:
+                # Silently ACK duplicate -- idempotent for the sender
+                try:
+                    await charge_duplicate(
+                        wrapped_ws.app.state, sender_address, receipt=receipt
+                    )
+                except DeliveryDenied as denied:
+                    await wrapped_ws.send_json({"error": denied.code, "detail": denied.detail})
+                    return
                 await wrapped_ws.send_json({
-                    "error": "expired",
-                    "detail": "Message has expired",
+                    "type": "ack",
+                    "message_id": envelope.message_id,
+                    "delivered": True,
                 })
                 return
-        except (ValueError, TypeError):
-            # Malformed expires = no expiry (don't reject)
-            expires_str = None
 
-    # Domain rate limit (SPAM-03) -- receipt types exempt
-    if not is_receipt:
-        sender_domain = sender_address.split("::")[1] if "::" in sender_address else ""
-        if sender_domain and sender_domain != settings.relay_domain and not is_allowlisted:
-            if not await domain_limiter.check(sender_domain):
-                await wrapped_ws.send_json({"error": "rate_limited", "detail": "Domain rate limit exceeded"})
+            try:
+                clearance = await authorize_delivery(wrapped_ws.app.state, envelope, session)
+            except DeliveryDenied as denied:
+                await session.rollback()
+                await wrapped_ws.send_json({"error": denied.code, "detail": denied.detail})
                 return
 
-    # Rate limit: recipient (RELAY-05) -- receipt types exempt
-    if not is_receipt and not await recipient_limiter.check(envelope.to_address):
-        await wrapped_ws.send_json({
-            "error": "rate_limited",
-            "detail": "Recipient rate limit exceeded (100/min)",
-        })
-        return
+            # Look up sender's public key and verify signature (expensive)
+            sender_agent = await get_agent_by_address(session, sender_address)
+            if sender_agent is None:
+                await session.rollback()
+                await wrapped_ws.send_json({
+                    "error": "sender_not_found",
+                    "detail": f"Sender agent not found: {sender_address}",
+                })
+                return
+            if sender_agent.status != "active":
+                await session.rollback()
+                await wrapped_ws.send_json({
+                    "error": "sender_not_active",
+                    "detail": f"Sender agent is not active: {sender_address}",
+                })
+                return
 
-    # Reputation check (SPAM-06) -- receipt types exempt
-    if not is_receipt and not is_allowlisted:
-        score = reputation_manager.get_score(sender_address)
-        if score < 20:
-            await wrapped_ws.send_json({"error": "reputation_blocked", "detail": "Sender reputation too low"})
-            return
-
-    # Look up sender's public key and verify signature (expensive)
-    async with factory() as session:
-        sender_agent = await get_agent_by_address(session, sender_address)
-    if sender_agent is None:
-        await wrapped_ws.send_json({
-            "error": "sender_not_found",
-            "detail": f"Sender agent not found: {sender_address}",
-        })
-        return
-
-    try:
-        sender_vk = deserialize_verify_key(sender_agent.public_key)
-        verify_envelope(envelope, sender_vk)
-    except SignatureVerificationError as exc:
-        await wrapped_ws.send_json({
-            "error": "invalid_signature",
-            "detail": str(exc),
-        })
-        return
-
-    # Three-tier delivery chain: WebSocket > webhook > store-and-forward (HOOK-02)
-    # Tier 1: WebSocket (real-time)
-    delivered = await manager.send_to(envelope.to_address, raw)
-
-    if not delivered:
-        # Tier 2: Webhook (near-real-time)
-        webhook_service = wrapped_ws.app.state.webhook_service
-        webhook_initiated = await webhook_service.try_deliver(
-            envelope.to_address, raw
-        )
-        if webhook_initiated:
-            delivered = True  # webhook delivery initiated (async)
-
-    if not delivered:
-        # Tier 3: Store-and-forward (eventual)
-        # Convert expires string to datetime for CRUD layer
-        expires_dt = None
-        if expires_str is not None:
             try:
-                expires_dt = datetime.fromisoformat(expires_str.replace("Z", "+00:00"))
-            except (ValueError, TypeError):
-                pass
-        async with factory() as session:
-            await store_message(
-                session,
-                message_id=envelope.message_id,
-                from_addr=envelope.from_address,
-                to_addr=envelope.to_address,
-                envelope=json.dumps(raw),
-                expires_at=expires_dt,
-            )
+                sender_vk = deserialize_verify_key(sender_agent.public_key)
+                verify_envelope(envelope, sender_vk)
+            except SignatureVerificationError as exc:
+                await session.rollback()
+                await wrapped_ws.send_json({
+                    "error": "invalid_signature",
+                    "detail": str(exc),
+                })
+                return
+
+            if not clearance.deliver:
+                # A receipt past its bucket: accepted, not delivered (relay/policy.py)
+                await session.rollback()
+                await wrapped_ws.send_json({
+                    "type": "ack",
+                    "message_id": envelope.message_id,
+                    "delivered": False,
+                })
+                return
+
+            # Three-tier delivery chain: WebSocket > webhook > store-and-forward (HOOK-02)
+            # Tier 1: WebSocket (real-time)
+            delivered = await manager.send_to(envelope.to_address, wire)
+            start_webhook = None
+
+            if not delivered:
+                # Tier 2: Webhook (near-real-time)
+                webhook_service = wrapped_ws.app.state.webhook_service
+                start_webhook = await webhook_service.prepare(
+                    session, envelope.to_address, wire
+                )
+                if start_webhook is not None:
+                    delivered = True  # webhook delivery initiated (async)
+
+            if not delivered and goes_to_peer(wrapped_ws.app.state, envelope.to_address):
+                # Non-local recipient -- forward via federation
+                method = await forward_to_peer(
+                    wrapped_ws.app.state, session, envelope.to_address, wire
+                )
+                delivered = method == "federated"
+            elif not delivered:
+                # Tier 3: Store-and-forward (eventual)
+                await store_message(
+                    session,
+                    message_id=envelope.message_id,
+                    from_addr=envelope.from_address,
+                    to_addr=envelope.to_address,
+                    envelope=json.dumps(wire),
+                    expires_at=clearance.expires_at,
+                    commit=False,
+                )
+
+            # Single commit for dedup + store
+            await session.commit()
+            if start_webhook is not None:
+                start_webhook()
+        except Exception:
+            await session.rollback()
+            raise
 
     # Send ACK first (always before receipt)
     await wrapped_ws.send_json({
@@ -273,7 +279,8 @@ async def handle_inbound_message(
     })
 
     # Generate receipt.delivered for the sender (MSG-05 anti-loop guard)
-    if delivered and not is_receipt:
+    # A webhook's receipt comes from the webhook service, once it succeeds.
+    if delivered and not receipt and start_webhook is None:
         receipt = {
             "type": "receipt.delivered",
             "message_id": envelope.message_id,
@@ -372,7 +379,16 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         # Message loop. Receive uses the wrapper's pass-through (no lock
         # — single-reader contract). Sends use wrapped_ws (locked).
         while True:
-            raw = await wrapped_ws.receive_json()
+            try:
+                raw = await wrapped_ws.receive_json()
+            except (ValueError, KeyError):
+                # Not JSON, or a binary frame.  KeyError is how Starlette
+                # reports a frame without text.
+                await wrapped_ws.send_json({
+                    "error": "invalid_json",
+                    "detail": "Frames must be JSON text",
+                })
+                continue
 
             # Handle pong messages (heartbeat RELAY-06)
             if isinstance(raw, dict) and raw.get("type") == "pong":
@@ -380,7 +396,15 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 continue
 
             # Distinguish message types: envelopes have "uam_version" field
-            if "uam_version" in raw:
+            if isinstance(raw, dict) and "uam_version" in raw:
+                try:
+                    check_envelope_size(raw)
+                except ValueError as exc:
+                    await wrapped_ws.send_json({
+                        "error": "envelope_too_large",
+                        "detail": str(exc),
+                    })
+                    continue
                 await handle_inbound_message(wrapped_ws, raw, address, factory, manager)
             else:
                 msg_type = raw.get("type", "<missing>") if isinstance(raw, dict) else "<invalid>"
@@ -393,12 +417,16 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected: %s", address)
     except Exception:
-        logger.exception("WebSocket error for %s", address)
+        if websocket.application_state == WebSocketState.DISCONNECTED:
+            # The relay closed it: replaced by a newer connection, or dead.
+            logger.info("WebSocket closed: %s", address)
+        else:
+            logger.exception("WebSocket error for %s", address)
     finally:
-        heartbeat.record_disconnect(address)
-        try:
-            async with factory() as session:
-                await update_agent(session, address, last_seen=datetime.now(timezone.utc))
-        except Exception:
-            logger.debug("Failed to update last_seen for %s on disconnect", address)
-        await manager.disconnect(address)
+        # A client that reconnected already owns the address: leave that alone.
+        await manager.disconnect(address, wrapped_ws)
+        if not manager.is_online(address):
+            heartbeat.record_disconnect(address)
+        # Shielded: this handler can be cancelled, and a database call cancelled
+        # half way can hang shutdown (see tests/relay/test_ws_disconnect.py).
+        await asyncio.shield(_record_last_seen(address, factory))

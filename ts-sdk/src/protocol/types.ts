@@ -8,6 +8,13 @@ export const UAM_VERSION = "0.1";
 /** Maximum envelope size in bytes (64 KB). */
 export const MAX_ENVELOPE_SIZE = 65536;
 
+/**
+ * Maximum allowed skew, in seconds, between an inbound envelope's signed
+ * timestamp and the receiver's clock (either direction). Also the TTL of
+ * the inbound replay cache. Matches Python MAX_ENVELOPE_AGE.
+ */
+export const MAX_ENVELOPE_AGE = 300;
+
 /** All UAM message types. */
 export enum MessageType {
   MESSAGE = "message",

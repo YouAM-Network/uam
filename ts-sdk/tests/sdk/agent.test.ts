@@ -101,7 +101,7 @@ describe("Agent", () => {
       keyDir: join(tempDir, "keys"),
     });
     expect(typeof agent.version).toBe("string");
-    expect(agent.version).toBe("0.1.0");
+    expect(agent.version).toMatch(/^\d+\.\d+\.\d+/);
   });
 
   it("publicKey throws before keys are loaded", () => {

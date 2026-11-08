@@ -174,11 +174,13 @@ async def enqueue_federation(
     hop_count: int = 0,
     *,
     commit: bool = True,
+    next_retry: datetime | None = None,
 ) -> FederationQueueEntry:
     """Add a message to the outbound federation queue.
 
     When *commit* is ``False`` the row is flushed but the caller is
-    responsible for committing the session.
+    responsible for committing the session.  *next_retry* is when the retry
+    loop may first take it (default: now).
     """
     entry = FederationQueueEntry(
         target_domain=target_domain,
@@ -186,7 +188,7 @@ async def enqueue_federation(
         via=via,
         hop_count=hop_count,
         status="pending",
-        next_retry=datetime.now(timezone.utc),
+        next_retry=next_retry or datetime.now(timezone.utc),
     )
     session.add(entry)
     if commit:

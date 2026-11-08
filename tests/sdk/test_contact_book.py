@@ -624,3 +624,17 @@ async def test_add_contact_force_overwrites_pinned(data_dir, caplog):
         )
     finally:
         await book.close()
+
+
+@pytest.mark.parametrize("state", ["pinned", "verified"])
+async def test_the_same_key_does_not_lower_a_contacts_trust(data_dir, state):
+    book = ContactBook(data_dir)
+    await book.open()
+    try:
+        await book.add_contact("bob::test.local", "key", trust_state=state)
+
+        await book.add_contact("bob::test.local", "key", trust_state="provisional")
+
+        assert await book.get_trust_state("bob::test.local") == state
+    finally:
+        await book.close()

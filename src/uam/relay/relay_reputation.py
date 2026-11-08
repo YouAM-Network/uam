@@ -24,7 +24,7 @@ Phase 46 Plan 46-04 (T6.3):
       rollback (mirrors ``src/uam/db/crud/reputation.py:init_reputation``).
     - Timestamps: ``func.now()`` (dialect-aware -- emits CURRENT_TIMESTAMP
       on Postgres, the equivalent SQLite literal on SQLite).
-    - Score arithmetic clamps moved into ``func.min`` / ``func.max``
+    - Score arithmetic clamps moved into a SQL ``CASE``
       inside the ORM ``update().values()`` call.
 
     Both ``record_success`` and ``record_failure`` now ensure-row in a
@@ -37,7 +37,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from sqlalchemy import func, update
+from sqlalchemy import case, func, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlmodel import select
@@ -132,7 +132,7 @@ class RelayReputationManager:
         and bumps score by +1 (capped at 100).
 
         T6.3: portable SQL -- try/IntegrityError-rollback for ensure-row +
-        atomic ``UPDATE`` with ``func.min`` clamp + ``func.now()`` timestamp.
+        atomic ``UPDATE`` with ``CASE`` clamp + ``func.now()`` timestamp.
         """
         # Step 1: ensure row exists (portable, race-safe).
         await self._ensure_row(domain)
@@ -144,7 +144,10 @@ class RelayReputationManager:
                 .where(RelayReputation.domain == domain)
                 .values(
                     messages_forwarded=RelayReputation.messages_forwarded + 1,
-                    score=func.min(100, RelayReputation.score + 1),
+                    score=case(
+                        (RelayReputation.score + 1 > 100, 100),
+                        else_=RelayReputation.score + 1,
+                    ),
                     last_success=func.now(),
                     updated_at=func.now(),
                 )
@@ -182,7 +185,7 @@ class RelayReputationManager:
         and decrements score by -5 (floor at 0).
 
         T6.3: portable SQL -- try/IntegrityError-rollback for ensure-row +
-        atomic ``UPDATE`` with ``func.max`` clamp + ``func.now()`` timestamp.
+        atomic ``UPDATE`` with ``CASE`` clamp + ``func.now()`` timestamp.
         """
         # Step 1: ensure row exists (portable, race-safe).
         await self._ensure_row(domain)
@@ -194,7 +197,10 @@ class RelayReputationManager:
                 .where(RelayReputation.domain == domain)
                 .values(
                     messages_rejected=RelayReputation.messages_rejected + 1,
-                    score=func.max(0, RelayReputation.score - 5),
+                    score=case(
+                        (RelayReputation.score - 5 < 0, 0),
+                        else_=RelayReputation.score - 5,
+                    ),
                     last_failure=func.now(),
                     updated_at=func.now(),
                 )

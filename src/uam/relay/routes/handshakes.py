@@ -1,8 +1,13 @@
-"""Handshake endpoints for relay-mediated key exchange (RELAY-11).
+"""Legacy relay-mediated handshake endpoints (RELAY-11), now read-only.
 
-POST /handshakes/send -- initiate a handshake
+POST /handshakes/send -- gone (410); agents send a signed handshake.request
 GET /handshakes/pending/{address} -- list pending handshakes for an agent
-POST /handshakes/{handshake_id}/respond -- respond to a handshake
+POST /handshakes/{handshake_id}/respond -- deny only; approving is refused
+
+Contacts are approved between the agents' own SDKs with signed
+``handshake.*`` envelopes. These endpoints let an agent's token create a
+request and approve it with no one else involved, so they no longer
+create or approve anything.
 """
 
 from __future__ import annotations
@@ -13,7 +18,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from uam.db.crud.handshakes import (
-    create_handshake,
     get_handshake_by_id,
     get_pending,
     respond_handshake,
@@ -24,7 +28,6 @@ from uam.relay.models import (
     HandshakeListResponse,
     HandshakeRespondRequest,
     HandshakeResponse,
-    HandshakeSendRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,36 +40,13 @@ router = APIRouter(tags=["handshakes"])
 # ---------------------------------------------------------------------------
 
 
-@router.post("/handshakes/send", response_model=HandshakeResponse, status_code=201)
-async def send_handshake(
-    body: HandshakeSendRequest,
-    session: AsyncSession = Depends(get_session),
-    agent: dict = Depends(verify_token_http),
-) -> HandshakeResponse:
-    """Initiate a relay-mediated handshake with another agent.
-
-    Creates a pending handshake request from the authenticated agent
-    to the target address.  Optionally includes a contact card.
-    """
-    # --- Transaction-wrapped DB section (RES-01) ---
-    try:
-        hs = await create_handshake(
-            session,
-            from_addr=agent["address"],
-            to_addr=body.to_address,
-            contact_card=body.contact_card,
-            commit=False,
-        )
-        await session.commit()
-    except Exception:
-        await session.rollback()
-        raise
-
-    return HandshakeResponse(
-        id=hs.id,  # type: ignore[arg-type]
-        status=hs.status,
-        from_addr=hs.from_addr,
-        to_addr=hs.to_addr,
+@router.post("/handshakes/send", status_code=410, deprecated=True)
+async def send_handshake() -> None:
+    """Gone: send a signed ``handshake.request`` envelope instead."""
+    raise HTTPException(
+        status_code=410,
+        detail="Relay-mediated handshakes are retired; send a signed handshake.request envelope",
+        headers={"Deprecation": "true"},
     )
 
 
@@ -116,7 +96,7 @@ async def respond_to_handshake(
     session: AsyncSession = Depends(get_session),
     agent: dict = Depends(verify_token_http),
 ) -> HandshakeResponse:
-    """Respond to a pending handshake (approve or deny).
+    """Deny a pending handshake (approving here is refused).
 
     The authenticated agent must be the ``to_addr`` of the handshake.
     """
@@ -125,6 +105,12 @@ async def respond_to_handshake(
         raise HTTPException(
             status_code=400,
             detail="Response must be 'approved' or 'denied'",
+        )
+
+    if body.response == "approved":
+        raise HTTPException(
+            status_code=403,
+            detail="Approve contacts with a signed handshake.accept from your own agent",
         )
 
     # Look up the handshake

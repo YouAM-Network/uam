@@ -5,7 +5,7 @@
  * Commands requiring relay connection are tested for error handling only.
  */
 
-import { describe, it, expect, beforeAll, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import { mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -107,6 +107,48 @@ describe("whoami", () => {
       expect(logs[2]).toMatch(/^Key file:\s+/);
       expect(logs[2]).toContain("testagent.key");
     } finally {
+      if (originalHome !== undefined) {
+        process.env["UAM_HOME"] = originalHome;
+      } else {
+        delete process.env["UAM_HOME"];
+      }
+    }
+  });
+
+  it("shows the address saved for the configured relay only", async () => {
+    const keyDir = join(testDir, "keys");
+    mkdirSync(keyDir, { recursive: true });
+    const kp = generateKeypair();
+    writeFileSync(join(keyDir, "testagent.key"), serializeSigningKey(kp.seed));
+    writeFileSync(
+      join(keyDir, "testagent.address"),
+      JSON.stringify({
+        address: "testagent::youam.test",
+        relay_url: "http://relay.test",
+      })
+    );
+
+    const originalHome = process.env["UAM_HOME"];
+    process.env["UAM_HOME"] = testDir;
+    const lines: string[] = [];
+    const logSpy = vi
+      .spyOn(console, "log")
+      .mockImplementation((msg: string) => void lines.push(msg));
+
+    try {
+      const { whoamiCommand } = await import("../../src/cli/commands/whoami.js");
+
+      process.env["UAM_RELAY_URL"] = "http://relay.test/";
+      await whoamiCommand({ name: "testagent" });
+      expect(lines[0]).toMatch(/^Address:\s+testagent::youam\.test$/);
+
+      lines.length = 0;
+      process.env["UAM_RELAY_URL"] = "http://elsewhere.test";
+      await whoamiCommand({ name: "testagent" });
+      expect(lines[0]).toMatch(/^Address:\s+testagent::elsewhere\.test$/);
+    } finally {
+      logSpy.mockRestore();
+      delete process.env["UAM_RELAY_URL"];
       if (originalHome !== undefined) {
         process.env["UAM_HOME"] = originalHome;
       } else {

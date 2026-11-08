@@ -11,6 +11,7 @@ Environment variables take precedence over files when set.
 from __future__ import annotations
 
 import logging
+import json
 import os
 import platform
 import stat
@@ -120,17 +121,56 @@ class KeyManager:
         token_path.write_text(token)
         self._set_permissions(token_path)
 
-    def load_token(self, name: str) -> str | None:
+    def save_address(self, name: str, address: str, relay_url: str) -> None:
+        """Store the address *relay_url* gave this agent."""
+        self._key_dir.mkdir(parents=True, exist_ok=True)
+        (self._key_dir / f"{name}.address").write_text(
+            json.dumps({"address": address, "relay_url": relay_url.rstrip("/")})
+        )
+
+    def load_address(self, name: str, relay_url: str | None = None) -> str | None:
+        """Load the address *relay_url* gave this agent, or return None.
+
+        A file that is missing, damaged or from another relay counts as no
+        address, so the caller asks the relay again.  With no *relay_url*,
+        any relay's will do: that is for showing it, not for connecting.
+        """
+        try:
+            saved = json.loads((self._key_dir / f"{name}.address").read_text())
+            address = saved["address"]
+            saved_relay = saved["relay_url"].rstrip("/")
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            return None
+        if not isinstance(address, str):
+            return None
+        if relay_url is not None and saved_relay != relay_url.rstrip("/"):
+            return None
+        return address or None
+
+    def _saved_for_another_relay(self, name: str, relay_url: str) -> bool:
+        """True if the saved address says this agent's files are another relay's."""
+        try:
+            saved = json.loads((self._key_dir / f"{name}.address").read_text())
+            return saved["relay_url"].rstrip("/") != relay_url.rstrip("/")
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            return False
+
+    def load_token(self, name: str, relay_url: str | None = None) -> str | None:
         """Load a previously saved token, or return None.
 
         Checks ``UAM_TOKEN`` env var first, then file-based storage,
-        then legacy ``.api_key`` files for backward compatibility.
+        then legacy ``.api_key`` files for backward compatibility.  With
+        *relay_url*, a saved token that belongs to another relay counts as
+        none: offering it there would hand that relay the agent's token.
         """
         # 1. Check environment variable
         env_token = os.environ.get("UAM_TOKEN")
         if env_token:
             logger.debug("Loaded token from UAM_TOKEN env var")
             return env_token.strip()
+
+        if relay_url is not None and self._saved_for_another_relay(name, relay_url):
+            return None
 
         # 2. File-based storage
         token_path = self._key_dir / f"{name}.token"

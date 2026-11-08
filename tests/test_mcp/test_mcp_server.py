@@ -81,6 +81,7 @@ async def _make_agent(relay_app, tmp_path, name: str) -> Agent:
     from uam.sdk.contact_book import ContactBook
 
     agent._contact_book = ContactBook(data_dir)
+    agent._handshake._contact_book = agent._contact_book
     # Load or generate keypair (needed before accessing public_key)
     agent._key_manager.load_or_generate(name)
 

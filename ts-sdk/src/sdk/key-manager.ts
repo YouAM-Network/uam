@@ -22,11 +22,13 @@ import {
   type SigningKey,
   type VerifyKey,
   type Seed,
+  parseAddress,
   generateKeypair,
   serializeSigningKey,
   deserializeSigningKey,
   serializeVerifyKey,
 } from "../protocol/index.js";
+import { trimRelayUrl } from "./config.js";
 
 const DEFAULT_KEY_DIR = join(homedir(), ".uam", "keys");
 
@@ -107,16 +109,59 @@ export class KeyManager {
   }
 
   /**
+   * Store the address `relayUrl` gave this agent.
+   */
+  saveAddress(name: string, address: string, relayUrl: string): void {
+    mkdirSync(this._keyDir, { recursive: true });
+    writeFileSync(
+      join(this._keyDir, `${name}.address`),
+      JSON.stringify({ address, relay_url: relayUrl })
+    );
+  }
+
+  /**
+   * Load the address saved for `relayUrl`.
+   *
+   * Returns null if there is none: the file is missing, unreadable or
+   * malformed, or it belongs to another relay.
+   */
+  loadAddress(name: string, relayUrl: string): string | null {
+    try {
+      const path = join(this._keyDir, `${name}.address`);
+      const saved = JSON.parse(readFileSync(path, "utf-8")) as {
+        address?: unknown;
+        relay_url?: unknown;
+      } | null;
+      const address = saved?.address;
+      const savedRelay = saved?.relay_url;
+      if (typeof address !== "string" || typeof savedRelay !== "string") {
+        return null;
+      }
+      if (trimRelayUrl(savedRelay) !== trimRelayUrl(relayUrl)) return null;
+      parseAddress(address);
+      return address;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Load a previously saved token, or return null.
    *
    * Checks UAM_TOKEN env var first, then file-based storage,
-   * then legacy .api_key files for backward compatibility.
+   * then legacy .api_key files for backward compatibility. With `relayUrl`,
+   * a saved token that belongs to another relay counts as none, so it is
+   * only offered to the relay that issued it.
    */
-  loadToken(name: string): string | null {
+  loadToken(name: string, relayUrl?: string): string | null {
     // 1. Check environment variable
     const envToken = process.env["UAM_TOKEN"];
     if (envToken) {
       return envToken.trim();
+    }
+
+    if (relayUrl !== undefined && this._savedForAnotherRelay(name, relayUrl)) {
+      return null;
     }
 
     // 2. File-based storage
@@ -130,6 +175,26 @@ export class KeyManager {
       return readFileSync(legacyPath, "utf-8").trim();
     }
     return null;
+  }
+
+  /**
+   * True if the saved address says this agent's files are another relay's.
+   * A missing or damaged file says nothing.
+   */
+  private _savedForAnotherRelay(name: string, relayUrl: string): boolean {
+    try {
+      const path = join(this._keyDir, `${name}.address`);
+      const saved = JSON.parse(readFileSync(path, "utf-8")) as {
+        relay_url?: unknown;
+      } | null;
+      const savedRelay = saved?.relay_url;
+      return (
+        typeof savedRelay === "string" &&
+        trimRelayUrl(savedRelay) !== trimRelayUrl(relayUrl)
+      );
+    } catch {
+      return false;
+    }
   }
 
   /** Set file permissions to 0o600 (owner read/write only). */

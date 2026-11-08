@@ -1,4 +1,10 @@
+import { readFileSync } from "node:fs";
 import { defineConfig } from "tsup";
+
+const { version } = JSON.parse(readFileSync("./package.json", "utf-8")) as {
+  version: string;
+};
+const define = { __UAM_SDK_VERSION__: JSON.stringify(version) };
 
 export default defineConfig([
   {
@@ -11,6 +17,7 @@ export default defineConfig([
     outDir: "dist",
     external: ["better-sqlite3", "ws", "libsodium-wrappers"],
     target: "node18",
+    define,
   },
   {
     entry: ["src/cli/index.ts"],
@@ -19,5 +26,6 @@ export default defineConfig([
     banner: { js: "#!/usr/bin/env node" },
     external: ["better-sqlite3", "ws", "libsodium-wrappers"],
     target: "node18",
+    define,
   },
 ]);

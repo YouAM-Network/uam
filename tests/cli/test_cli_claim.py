@@ -182,6 +182,7 @@ def test_init_claim_success(runner: CliRunner, uam_home: Path, tmp_path: Path):
     token_path = uam_home / "keys" / "scout.token"
     assert token_path.exists()
     assert token_path.read_text() == "bearer-token-123"
+    assert KeyManager(uam_home / "keys").load_address("scout") == "scout::youam.network"
 
     # Key file exists
     key_path = uam_home / "keys" / "scout.key"
@@ -308,3 +309,20 @@ def test_card_vcf_no_keys(runner: CliRunner, uam_home: Path):
     )
     assert result.exit_code == 1
     assert "No agent initialized" in result.output
+
+
+def test_card_vcf_uses_the_address_the_relay_gave(runner, uam_home):
+    key_dir = uam_home / "keys"
+    key_dir.mkdir(parents=True)
+    km = KeyManager(key_dir)
+    km.load_or_generate("testagent")
+    km.save_address("testagent", "testagent::chosen.example", "https://relay.example")
+
+    result = runner.invoke(
+        cli,
+        ["--name", "testagent", "card", "--vcf"],
+        env={"UAM_HOME": str(uam_home)},
+    )
+
+    assert result.exit_code == 0
+    assert "testagent::chosen.example" in result.output

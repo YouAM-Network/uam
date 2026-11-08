@@ -7,10 +7,13 @@ Discovers remote relay endpoints via DNS SRV lookup with
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import secrets
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import dns.asyncresolver
 import dns.rdatatype
@@ -18,10 +21,12 @@ import dns.resolver
 import dns.exception
 import httpx
 
+from sqlalchemy.ext.asyncio import AsyncSession
 from urllib.parse import urlparse
 
-from uam.protocol.types import utc_timestamp
+from uam.protocol.types import MAX_ENVELOPE_SIZE, utc_timestamp
 from uam.relay.relay_auth import sign_federation_request
+from uam.relay.relay_meta import for_federation
 from uam.relay.ssrf import (
     SSRFBlockedError,
     build_pinned_url,
@@ -29,11 +34,21 @@ from uam.relay.ssrf import (
     validate_outbound_target,
 )
 
-from uam.db.crud.federation import get_known_relay, log_federation, upsert_known_relay
+from uam.db.crud.federation import (
+    get_pending_queue,
+    enqueue_federation,
+    get_known_relay,
+    log_federation,
+    update_queue_entry,
+    upsert_known_relay,
+)
 from uam.db.session import async_session_factory
 from uam.db.engine import get_engine
 
 logger = logging.getLogger(__name__)
+
+# Long enough that the retry loop leaves a forward in progress alone.
+FORWARD_GRACE = timedelta(seconds=60)
 
 
 @dataclass
@@ -195,7 +210,9 @@ class FederationService:
         url = f"https://{host}:{port}/.well-known/uam-relay.json"
         # T5.1 — SSRF guard before outbound HTTP
         try:
-            validate_outbound_target(url, allowed_ports=(443, 8443))
+            await asyncio.to_thread(
+                validate_outbound_target, url, allowed_ports=(443, 8443)
+            )
         except SSRFBlockedError as exc:
             logger.warning(
                 "T5.1: refusing federation .well-known fetch %s: %s", url, exc
@@ -206,7 +223,9 @@ class FederationService:
         # original Host header + sni_hostname extension to httpx so cert
         # validation chains against the original hostname.
         try:
-            original_host, pinned_ip = resolve_pinned(host, allowed_ports=(443, 8443))
+            original_host, pinned_ip = await asyncio.to_thread(
+                resolve_pinned, host, allowed_ports=(443, 8443)
+            )
         except SSRFBlockedError as exc:
             logger.warning(
                 "R-46-01: refusing federation .well-known fetch %s (pin failed): %s",
@@ -239,7 +258,9 @@ class FederationService:
         url = f"https://{domain}/.well-known/uam-relay.json"
         # T5.1 — SSRF guard before outbound HTTP
         try:
-            validate_outbound_target(url, allowed_ports=(443, 8443))
+            await asyncio.to_thread(
+                validate_outbound_target, url, allowed_ports=(443, 8443)
+            )
         except SSRFBlockedError as exc:
             logger.warning(
                 "T5.1: refusing federation discovery fetch %s: %s", url, exc
@@ -247,8 +268,8 @@ class FederationService:
             return None
         # R-46-01 (Phase 46): resolve-once-pin DNS to defeat rebind.
         try:
-            original_host, pinned_ip = resolve_pinned(
-                domain, allowed_ports=(443, 8443)
+            original_host, pinned_ip = await asyncio.to_thread(
+                resolve_pinned, domain, allowed_ports=(443, 8443)
             )
         except SSRFBlockedError as exc:
             logger.warning(
@@ -331,7 +352,7 @@ class FederationService:
         # relays reject bodies missing it (Pydantic 422 on
         # FederationDeliverRequest).
         body = {
-            "envelope": envelope_dict,
+            "envelope": for_federation(envelope_dict, MAX_ENVELOPE_SIZE),
             "via": (via or []) + [from_relay],
             "hop_count": hop_count + 1,
             "timestamp": utc_timestamp(),
@@ -355,8 +376,10 @@ class FederationService:
         # from peer-controlled DNS/.well-known content via discover_relay;
         # we MUST validate it before posting the signed envelope.
         try:
-            validate_outbound_target(
-                relay_info["federation_url"], allowed_ports=(443, 8443)
+            await asyncio.to_thread(
+                validate_outbound_target,
+                relay_info["federation_url"],
+                allowed_ports=(443, 8443),
             )
         except SSRFBlockedError as exc:
             error_detail = f"SSRF refused: {exc}"
@@ -388,8 +411,8 @@ class FederationService:
         federation_url = relay_info["federation_url"]
         parsed = urlparse(federation_url)
         try:
-            original_host, pinned_ip = resolve_pinned(
-                parsed.hostname, allowed_ports=(443, 8443)
+            original_host, pinned_ip = await asyncio.to_thread(
+                resolve_pinned, parsed.hostname, allowed_ports=(443, 8443)
             )
         except SSRFBlockedError as exc:
             error_detail = f"SSRF refused (pin failed): {exc}"
@@ -491,3 +514,89 @@ class FederationService:
     async def close(self) -> None:
         """Close the underlying HTTP client."""
         await self._client.aclose()
+
+
+async def forward_to_peer(
+    state: Any, session: AsyncSession, to_address: str, envelope_dict: dict
+) -> str:
+    """Forward an envelope to its home relay; the retry loop finishes the job (FED-10).
+
+    Returns ``"federated"`` or ``"federation_queued"``.  Commits the caller's
+    transaction first: the queue row must survive a crash, and the forward can
+    take 30 seconds and writes its own log rows.
+    """
+    from_relay = state.settings.relay_domain
+    entry = await enqueue_federation(
+        session,
+        to_address.split("::", 1)[1],
+        json.dumps(envelope_dict),
+        json.dumps([from_relay]),
+        1,
+        commit=False,
+        next_retry=datetime.now(timezone.utc) + FORWARD_GRACE,
+    )
+    entry_id = entry.id
+    await session.commit()
+
+    try:
+        result = await state.federation_service.forward(
+            envelope_dict=envelope_dict, from_relay=from_relay
+        )
+    except Exception:
+        logger.exception("Forward to %s failed; the retry loop has it", to_address)
+        return "federation_queued"
+    if not result.delivered:
+        return "federation_queued"
+    await update_queue_entry(session, entry_id, "delivered")
+    return "federated"
+
+
+async def retry_pending_federation(factory: Any, service: Any, settings: Any) -> None:
+    """Retry the queue rows that are due.  A row that raises is a failed attempt."""
+    async with factory() as session:
+        pending = await get_pending_queue(session, limit=50)
+
+    for entry in pending:
+        try:
+            result = await service.forward(
+                envelope_dict=json.loads(entry.envelope),
+                from_relay=settings.relay_domain,
+                via=json.loads(entry.via),
+                hop_count=entry.hop_count,
+            )
+        except Exception as exc:
+            logger.exception("Federation retry raised: queue_id=%d", entry.id)
+            result = ForwardResult(delivered=False, error=f"{type(exc).__name__}: {exc}")
+
+        async with factory() as session:
+            if result.delivered:
+                await update_queue_entry(session, entry.id, status="delivered")
+                logger.info(
+                    "Federation retry delivered: queue_id=%d to %s",
+                    entry.id, entry.target_domain,
+                )
+                continue
+
+            new_attempt = entry.attempt_count + 1
+            delays = settings.federation_retry_delays
+            if new_attempt >= len(delays):
+                await update_queue_entry(
+                    session, entry.id, status="failed", error=result.error or "max retries"
+                )
+                logger.warning(
+                    "Federation retry exhausted: queue_id=%d to %s after %d attempts",
+                    entry.id, entry.target_domain, new_attempt,
+                )
+                continue
+
+            await update_queue_entry(
+                session,
+                entry.id,
+                status="pending",
+                error=result.error,
+                next_retry=datetime.now(timezone.utc) + timedelta(seconds=delays[new_attempt]),
+            )
+            logger.info(
+                "Federation retry scheduled: queue_id=%d to %s, attempt %d, next in %ds",
+                entry.id, entry.target_domain, new_attempt, delays[new_attempt],
+            )

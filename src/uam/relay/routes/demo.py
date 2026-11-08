@@ -36,6 +36,8 @@ from uam.relay.models import (
     DemoSendRequest,
     DemoSendResponse,
 )
+from uam.relay.policy import DeliveryDenied, authorize_delivery
+from uam.relay.relay_meta import stamp
 from uam.relay.token_hashing import hash_token
 
 logger = logging.getLogger(__name__)
@@ -101,10 +103,6 @@ async def demo_send(body: DemoSendRequest, request: Request, db_session: AsyncSe
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found or expired")
 
-    # Rate limit sends per session address
-    if not await request.app.state.sender_limiter.check(session.address):
-        raise HTTPException(status_code=429, detail="Send rate limit exceeded")
-
     # Resolve recipient public key
     recipient = await get_agent_by_address(db_session, body.to_address)
     if recipient is None:
@@ -124,12 +122,22 @@ async def demo_send(body: DemoSendRequest, request: Request, db_session: AsyncSe
         recipient_verify_key=recipient_vk,
         media_type="text/plain",
     )
-    wire = to_wire_dict(envelope)
+    wire = stamp(to_wire_dict(envelope), request.app.state.settings.relay_domain)
+
+    # Same blocklist and sender / recipient rate limits as /send (relay/policy.py)
+    try:
+        await authorize_delivery(request.app.state, envelope, db_session)
+    except DeliveryDenied as denied:
+        raise HTTPException(status_code=denied.status, detail=denied.detail) from denied
 
     # Route: try live delivery first, fall back to offline storage
     delivered = await manager.send_to(body.to_address, wire)
     if not delivered:
-        await store_message(db_session, envelope.message_id, session.address, body.to_address, json.dumps(wire))
+        await store_message(
+            db_session, envelope.message_id, session.address, body.to_address,
+            json.dumps(wire), commit=False,
+        )
+    await db_session.commit()
 
     return DemoSendResponse(message_id=envelope.message_id)
 

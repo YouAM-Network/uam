@@ -10,6 +10,8 @@
 import { mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import Database from "better-sqlite3";
+import { KeyPinningError } from "../protocol/errors.js";
+import { log } from "./log.js";
 
 /**
  * A row returned from listContacts().
@@ -192,6 +194,14 @@ export class ContactBook {
 
   /**
    * Add or update a contact (upsert).
+   *
+   * Refuses to replace the key of a contact whose trust_state is "pinned"
+   * or "verified" with a different key, unless `force: true` is passed (for
+   * a deliberate key rotation, which is logged). Matches the Python SDK's
+   * ContactBook.add_contact.
+   *
+   * @throws {KeyPinningError} If a pinned/verified contact's key would be
+   *   replaced by a different key without `force`.
    */
   addContact(
     address: string,
@@ -202,11 +212,35 @@ export class ContactBook {
       trustSource?: string | null;
       relay?: string | null;
       relays?: string[] | null;
+      force?: boolean;
     }
   ): void {
     if (this._db === null) {
       throw new Error("ContactBook not open. Call open() first.");
     }
+
+    const existing = this._db
+      .prepare("SELECT public_key, trust_state FROM contacts WHERE address = ?")
+      .get(address) as { public_key: string; trust_state: string } | undefined;
+    if (
+      existing !== undefined &&
+      (existing.trust_state === "pinned" ||
+        existing.trust_state === "verified") &&
+      existing.public_key !== publicKey
+    ) {
+      if (!options?.force) {
+        throw new KeyPinningError(
+          `Refusing to overwrite ${existing.trust_state} contact ` +
+            `${JSON.stringify(address)}: stored public key does not match ` +
+            `the new key. Pass force: true to rotate.`
+        );
+      }
+      log.warn(
+        `Force-replacing the key of ${existing.trust_state} contact ` +
+          `${address} (key rotation)`
+      );
+    }
+
     const displayName = options?.displayName ?? null;
     const trustState = options?.trustState ?? "trusted";
     const trustSource = options?.trustSource ?? null;

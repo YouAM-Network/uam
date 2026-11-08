@@ -13,6 +13,8 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from uam import __version__
+from uam.relay.relay_meta import FEATURE as RELAY_META_FEATURE
 from uam.db.session import get_session
 from uam.protocol.types import UAM_VERSION
 from uam.protocol.versioning import SUPPORTED_MAJOR_VERSIONS
@@ -20,6 +22,8 @@ from uam.relay.models import AdminHealthResponse, HealthResponse
 from uam.relay.routes.admin import verify_admin_key
 
 router = APIRouter()
+
+RELAY_FEATURES: tuple[str, ...] = (RELAY_META_FEATURE,)
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -30,7 +34,7 @@ async def health(request: Request) -> HealthResponse:
     return HealthResponse(
         status="ok",
         agents_online=manager.online_count,
-        version="0.1.0",
+        version=__version__,
     )
 
 
@@ -49,6 +53,8 @@ async def get_versions() -> dict:
     return {
         "uam_version": UAM_VERSION,
         "supported_major_versions": list(SUPPORTED_MAJOR_VERSIONS),
+        # Relay behaviours an SDK may rely on; absent on older relays.
+        "features": list(RELAY_FEATURES),
     }
 
 

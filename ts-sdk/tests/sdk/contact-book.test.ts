@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { ContactBook } from "../../src/sdk/contact-book.js";
+import { KeyPinningError } from "../../src/protocol/index.js";
 
 describe("ContactBook", () => {
   let tempDir: string;
@@ -190,5 +191,71 @@ describe("ContactBook", () => {
     // trust_source should be preserved (COALESCE)
     // We can verify via getTrustState that the contact still exists
     expect(book.isKnown("alice::youam.network")).toBe(true);
+  });
+
+  // -- Pinned key protection --
+
+  it("addContact refuses to replace a pinned contact's key", () => {
+    book.addContact("alice::youam.network", "pk_original", {
+      trustState: "pinned",
+    });
+
+    expect(() =>
+      book.addContact("alice::youam.network", "pk_attacker", {
+        trustState: "provisional",
+      })
+    ).toThrow(KeyPinningError);
+
+    expect(book.getPublicKey("alice::youam.network")).toBe("pk_original");
+    expect(book.getTrustState("alice::youam.network")).toBe("pinned");
+  });
+
+  it("addContact refuses to replace a verified contact's key", () => {
+    book.addContact("alice::youam.network", "pk_original", {
+      trustState: "verified",
+    });
+
+    expect(() =>
+      book.addContact("alice::youam.network", "pk_attacker")
+    ).toThrow(KeyPinningError);
+
+    expect(book.getPublicKey("alice::youam.network")).toBe("pk_original");
+  });
+
+  it("addContact with force replaces a pinned contact's key", () => {
+    book.addContact("alice::youam.network", "pk_original", {
+      trustState: "pinned",
+    });
+
+    book.addContact("alice::youam.network", "pk_rotated", {
+      trustState: "pinned",
+      force: true,
+    });
+
+    expect(book.getPublicKey("alice::youam.network")).toBe("pk_rotated");
+  });
+
+  it("addContact may update a pinned contact when the key is unchanged", () => {
+    book.addContact("alice::youam.network", "pk_same", {
+      trustState: "pinned",
+    });
+
+    book.addContact("alice::youam.network", "pk_same", {
+      trustState: "verified",
+    });
+
+    expect(book.getTrustState("alice::youam.network")).toBe("verified");
+  });
+
+  it("addContact may replace a provisional contact's key", () => {
+    book.addContact("alice::youam.network", "pk_old", {
+      trustState: "provisional",
+    });
+
+    book.addContact("alice::youam.network", "pk_new", {
+      trustState: "provisional",
+    });
+
+    expect(book.getPublicKey("alice::youam.network")).toBe("pk_new");
   });
 });

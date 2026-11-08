@@ -33,6 +33,7 @@ def _classify_pattern(pattern: str) -> tuple[str, str]:
             f"Invalid pattern {pattern!r}: must contain '::' "
             "(e.g. 'name::domain' or '*::domain')"
         )
+    pattern = pattern.lower()
     local, domain = pattern.split("::", 1)
     if local == "*":
         return ("domain", domain)
@@ -61,6 +62,7 @@ class AllowBlockList:
 
     def is_blocked(self, address: str) -> bool:
         """Return True if *address* matches a block pattern."""
+        address = address.lower()
         if address in self._blocked_exact:
             return True
         if "::" in address:
@@ -71,6 +73,7 @@ class AllowBlockList:
 
     def is_allowed(self, address: str) -> bool:
         """Return True if *address* matches an allow pattern."""
+        address = address.lower()
         if address in self._allowed_exact:
             return True
         if "::" in address:

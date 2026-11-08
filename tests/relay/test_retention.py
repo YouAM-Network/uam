@@ -88,8 +88,8 @@ async def _insert_message(
                 "ta": to_addr,
                 "env": "{}",
                 "st": status,
-                "ca": created_at.isoformat(),
-                "da": delivered_at.isoformat() if delivered_at else None,
+                "ca": created_at,
+                "da": delivered_at,
             },
         )
         await session.commit()
@@ -111,7 +111,7 @@ async def _insert_fed_nonce(
                 "(from_relay, nonce, seen_at) "
                 "VALUES (:fr, :n, :sa)"
             ),
-            {"fr": from_relay, "n": nonce, "sa": seen_at.isoformat()},
+            {"fr": from_relay, "n": nonce, "sa": seen_at},
         )
         await session.commit()
 
@@ -287,6 +287,7 @@ async def test_challenge_pruned_when_older_than_window(session_factory):
         "fed_nonce",
         "demo",
         "challenge",
+        "federation_queue",
     }
 
 
@@ -301,3 +302,30 @@ def test_default_windows_match_research():
     assert syms["RETENTION_FED_NONCE_HOURS"] >= 1
     assert syms["RETENTION_DEMO_HOURS"] >= 1
     assert syms["RETENTION_CHALLENGE_MINUTES"] >= 5
+
+
+async def test_finished_federation_queue_rows_are_pruned(session_factory):
+    from sqlmodel import select
+
+    from uam.db.models import FederationQueueEntry
+    from uam.relay.retention import run_retention_sweep
+
+    old = datetime.now(timezone.utc) - timedelta(days=30)
+    async with session_factory() as session:
+        for status, created_at in [
+            ("delivered", old),
+            ("failed", old),
+            ("pending", old),
+            ("delivered", datetime.now(timezone.utc)),
+        ]:
+            session.add(FederationQueueEntry(
+                target_domain="peer.example", envelope="{}", status=status, created_at=created_at
+            ))
+        await session.commit()
+
+    results = await run_retention_sweep(session_factory)
+
+    assert results["federation_queue"] == 2
+    async with session_factory() as session:
+        left = (await session.execute(select(FederationQueueEntry.status))).scalars().all()
+    assert sorted(left) == ["delivered", "pending"]

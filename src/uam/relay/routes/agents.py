@@ -28,8 +28,7 @@ from uam.db.crud.agents import (
 )
 from uam.db.crud.domain_verification import get_verification
 from uam.db.session import get_session
-from uam.protocol.crypto import deserialize_verify_key
-from uam.relay.auth import verify_token_http
+from uam.relay.auth import verify_token_for_reactivation, verify_token_http
 from uam.relay.models import AgentResponse, PublicKeyResponse, UpdateAgentRequest
 
 logger = logging.getLogger(__name__)
@@ -96,10 +95,11 @@ async def patch_agent(
     session: AsyncSession = Depends(get_session),
     agent: dict = Depends(verify_token_http),
 ) -> AgentResponse:
-    """Update agent fields (display_name, contact_card, public_key).
+    """Update agent fields (display_name, contact_card).
 
     Requires Bearer token auth.  Agent can only update their own record.
-    If ``public_key`` is provided, it must be a valid Ed25519 key.
+    ``public_key`` is refused: the relay serves this key to senders and
+    peer relays, and a bearer token alone must not be able to change it.
     """
     if agent["address"] != address:
         raise HTTPException(
@@ -111,15 +111,11 @@ async def patch_agent(
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
 
-    # Validate public key if provided
     if "public_key" in updates:
-        try:
-            deserialize_verify_key(updates["public_key"])
-        except Exception:
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid Ed25519 public key",
-            )
+        raise HTTPException(
+            status_code=403,
+            detail="An agent's public key cannot be changed with its token",
+        )
 
     updated = await update_agent(session, address, **updates)
     if updated is None:
@@ -165,13 +161,12 @@ async def delete_agent(
 async def reactivate_agent_endpoint(
     address: str,
     session: AsyncSession = Depends(get_session),
-    agent: dict = Depends(verify_token_http),
+    agent: dict = Depends(verify_token_for_reactivation),
 ) -> AgentResponse:
     """Reactivate a soft-deleted agent.
 
     Requires Bearer token auth.  The token must match the original agent's
-    token (auth does not filter by deleted_at so soft-deleted agents can
-    still authenticate for reactivation).
+    token.
     """
     if agent["address"] != address:
         raise HTTPException(

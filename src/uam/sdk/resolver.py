@@ -127,7 +127,7 @@ class SmartResolver(AddressResolver):
         relay_domain: str,
         tier3_resolver: AddressResolver | None = None,
     ) -> None:
-        self._relay_domain = relay_domain
+        self.relay_domain = relay_domain
         self._tier1 = Tier1Resolver()
         self._tier2 = Tier2Resolver()
         self._tier3: AddressResolver = tier3_resolver or Tier3Resolver()
@@ -138,7 +138,7 @@ class SmartResolver(AddressResolver):
         parsed = parse_address(address)
         domain = parsed.domain
 
-        if domain == self._relay_domain:
+        if domain == self.relay_domain:
             return await self._tier1.resolve_public_key(address, token, relay_url)
 
         if "." in domain:

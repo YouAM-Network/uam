@@ -4,7 +4,7 @@ These pin the post-T7.5 invariants:
   * Migration 0007 drops agents.token (column gone post-upgrade).
   * crud.agents.create_agent has no `token` parameter (only token_hash).
   * Agent SQLModel has no `token` field.
-  * webhook.py HMAC signing path uses agent.token_hash, never agent.token.
+  * webhook.py never reads agent.token.
 
 RED at HEAD because the column, parameter, and field still exist; webhook.py
 still reads ``agent.token``.
@@ -71,22 +71,16 @@ def test_agent_model_no_token_field():
 
 
 def test_webhook_signing_works_without_plaintext_token():
-    """T7.5 + RESEARCH OQ1: webhook HMAC signing must work post-token-drop.
-
-    Recommendation (a): use agent.token_hash as signing key (high-entropy,
-    never leaves the server). 47-08 must update src/uam/relay/webhook.py
-    accordingly.
-    """
+    """T7.5: webhook HMAC signing must work post-token-drop."""
     src_path = Path(__file__).resolve().parents[2] / "src" / "uam" / "relay" / "webhook.py"
     source = src_path.read_text()
     # Strip the legitimate ".token_hash" references so we can detect raw "agent.token" usage.
     sanitized = source.replace(".token_hash", "")
     assert "agent.token" not in sanitized, (
-        "T7.5 contract: webhook.py must not read agent.token (column dropped). "
-        "Recommended fix: use agent.token_hash as signing key (RESEARCH OQ1 option a)."
+        "T7.5 contract: webhook.py must not read agent.token (column dropped)."
     )
-    assert "token_hash" in source, (
-        "T7.5 contract: webhook.py must use agent.token_hash for HMAC signing key."
+    assert "agent.webhook_secret" in source, (
+        "webhook.py must sign with the key the agent was given."
     )
 
 

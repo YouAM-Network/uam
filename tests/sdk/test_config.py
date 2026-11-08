@@ -10,7 +10,8 @@ from uam.sdk.config import SDKConfig
 class TestSDKConfig:
     """SDKConfig default values and derivation."""
 
-    def test_default_config(self):
+    def test_default_config(self, monkeypatch):
+        monkeypatch.delenv("UAM_HOME")
         c = SDKConfig(name="test")
         assert "relay.youam.network" in c.relay_url
         assert c.key_dir == Path.home() / ".uam" / "keys"

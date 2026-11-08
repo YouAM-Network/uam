@@ -18,8 +18,12 @@ import json
 import time
 from pathlib import Path
 
+from unittest.mock import AsyncMock
+
 import pytest
 from starlette.websockets import WebSocket
+
+from uam.relay.connections import ConnectionManager, LockedWebSocket
 
 
 # ---------------------------------------------------------------------------
@@ -225,3 +229,42 @@ async def test_connect_does_not_block_registry_during_close(monkeypatch):
 # Module sanity import — keeps `pytest --collect-only` honest if Starlette
 # WebSocket symbol changes shape across versions.
 _ = WebSocket
+
+
+@pytest.mark.asyncio
+async def test_a_replaced_socket_cleaning_up_leaves_the_new_one():
+    manager = ConnectionManager()
+    old = await manager.connect("bob::test.local", AsyncMock())
+    new = await manager.connect("bob::test.local", AsyncMock())
+
+    await manager.disconnect("bob::test.local", old)
+    assert manager.is_online("bob::test.local")
+
+    await manager.disconnect("bob::test.local", new)
+    assert not manager.is_online("bob::test.local")
+
+
+@pytest.mark.asyncio
+async def test_a_send_that_fails_late_leaves_the_new_socket():
+    """The send started on the old socket; the client reconnected meanwhile."""
+    manager = ConnectionManager()
+    reconnected = asyncio.Event()
+
+    async def fail_after_reconnect(_data):
+        await reconnected.wait()
+        raise RuntimeError("connection lost")
+
+    old_socket = AsyncMock()
+    old_socket.send_json = fail_after_reconnect
+    await manager.connect("bob::test.local", old_socket)
+    send = asyncio.create_task(manager.send_to("bob::test.local", {"type": "ping"}))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    new_socket = AsyncMock()
+    new_socket.close = AsyncMock()
+    manager._connections["bob::test.local"] = LockedWebSocket(new_socket)
+    reconnected.set()
+
+    assert await send is False
+    assert manager.is_online("bob::test.local")

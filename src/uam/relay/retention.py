@@ -12,6 +12,7 @@ stricter per-category sweeps.
 | Federation nonces     | 1 hour         | ``UAM_RETENTION_FED_NONCE_HOURS``|
 | Demo sessions         | 1 hour         | ``UAM_RETENTION_DEMO_HOURS``     |
 | Auth challenges       | 5 minutes      | ``UAM_RETENTION_CHALLENGE_MINUTES``|
+| Federation queue      | 7 days         | ``UAM_RETENTION_FED_QUEUE_DAYS`` |
 
 Each per-category sweep runs in its own ``try/except`` block — a failure
 (missing table, transient DB error, etc.) is logged and the next category
@@ -34,7 +35,7 @@ Design notes
   ``from_relay``/``nonce``/``seen_at``) and is the primary new sweep target
   alongside the per-status message windows.
 
-All five DELETE statements use parameterized SQL (cutoffs bound as parameters,
+All six DELETE statements use parameterized SQL (cutoffs bound as parameters,
 table/column names are static literals).
 """
 
@@ -83,6 +84,7 @@ RETENTION_UNDELIVERED_DAYS: int = _int_env("UAM_RETENTION_UNDELIVERED_DAYS", 7)
 RETENTION_FED_NONCE_HOURS: int = _int_env("UAM_RETENTION_FED_NONCE_HOURS", 1)
 RETENTION_DEMO_HOURS: int = _int_env("UAM_RETENTION_DEMO_HOURS", 1)
 RETENTION_CHALLENGE_MINUTES: int = _int_env("UAM_RETENTION_CHALLENGE_MINUTES", 5)
+RETENTION_FED_QUEUE_DAYS: int = _int_env("UAM_RETENTION_FED_QUEUE_DAYS", 7)
 
 
 async def _sweep_one(
@@ -182,6 +184,19 @@ async def run_retention_sweep(
         ),
         params={
             "cutoff": now - timedelta(hours=RETENTION_FED_NONCE_HOURS),
+        },
+    )
+
+    # Every forwarded message leaves a row; only pending ones still matter.
+    results["federation_queue"] = await _sweep_one(
+        session_factory,
+        category="federation_queue",
+        sql=(
+            "DELETE FROM federation_queue "
+            "WHERE status IN ('delivered', 'failed') AND created_at < :cutoff"
+        ),
+        params={
+            "cutoff": now - timedelta(days=RETENTION_FED_QUEUE_DAYS),
         },
     )
 

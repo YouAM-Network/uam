@@ -68,7 +68,7 @@ def _trust_indicator(trust_state: str) -> str:
 
 
 @click.group()
-@click.version_option(package_name="uam")
+@click.version_option(package_name="youam")
 @click.option(
     "--name",
     "-n",
@@ -180,6 +180,7 @@ def _handle_claim(vcf_path: str, relay_override: str | None) -> None:
     # Save the relay token
     token = result["token"]
     km.save_token(agent_name, token)
+    km.save_address(agent_name, result["address"], relay_url)
 
     # Generate and save identity vCard locally (VCF-06)
     from uam.cards.vcard import generate_identity_vcard
@@ -222,11 +223,13 @@ def _handle_card_vcf(agent_name: str, output_path: str | None) -> None:
 
     public_key_b64 = serialize_verify_key(km.verify_key)
     fp = public_key_fingerprint(km.verify_key)
+    saved = km.load_address(agent_name)
+    relay_domain = saved.split("::", 1)[1] if saved and "::" in saved else cfg.relay_domain
 
     try:
         vcf_content = generate_identity_vcard(
             agent_name=agent_name,
-            relay_domain=cfg.relay_domain,
+            relay_domain=relay_domain,
             public_key_b64=public_key_b64,
             fingerprint=fp,
         )
@@ -272,7 +275,7 @@ def init(ctx: click.Context, name: str | None, relay: str | None, claim: str | N
 
         if key_path.exists():
             km.load_or_generate(agent_name)
-            address = f"{agent_name}::{cfg.relay_domain}"
+            address = km.load_address(agent_name, cfg.relay_url) or f"{agent_name}::{cfg.relay_domain}"
             fp = public_key_fingerprint(km.verify_key)
             click.echo(f"Agent already initialized: {address}")
             click.echo(f"Fingerprint: {fp}")
@@ -375,7 +378,7 @@ def whoami(ctx: click.Context) -> None:
 
     km = KeyManager(cfg.key_dir)
     km.load_or_generate(agent_name)
-    address = f"{agent_name}::{cfg.relay_domain}"
+    address = km.load_address(agent_name) or f"{agent_name}::{cfg.relay_domain}"
     fp = public_key_fingerprint(km.verify_key)
 
     click.echo(f"Address:     {address}")

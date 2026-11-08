@@ -32,7 +32,8 @@ export async function whoamiCommand(options: {
 
   const km = new KeyManager(cfg.keyDir);
   km.loadOrGenerate(agentName);
-  const address = `${agentName}::${cfg.relayDomain}`;
+  const address =
+    km.loadAddress(agentName, cfg.relayUrl) ?? `${agentName}::${cfg.relayDomain}`;
   const fp = publicKeyFingerprint(km.verifyKey);
 
   console.log(`Address:     ${address}`);

@@ -10,6 +10,11 @@ import { join } from "node:path";
 
 const DEFAULT_RELAY_URL = "https://relay.youam.network";
 
+/** `url` with any trailing slashes removed. */
+export function trimRelayUrl(url: string): string {
+  return url.replace(/\/+$/, "");
+}
+
 const VALID_POLICIES = new Set([
   "auto-accept",
   "approval-required",
@@ -26,7 +31,9 @@ export class SDKConfig {
   readonly displayName: string;
   readonly transportType: string;
   readonly trustPolicy: string;
-  readonly relayDomain: string;
+  relayDomain: string;
+  /** The domain the caller chose, if any; null when only derived. */
+  readonly explicitRelayDomain: string | null;
 
   constructor(options: {
     name: string;
@@ -42,8 +49,9 @@ export class SDKConfig {
     this.name = options.name;
 
     // Relay URL: constructor arg > env var > default
-    this.relayUrl =
-      options.relayUrl ?? process.env["UAM_RELAY_URL"] ?? DEFAULT_RELAY_URL;
+    this.relayUrl = trimRelayUrl(
+      options.relayUrl ?? process.env["UAM_RELAY_URL"] ?? DEFAULT_RELAY_URL
+    );
 
     // Derive relayWsUrl from relayUrl if not explicitly set
     if (options.relayWsUrl) {
@@ -60,6 +68,7 @@ export class SDKConfig {
 
     // Derive relayDomain: env var > constructor arg > URL hostname
     const envDomain = process.env["UAM_RELAY_DOMAIN"];
+    this.explicitRelayDomain = envDomain || options.relayDomain || null;
     if (envDomain) {
       this.relayDomain = envDomain;
     } else if (options.relayDomain) {

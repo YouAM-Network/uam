@@ -19,8 +19,12 @@ pytestmark = pytest.mark.postgres
 
 
 def _sync_url(postgres_url: str) -> str:
-    """testcontainers gives us +asyncpg; many tests need a sync engine."""
-    return postgres_url.replace("+asyncpg", "")
+    """testcontainers gives us +asyncpg; many tests need a sync engine.
+
+    Name psycopg2 explicitly: a bare ``postgresql://`` picks SQLAlchemy's
+    default driver, which is psycopg (3) in SQLAlchemy 2.1.
+    """
+    return postgres_url.replace("+asyncpg", "+psycopg2")
 
 
 def test_postgres_fixture_smoke(postgres_url):
@@ -67,7 +71,10 @@ def test_postgres_timestamp_columns_are_tz_aware(postgres_alembic_cfg, postgres_
 
 
 def test_postgres_fk_restrict_blocks_agent_delete(postgres_alembic_cfg, postgres_url):
-    """T7.3a RESTRICT: insert agent + message; DELETE agent -> IntegrityError.
+    """T7.3a RESTRICT: insert agents + message; DELETE the recipient -> IntegrityError.
+
+    The sender-side FK was dropped in 0009 (senders may be remote), so the
+    RESTRICT that remains is on ``messages.to_addr``.
 
     47-09 patch: use per-test address + token_hash prefixes ('restrict-*')
     so this test does not collide with sibling tests sharing the same
@@ -94,41 +101,37 @@ def test_postgres_fk_restrict_blocks_agent_delete(postgres_alembic_cfg, postgres
     with pytest.raises(IntegrityError):
         with eng.begin() as conn:
             conn.execute(sa.text(
-                "DELETE FROM agents WHERE address = 'restrict-alice::test.local'"
+                "DELETE FROM agents WHERE address = 'restrict-bob::test.local'"
             ))
     eng.dispose()
 
 
-def test_postgres_fk_cascade_deletes_seen_messages(postgres_alembic_cfg, postgres_url):
-    """T7.3a CASCADE: delete agent -> seen_message_ids rows gone.
-
-    47-09 patch: use per-test 'cascade-*' prefixes for address + token_hash to
-    avoid UNIQUE collisions with sibling tests on the session-scoped container.
-    Verifies the SPECIFIC seen_message_ids row tied to this test (not a global
-    COUNT(*) which would mix in sibling test data).
-    """
+def test_postgres_remote_sender_rows_accepted(postgres_alembic_cfg, postgres_url):
+    """0009: dedup and stored-message rows may name a sender that is not a
+    local agent (federated mail). Uses 'remote-*' prefixes to avoid
+    collisions with sibling tests on the session-scoped container."""
     command.upgrade(postgres_alembic_cfg, "head")
     eng = sa.create_engine(_sync_url(postgres_url))
     with eng.begin() as conn:
         conn.execute(sa.text(
             "INSERT INTO agents (address, public_key, token_hash, status) "
-            "VALUES ('cascade-alice::test.local', 'pk', 'cascade-hash', 'active')"
+            "VALUES ('remote-bob::test.local', 'pk', 'remote-hash-b', 'active')"
         ))
         conn.execute(sa.text(
             "INSERT INTO seen_message_ids (message_id, from_addr) "
-            "VALUES ('cascade-seen-1', 'cascade-alice::test.local')"
+            "VALUES ('remote-seen-1', 'carol::remote.example')"
         ))
-    with eng.begin() as conn:
         conn.execute(sa.text(
-            "DELETE FROM agents WHERE address = 'cascade-alice::test.local'"
+            "INSERT INTO messages (message_id, envelope, status, from_addr, to_addr, retry_count) "
+            "VALUES ('remote-m1', '{}', 'queued', 'carol::remote.example', "
+            "'remote-bob::test.local', 0)"
         ))
     with eng.connect() as conn:
         n = conn.execute(sa.text(
-            "SELECT COUNT(*) FROM seen_message_ids "
-            "WHERE from_addr = 'cascade-alice::test.local'"
+            "SELECT COUNT(*) FROM messages WHERE message_id = 'remote-m1'"
         )).scalar()
     eng.dispose()
-    assert n == 0
+    assert n == 1
 
 
 def test_postgres_fk_set_null_on_audit_log(postgres_alembic_cfg, postgres_url):
@@ -209,3 +212,34 @@ def test_no_table_recreates_on_postgres(postgres_alembic_cfg, postgres_url):
         f"T7.2 contract: render_as_batch=True on Postgres leaves _bk/_old/_alembic_tmp_* "
         f"backup tables. Found: {backup_tables}. Confirm dialect-gating in env.py."
     )
+
+
+def test_0011_gives_each_existing_webhook_a_secret(postgres_alembic_cfg, postgres_url):
+    # The container is shared, so earlier tests have already reached head.
+    command.upgrade(postgres_alembic_cfg, "head")
+    command.downgrade(postgres_alembic_cfg, "0010_add_routed_messages")
+    eng = sa.create_engine(_sync_url(postgres_url))
+    with eng.begin() as conn:
+        conn.execute(
+            sa.text(
+                "INSERT INTO agents (address, public_key, token_hash, status, webhook_url, "
+                "created_at, updated_at) "
+                "VALUES (:address, 'pk', :token_hash, 'active', :webhook_url, now(), now())"
+            ),
+            [
+                {"address": "hooked::secret.test", "token_hash": "h1",
+                 "webhook_url": "https://a.example/hook"},
+                {"address": "plain::secret.test", "token_hash": "h2", "webhook_url": None},
+            ],
+        )
+
+    command.upgrade(postgres_alembic_cfg, "0011_add_webhook_secret")
+
+    with eng.begin() as conn:
+        secrets = dict(
+            conn.execute(sa.text("SELECT address, webhook_secret FROM agents")).fetchall()
+        )
+        conn.execute(sa.text("DELETE FROM agents WHERE address LIKE '%::secret.test'"))
+    eng.dispose()
+    assert len(secrets["hooked::secret.test"]) >= 32
+    assert secrets["plain::secret.test"] is None

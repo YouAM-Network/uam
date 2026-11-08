@@ -101,7 +101,7 @@ def test_envelope_unknown_field_rejected():
 def test_normal_envelope_still_accepted():
     """Small/normal wire dicts still parse fine."""
     d = {
-        "uam_version": "1.0",
+        "uam_version": "0.1",
         "message_id": "m",
         "from": "a::x",
         "to": "b::x",

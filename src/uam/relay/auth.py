@@ -28,25 +28,16 @@ from uam.relay.token_hashing import hash_token
 bearer_scheme = HTTPBearer()
 
 
-async def verify_token_http(
-    session: AsyncSession = Depends(get_session),
-    credentials: HTTPAuthorizationCredentials = Security(bearer_scheme),
-) -> dict:
-    """FastAPI dependency: validate Bearer token and return agent info.
-
-    Returns ``{"address": ..., "public_key": ...}`` on success.
-    Raises ``HTTPException(401)`` on invalid token.
+async def _agent_for_token(session: AsyncSession, token: str) -> Agent:
+    """Return the agent *token* belongs to, or raise ``HTTPException(401)``.
 
     T2.1: looks up by HMAC-SHA-256 hash of the incoming token.  Final
     ``hmac.compare_digest`` check is constant-time defense in depth --
     the row already matched by hash, but ``compare_digest`` documents
     intent and protects against future "look up by some other field"
     mistakes.
-
-    NOTE: Returns a dict (not SQLModel instance) to maintain backward
-    compatibility with route handlers that use ``agent["address"]``.
     """
-    token_hash = hash_token(credentials.credentials, settings.token_pepper)
+    token_hash = hash_token(token, settings.token_pepper)
     stmt = select(Agent).where(Agent.token_hash == token_hash)
     result = await session.execute(stmt)
     agent = result.scalar_one_or_none()
@@ -55,6 +46,39 @@ async def verify_token_http(
     # Defense-in-depth constant-time check on the matched row
     if not hmac.compare_digest(agent.token_hash or "", token_hash):
         raise HTTPException(status_code=401, detail="Invalid token")
+    return agent
+
+
+async def verify_token_http(
+    session: AsyncSession = Depends(get_session),
+    credentials: HTTPAuthorizationCredentials = Security(bearer_scheme),
+) -> dict:
+    """FastAPI dependency: validate Bearer token and return agent info.
+
+    Returns ``{"address": ..., "public_key": ...}`` on success.
+    Raises ``HTTPException(401)`` on an invalid token, or if the agent is
+    suspended or deactivated.
+
+    NOTE: Returns a dict (not SQLModel instance) to maintain backward
+    compatibility with route handlers that use ``agent["address"]``.
+    """
+    agent = await _agent_for_token(session, credentials.credentials)
+    if agent.status != "active":
+        raise HTTPException(status_code=401, detail="Agent is not active")
+    return {"address": agent.address, "public_key": agent.public_key}
+
+
+async def verify_token_for_reactivation(
+    session: AsyncSession = Depends(get_session),
+    credentials: HTTPAuthorizationCredentials = Security(bearer_scheme),
+) -> dict:
+    """As :func:`verify_token_http`, but a deactivated agent may come back.
+
+    A suspended agent may not: suspending is not the agent's to undo.
+    """
+    agent = await _agent_for_token(session, credentials.credentials)
+    if agent.status not in ("active", "deactivated"):
+        raise HTTPException(status_code=401, detail="Agent is not active")
     return {"address": agent.address, "public_key": agent.public_key}
 
 
@@ -87,5 +111,7 @@ async def verify_token_ws(
         if agent is None:
             return None
         if not hmac.compare_digest(agent.token_hash or "", token_hash):
+            return None
+        if agent.status != "active":
             return None
         return {"address": agent.address, "public_key": agent.public_key}

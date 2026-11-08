@@ -7,6 +7,7 @@
 
 import { Command } from "commander";
 
+import { SDK_VERSION } from "../version.js";
 import { initCommand } from "./commands/init.js";
 import { sendCommand } from "./commands/send.js";
 import { inboxCommand } from "./commands/inbox.js";
@@ -30,7 +31,7 @@ const program = new Command();
 program
   .name("uam")
   .description("Universal Agent Messaging CLI")
-  .version("0.1.0");
+  .version(SDK_VERSION);
 
 // Global option: --name/-n for agent name (auto-detected if not provided)
 program.option("-n, --name <name>", "Agent name (auto-detected from ~/.uam/keys/)");

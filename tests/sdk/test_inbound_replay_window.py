@@ -136,7 +136,7 @@ async def test_recipient_mismatch_dropped(tmp_path):
             "envelope addressed to someone else must be dropped (recipient binding)"
         )
     finally:
-        await bob._contact_book.close()
+        await bob.close()
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +171,7 @@ async def test_stale_envelope_dropped(tmp_path):
         msg = await bob._process_inbound(wire)
         assert msg is None, "envelope with timestamp >300s old must be dropped"
     finally:
-        await bob._contact_book.close()
+        await bob.close()
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +205,7 @@ async def test_expired_envelope_dropped(tmp_path):
         msg = await bob._process_inbound(wire)
         assert msg is None, "envelope with expires in the past must be dropped"
     finally:
-        await bob._contact_book.close()
+        await bob.close()
 
 
 # ---------------------------------------------------------------------------
@@ -243,7 +243,7 @@ async def test_replayed_envelope_dropped(tmp_path):
             "second delivery (same message_id) must be dropped as replay"
         )
     finally:
-        await bob._contact_book.close()
+        await bob.close()
 
 
 # ---------------------------------------------------------------------------
@@ -299,4 +299,34 @@ async def test_replay_no_auto_receipt(tmp_path, monkeypatch):
             "so the inbox() auto-receipt loop never sees it."
         )
     finally:
-        await bob._contact_book.close()
+        await bob.close()
+
+
+# ---------------------------------------------------------------------------
+# The replay cache outlives the Agent (stored mail arrives after restarts)
+# ---------------------------------------------------------------------------
+
+
+async def test_replay_caught_by_a_new_agent_on_the_same_data_dir(tmp_path):
+    """A restarted agent (new Agent, same data dir) still drops a replay."""
+    sk_a, vk_a = generate_keypair()
+    bob = await _make_recipient_agent(tmp_path, "bob")
+    try:
+        await bob._contact_book.add_contact(
+            "alice::test.local", serialize_verify_key(vk_a)
+        )
+        env = _build_signed_envelope(
+            sk_a, vk_a, bob._key_manager.verify_key, "alice::test.local", bob._address
+        )
+        wire = to_wire_dict(env)
+        assert await bob._process_inbound(wire) is not None
+    finally:
+        await bob.close()
+
+    bob_again = await _make_recipient_agent(tmp_path, "bob")
+    try:
+        assert await bob_again._process_inbound(wire) is None, (
+            "the replay cache must persist across Agent instances"
+        )
+    finally:
+        await bob_again.close()

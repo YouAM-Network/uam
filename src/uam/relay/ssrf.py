@@ -36,7 +36,7 @@ def is_public_ip(hostname: str) -> bool:
         results = socket.getaddrinfo(
             hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM
         )
-    except (socket.gaierror, OSError):
+    except (OSError, UnicodeError):  # UnicodeError: a label IDNA can't encode
         return False
     if not results:
         return False
@@ -146,7 +146,7 @@ def resolve_pinned(
         results = socket.getaddrinfo(
             host, None, socket.AF_UNSPEC, socket.SOCK_STREAM
         )
-    except (socket.gaierror, OSError) as exc:
+    except (OSError, UnicodeError) as exc:  # UnicodeError: a label IDNA can't encode
         raise SSRFBlockedError(f"DNS resolution failed for {host!r}: {exc}") from exc
 
     if not results:

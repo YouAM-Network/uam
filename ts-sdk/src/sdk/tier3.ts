@@ -7,7 +7,7 @@
 import { createPublicClient, http, type Address, defineChain } from "viem";
 import { UAMError } from "../protocol/index.js";
 import { parseAddress } from "../protocol/address.js";
-import { AddressResolver } from "./resolver.js";
+import { AddressResolver } from "./resolver-base.js";
 
 // Default config
 const DEFAULT_RPC_URL = "https://sepolia.base.org";

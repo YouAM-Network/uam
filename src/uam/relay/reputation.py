@@ -23,7 +23,7 @@ Phase 46 Plan 46-04 (T6.4):
     The atomic form is::
 
         UPDATE reputation
-        SET score = MAX(0, MIN(100, score + :delta)),
+        SET score = CASE ... END,  -- score + :delta, clamped to 0-100
             updated_at = now()
         WHERE address = :address
 
@@ -39,7 +39,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from sqlalchemy import func, update
+from sqlalchemy import case, func, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlmodel import select
@@ -154,8 +154,9 @@ class ReputationManager:
         """Atomically adjust score by *delta* (clamped 0-100).
 
         T6.4: single SQL ``UPDATE`` with arithmetic-in-SQL clamp via
-        ``func.max``/``func.min`` -- both Postgres and SQLite serialize
-        the row mutation, so concurrent calls do not lose updates.
+        ``CASE`` (two-argument MIN and MAX exist only on SQLite) -- both
+        Postgres and SQLite serialize the row mutation, so concurrent calls
+        do not lose updates.
 
         If the address has no reputation row yet, one is created with
         default score 30 before applying the delta.  Returns the new score.
@@ -169,7 +170,11 @@ class ReputationManager:
                 update(Reputation)
                 .where(Reputation.address == address)
                 .values(
-                    score=func.max(0, func.min(100, Reputation.score + delta)),
+                    score=case(
+                        (Reputation.score + delta < 0, 0),
+                        (Reputation.score + delta > 100, 100),
+                        else_=Reputation.score + delta,
+                    ),
                     updated_at=func.now(),
                 )
             )

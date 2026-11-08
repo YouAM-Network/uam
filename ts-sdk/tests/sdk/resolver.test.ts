@@ -27,11 +27,6 @@ vi.mock("../../src/sdk/dns-verifier.js", () => ({
   generateTxtRecord: vi.fn(),
 }));
 
-// Import tier3 FIRST to break the circular dependency resolution issue.
-// tier3.ts imports AddressResolver from resolver.ts; by importing tier3 first
-// the module graph resolves correctly.
-import "../../src/sdk/tier3.js";
-
 import { Tier2Resolver } from "../../src/sdk/resolver.js";
 import {
   queryUamTxt,

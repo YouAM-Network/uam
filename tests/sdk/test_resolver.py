@@ -50,7 +50,7 @@ class TestTier1Resolver:
 
     async def test_resolve_not_found(self, relay_app):
         """Resolving a non-existent address should return 404."""
-        agent = await _register_agent_async(relay_app, "lookup_user")
+        agent = await _register_agent_async(relay_app, "lookupuser")
 
         async with httpx_lib.AsyncClient(
             transport=httpx_lib.ASGITransport(app=relay_app),

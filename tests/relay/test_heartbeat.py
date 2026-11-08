@@ -72,11 +72,11 @@ class TestHeartbeatPingLoop:
         assert call_args[0][1]["type"] == "ping"
 
     @pytest.mark.asyncio
-    async def test_timeout_disconnects_unresponsive(self):
-        """Agents that don't respond to pings are disconnected."""
+    async def test_timeout_closes_an_unresponsive_socket(self):
+        """Agents that don't respond to pings are dropped, and told so."""
         manager = ConnectionManager()
-        manager.send_to = AsyncMock(return_value=True)
-        manager.disconnect = AsyncMock()
+        socket = AsyncMock()
+        await manager.connect("stale::test.local", socket)
 
         # Very short intervals: ping every 0.1s, timeout after 0.05s
         # Total threshold: 0.1 + 0.05 = 0.15s
@@ -88,9 +88,10 @@ class TestHeartbeatPingLoop:
         await hb.start()
         await asyncio.sleep(0.2)
         await hb.stop()
+        await asyncio.gather(*manager._closing)
 
-        # Should have disconnected the stale agent
-        manager.disconnect.assert_called_with("stale::test.local")
+        assert not manager.is_online("stale::test.local")
+        socket.close.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_start_stop_clean(self):

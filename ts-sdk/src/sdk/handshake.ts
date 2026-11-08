@@ -16,14 +16,18 @@ import {
   verifyContactCard,
   contactCardToDict,
   contactCardFromDict,
+  decryptPayload,
   decryptPayloadAnonymous,
   serializeVerifyKey,
   toWireDict,
+  InvalidEnvelopeError,
+  type ContactCard,
   type MessageEnvelope,
   type VerifyKey,
 } from "../protocol/index.js";
 import type { ContactBook } from "./contact-book.js";
 import type { ReceivedMessage } from "./message.js";
+import { log } from "./log.js";
 
 // Forward reference type for Agent to avoid circular dependency
 interface AgentLike {
@@ -38,6 +42,40 @@ interface AgentLike {
   readonly _transport: {
     send(envelope: Record<string, unknown>): Promise<void>;
   } | null;
+}
+
+/**
+ * Check that a contact card's claimed identity is the envelope's sender.
+ *
+ * A card embedded in a handshake envelope must name the envelope's
+ * `fromAddress` and carry the verify key that signed the envelope. Without
+ * this, a sender could sign an envelope from their own address while
+ * embedding a (self-consistent) card for someone else's address or key, and
+ * get that identity stored in the recipient's contact book.
+ *
+ * `envelope` only needs `fromAddress`, so Agent.approve() can re-check a
+ * stored pending entry against the address it was received from.
+ *
+ * Matches Python `_bind_card_to_envelope` (handshake.py).
+ *
+ * @throws {InvalidEnvelopeError} If the address or the key does not match.
+ */
+export function bindCardToEnvelope(
+  card: ContactCard,
+  envelope: { readonly fromAddress: string },
+  senderVk: VerifyKey
+): void {
+  if (card.address !== envelope.fromAddress) {
+    throw new InvalidEnvelopeError(
+      `Contact card address ${JSON.stringify(card.address)} does not match ` +
+        `envelope sender ${JSON.stringify(envelope.fromAddress)}`
+    );
+  }
+  if (card.publicKey !== serializeVerifyKey(senderVk)) {
+    throw new InvalidEnvelopeError(
+      "Contact card public_key does not match envelope sender's verify key"
+    );
+  }
 }
 
 export class HandshakeManager {
@@ -97,7 +135,7 @@ export class HandshakeManager {
     if (envelope.type === MessageType.HANDSHAKE_REQUEST) {
       await this._handleRequest(agent, envelope, senderVk);
     } else if (envelope.type === MessageType.HANDSHAKE_ACCEPT) {
-      await this._handleAccept(envelope, senderVk);
+      await this._handleAccept(agent, envelope, senderVk);
     } else if (envelope.type === MessageType.HANDSHAKE_DENY) {
       // Handshake denied -- logged silently
     }
@@ -125,6 +163,9 @@ export class HandshakeManager {
     // Verify the contact card's self-signature
     verifyContactCard(card);
 
+    // Bind the card to the envelope sender before anything is stored.
+    bindCardToEnvelope(card, envelope, senderVk);
+
     if (this._trustPolicy === "auto-accept") {
       // Store the contact as provisional (TOFU: trust upgrades on accept)
       this._contactBook.addContact(card.address, card.publicKey, {
@@ -148,11 +189,62 @@ export class HandshakeManager {
 
   /**
    * Process a handshake.accept: store the sender as pinned (TOFU).
+   *
+   * Only honoured when:
+   *   1. we previously sent this address a handshake.request
+   *      (trust_state === "handshake-sent"); anything else is an unsolicited
+   *      accept and is dropped. This also means an accept can never
+   *      downgrade a trusted/verified contact to pinned;
+   *   2. the payload decrypts with our key and the sender's key, and parses
+   *      as JSON. Otherwise it is dropped without pinning;
+   *   3. an embedded contact_card, if present, is well-formed, correctly
+   *      self-signed, and bound to the envelope sender (throws otherwise).
    */
   private async _handleAccept(
+    agent: AgentLike,
     envelope: MessageEnvelope,
     senderVk: VerifyKey
   ): Promise<void> {
+    const prior = this._contactBook.getTrustState(envelope.fromAddress);
+    if (prior !== "handshake-sent") {
+      log.warn(
+        `Ignoring unsolicited handshake.accept from ${envelope.fromAddress} ` +
+          `(trust_state=${JSON.stringify(prior)})`
+      );
+      return;
+    }
+
+    let payload: unknown;
+    try {
+      const plaintext = decryptPayload(
+        envelope.payload,
+        agent._keyManager.signingKey,
+        senderVk
+      );
+      payload = JSON.parse(new TextDecoder().decode(plaintext));
+    } catch {
+      log.warn(
+        `Dropping handshake.accept ${envelope.messageId} from ` +
+          `${envelope.fromAddress}: payload could not be decrypted or parsed`
+      );
+      return;
+    }
+
+    if (
+      payload !== null &&
+      typeof payload === "object" &&
+      "contact_card" in payload
+    ) {
+      const card = contactCardFromDict(
+        (payload as Record<string, unknown>)["contact_card"] as Record<
+          string,
+          unknown
+        >
+      );
+      verifyContactCard(card);
+      bindCardToEnvelope(card, envelope, senderVk);
+    }
+
     const senderPkStr = serializeVerifyKey(senderVk);
     this._contactBook.addContact(envelope.fromAddress, senderPkStr, {
       trustState: "pinned",

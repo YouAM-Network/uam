@@ -250,6 +250,9 @@ class ContactBook:
                     existing_pk[:16],
                     public_key[:16],
                 )
+            elif existing_state in ("pinned", "verified") and trust_state == "provisional":
+                # Seeing a key we already trust again doesn't lower its trust.
+                trust_state = existing_state
 
         relays_json = json.dumps(relays) if relays is not None else None
         await self._db.execute(

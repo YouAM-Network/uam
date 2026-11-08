@@ -1,6 +1,6 @@
 {
   "name": "@youam/sdk",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "description": "Universal Agent Messaging (UAM) TypeScript SDK -- end-to-end encrypted, trust-on-first-use agent messaging",
   "main": "./dist/index.cjs",
@@ -28,7 +28,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/youam-network/uam.git",
+    "url": "https://github.com/YouAM-Network/uam.git",
     "directory": "ts-sdk"
   },
   "homepage": "https://youam.network",
@@ -51,19 +51,20 @@
     "a2a"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "scripts": {
     "build": "tsup",
     "prepublishOnly": "npm run build",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "smoke:tarball": "node scripts/smoke-tarball.mjs"
   },
   "dependencies": {
-    "better-sqlite3": "^11.0.0",
+    "better-sqlite3": "^12.11.1",
     "commander": "^12.0.0",
-    "libsodium-wrappers": "^0.7.15",
+    "libsodium-wrappers": "0.7.15",
     "uuid": "^10.0.0",
     "viem": "^2.0.0",
     "ws": "^8.18.0"
@@ -72,6 +73,7 @@
     "@types/better-sqlite3": "^7.6.0",
     "@types/libsodium-wrappers": "^0.7.14",
     "@types/ws": "^8.5.0",
+    "esbuild": "0.27.3",
     "tsup": "^8.0.0",
     "typescript": "^5.6.0",
     "vitest": "^2.0.0"

@@ -51,9 +51,19 @@ def _check_dict_size(value: dict[str, Any] | None, limit: int, name: str) -> Non
         raise ValueError(f"{name} serialized size {size} bytes exceeds maximum {limit} bytes")
 
 
+def check_envelope_size(envelope: dict[str, Any]) -> None:
+    """Raise ValueError if *envelope* is over the size every ingress allows."""
+    _check_dict_size(envelope, _MAX_ENVELOPE_BYTES, "envelope")
+
+
 # ---------------------------------------------------------------------------
 # Registration models (RELAY-04)
 # ---------------------------------------------------------------------------
+
+
+class RegisterProof(BaseModel):
+    timestamp: Annotated[str, Field(max_length=64)]
+    signature: Annotated[str, Field(max_length=128)]
 
 
 class RegisterRequest(BaseModel):
@@ -63,12 +73,15 @@ class RegisterRequest(BaseModel):
         str | None,
         Field(default=None, max_length=2048, pattern=_HTTPS_URL_PATTERN),
     ] = None
+    # Needed only to get a new token for an existing address.
+    proof: RegisterProof | None = None
 
 
 class RegisterResponse(BaseModel):
     address: Annotated[str, Field(max_length=128, pattern=_ADDRESS_PATTERN)]
     token: Annotated[str, Field(max_length=128, pattern=_ID_PATTERN)]
     relay: Annotated[str, Field(max_length=512)]  # ws://... or wss://... URL
+    webhook_secret: Annotated[str | None, Field(default=None, max_length=128)] = None
 
 
 class SendRequest(BaseModel):
@@ -172,6 +185,8 @@ class WebhookUrlResponse(BaseModel):
         str | None,
         Field(default=None, max_length=2048, pattern=_HTTPS_URL_PATTERN),
     ] = None
+    # Only setting a webhook returns this; reading one does not.
+    webhook_secret: Annotated[str | None, Field(default=None, max_length=128)] = None
 
 
 class WebhookDeliveryRecord(BaseModel):
@@ -481,3 +496,4 @@ class ReserveClaimResponse(BaseModel):
     address: Annotated[str, Field(max_length=128, pattern=_ADDRESS_PATTERN)]
     token: Annotated[str, Field(max_length=128, pattern=_ID_PATTERN)]
     relay: Annotated[str, Field(max_length=512)]
+    webhook_secret: Annotated[str | None, Field(default=None, max_length=128)] = None

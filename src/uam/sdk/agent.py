@@ -8,15 +8,20 @@ for the complete UAM messaging experience.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
 import os
+import sqlite3
 import time
 from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 
 from uam.protocol import (
+    parse_address,
     MessageType,
     UAMError,
     SignatureVerificationError,
@@ -34,18 +39,23 @@ from uam.protocol import (
     contact_card_from_dict,
     verify_contact_card,
 )
+from uam.protocol.register_proof import create_register_proof
 from uam.protocol.types import MAX_ENVELOPE_AGE
+from uam.sdk.freshness import RELAY_META_FEATURE, relay_vouches
 from uam.sdk.config import SDKConfig
 from uam.sdk.key_manager import KeyManager
 from uam.sdk.message import ReceivedMessage
 from uam.sdk.contact_book import ContactBook
 from uam.sdk.handshake import HandshakeManager
-from uam.sdk.replay_cache import EnvelopeReplayCache
+from uam.sdk.replay_cache import PersistentReplayCache
 from uam.sdk.resolver import AddressResolver, SmartResolver
 from uam.sdk.transport import create_transport
 from uam.sdk._sync import _run_sync
 
 logger = logging.getLogger(__name__)
+
+# How long a relay's "no, I don't write relay_meta" is believed.
+_RELAY_NO_SECONDS = 60.0
 
 
 class Agent:
@@ -103,15 +113,19 @@ class Agent:
 
         # Contact management
         self._contact_book = ContactBook(self._config.data_dir)
+        self._relay_stamps = False
+        self._relay_no_until = 0.0
         self._handshake = HandshakeManager(
             self._contact_book, self._config.trust_policy
         )
 
-        # T3.1: per-Agent replay cache for inbound envelopes.
-        # In-process; one cache per Agent; not persisted across close()/open().
-        # The MAX_ENVELOPE_AGE timestamp window caps replay risk after restart.
-        cap = int(os.environ.get("UAM_REPLAY_CACHE_CAPACITY", "100000"))
-        self._replay_cache = EnvelopeReplayCache(capacity=cap, ttl=MAX_ENVELOPE_AGE)
+        # T3.1: replay cache for inbound envelopes, kept on disk under the
+        # data dir so it outlives restarts and is shared by every process
+        # using it (stored mail can arrive long after it was signed).
+        cap = int(os.environ.get("UAM_REPLAY_CACHE_CAPACITY", "1000000"))
+        self._replay_cache = PersistentReplayCache(
+            Path(self._config.data_dir) / "replay" / "replay.db", capacity=cap
+        )
 
     # -- Properties ----------------------------------------------------------
 
@@ -165,13 +179,20 @@ class Agent:
         # 1. Load or generate keypair
         self._key_manager.load_or_generate(self._config.name)
 
+        # Start the replay cache now: mail signed after this can be accepted
+        # however long it waits, even if it arrives before the first inbox().
+        try:
+            await self._replay_cache.created_at()
+        except (OSError, sqlite3.Error) as exc:
+            logger.warning("Cannot open the replay cache yet: %s", exc)
+
         # 2. Check for stored token (returning user)
-        stored_token = self._key_manager.load_token(self._config.name)
+        stored_token = self._key_manager.load_token(self._config.name, self._config.relay_url)
 
         if stored_token:
             # Returning user: use stored token
             self._token = stored_token
-            self._address = f"{self._config.name}::{self._config.relay_domain}"
+            self._use_address(await self._stored_address())
         elif self._auto_register:
             # First-run: register with relay
             await self._register_with_relay()
@@ -201,6 +222,7 @@ class Agent:
         """Disconnect the transport and clean up resources."""
         # Close contact book first
         await self._contact_book.close()
+        await self._replay_cache.close()
         if self._transport:
             await self._transport.disconnect()
         self._connected = False
@@ -317,7 +339,18 @@ class Agent:
         raw_messages = await self._transport.receive(limit=limit)
         result = []
         for raw in raw_messages:
-            msg = await self._process_inbound(raw)
+            try:
+                msg = await self._process_inbound(raw)
+            except Exception as exc:
+                # The batch has left the relay: one bad message must not
+                # take the others with it.
+                logger.warning(
+                    "Dropping inbound message %s from %s: %s",
+                    raw.get("message_id"),
+                    raw.get("from"),
+                    exc,
+                )
+                continue
             if msg is not None:
                 result.append(msg)
                 # Auto-send receipt.read for user messages (RCPT-01)
@@ -663,6 +696,51 @@ class Agent:
             trust_state="handshake-sent",
         )
 
+    async def _was_stored(
+        self, raw: dict, to_address: str, signed_at: datetime, now: datetime
+    ) -> bool:
+        """True if a message too old to be live is stored mail, not a replay."""
+        # The signed address names our relay.  _config.relay_domain may not: it
+        # can be the URL's hostname, and youam.network is relay.youam.network.
+        relay_domain = to_address.rsplit("::", 1)[-1]
+        if not relay_vouches(raw, signed_at, now, relay_domain):
+            return False
+        # The replay cache can't speak for what came before it existed.
+        if await self._replay_cache.signed_before_cache(signed_at.timestamp()):
+            return False
+        return await self._relay_stamps_mail()
+
+    async def _relay_stamps_mail(self) -> bool:
+        """True if our relay writes relay_meta, so a sender can't have.
+
+        Asked only when a stale message carries a stamp.  A yes is kept; a no
+        for a minute, as a relay can be upgraded while this agent runs.  A
+        failed lookup isn't kept: it would refuse real mail, already marked
+        delivered, until the minute was up.
+        """
+        if self._relay_stamps:
+            return True
+        if time.monotonic() < self._relay_no_until:
+            return False
+        try:
+            features = await self._fetch_relay_features()
+        except (httpx.HTTPError, OSError, ValueError) as exc:
+            logger.warning("Cannot read relay features: %s", exc)
+            return False
+        except (AttributeError, TypeError) as exc:
+            logger.warning("Malformed relay features: %s", exc)
+            features = set()
+        self._relay_stamps = RELAY_META_FEATURE in features
+        if not self._relay_stamps:
+            self._relay_no_until = time.monotonic() + _RELAY_NO_SECONDS
+        return self._relay_stamps
+
+    async def _fetch_relay_features(self) -> set[str]:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{self._config.relay_url}/api/v1/versions")
+            resp.raise_for_status()
+        return set(resp.json().get("features", []))
+
     async def _process_inbound(self, raw: dict) -> ReceivedMessage | None:
         """Process a single inbound envelope: verify, decrypt, handle handshakes.
 
@@ -726,8 +804,11 @@ class Agent:
         # T3.1 (b) timestamp freshness -- drop envelopes older than MAX_ENVELOPE_AGE.
         try:
             ts = datetime.fromisoformat(envelope.timestamp.replace("Z", "+00:00"))
-            age_seconds = abs((datetime.now(timezone.utc) - ts).total_seconds())
-            if age_seconds > MAX_ENVELOPE_AGE:
+            now = datetime.now(timezone.utc)
+            age_seconds = abs((now - ts).total_seconds())
+            if age_seconds > MAX_ENVELOPE_AGE and not await self._was_stored(
+                raw, envelope.to_address, ts, now
+            ):
                 logger.info(
                     "Dropped stale envelope %s from %s (age=%ds > %ds)",
                     envelope.message_id,
@@ -736,7 +817,7 @@ class Agent:
                     MAX_ENVELOPE_AGE,
                 )
                 return None
-        except (ValueError, AttributeError):
+        except (ValueError, AttributeError, TypeError):
             logger.warning(
                 "Dropped envelope %s with malformed timestamp %r",
                 envelope.message_id,
@@ -768,7 +849,7 @@ class Agent:
         # MUST be the LAST check before handshake/decrypt: it's the only one that
         # mutates state, so partial-failure paths above don't poison the cache.
         if await self._replay_cache.seen_or_record(
-            envelope.from_address, envelope.message_id
+            envelope.from_address, envelope.message_id, signed_at=ts.timestamp()
         ):
             logger.info(
                 "Dropped replayed envelope %s from %s",
@@ -900,6 +981,7 @@ class Agent:
                 payload_plaintext=receipt_payload,
                 signing_key=self._key_manager.signing_key,
                 recipient_verify_key=sender_vk,
+                reply_to=msg.message_id,
             )
 
             # Send via transport (fire-and-forget)
@@ -921,25 +1003,30 @@ class Agent:
     async def _register_with_relay(self) -> None:
         """Register with the relay server.
 
-        Calls ``POST /api/v1/register`` with agent name and public key.
-        Stores the returned API key on disk.
+        Calls ``POST /api/v1/register`` with agent name and public key.  If
+        the address is taken, proves this agent holds its key, which gets a
+        new token for an agent that lost its old one.  Stores the returned
+        token on disk.
         """
-        public_key_str = serialize_verify_key(self._key_manager.verify_key)
+        body = {
+            "agent_name": self._config.name,
+            "public_key": serialize_verify_key(self._key_manager.verify_key),
+        }
+        url = f"{self._config.relay_url}/api/v1/register"
 
         async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                f"{self._config.relay_url}/api/v1/register",
-                json={
-                    "agent_name": self._config.name,
-                    "public_key": public_key_str,
-                },
-            )
+            resp = await client.post(url, json=body)
 
         if resp.status_code == 409:
-            raise UAMError(
-                f"Address already registered with a different key: "
-                f"{self._config.name}::{self._config.relay_domain}"
-            )
+            address = await self._address_on_relay()
+            proof = create_register_proof(address, self._key_manager.signing_key)
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(url, json={**body, "proof": proof})
+            if resp.status_code in (403, 409):
+                raise UAMError(
+                    f"Address already registered, and this agent's key could "
+                    f"not prove it owns it: {address}"
+                )
 
         if resp.status_code != 200:
             raise UAMError(
@@ -947,8 +1034,93 @@ class Agent:
             )
 
         data = resp.json()
-        self._address = data["address"]
+        self._use_address(data["address"])
         self._token = data["token"]
 
-        # Persist token for returning-user flow
+        # Persist for the returning-user flow
         self._key_manager.save_token(self._config.name, self._token)
+        self._remember_address(data["address"])
+
+    def _use_address(self, address: str) -> None:
+        """Take *address* as ours; its domain is this relay's real domain."""
+        self._address = address
+        domain = parse_address(address).domain
+        self._config.relay_domain = domain
+        if isinstance(self._resolver, SmartResolver):
+            self._resolver.relay_domain = domain
+
+    def _remember_address(self, address: str) -> None:
+        """Save *address* if we can.  It's a cache: the relay can say it again."""
+        try:
+            self._key_manager.save_address(
+                self._config.name, address, self._config.relay_url
+            )
+        except OSError as exc:
+            logger.warning("Could not save this agent's address: %s", exc)
+
+    async def _stored_address(self) -> str:
+        """Return the address the stored token belongs to.
+
+        The relay chooses the domain, and it need not be the relay's hostname.
+        A domain the caller chose wins.  Otherwise use the address saved for
+        this relay, and failing that ask the relay once and keep the answer.
+        """
+        name = self._config.name
+        if self._config.domain_is_explicit:
+            return f"{name}::{self._config.relay_domain}"
+
+        saved = self._key_manager.load_address(name, self._config.relay_url)
+        if saved:
+            return saved
+
+        domain = await self._fetch_relay_domain()
+        if domain is None:
+            return f"{name}::{self._config.relay_domain}"
+        address = f"{name}::{domain}"
+        self._remember_address(address)
+        return address
+
+    async def _address_on_relay(self) -> str:
+        """Return this agent's address on the relay, for signing a proof."""
+        domain = None
+        if not self._config.domain_is_explicit:
+            domain = await self._fetch_relay_domain()
+            if domain is not None and not self._relay_may_use(domain):
+                raise UAMError(
+                    f"The relay at {self._config.relay_url} says its domain is "
+                    f"{domain}. Pass domain={domain!r} if that is right."
+                )
+        return f"{self._config.name}::{domain or self._config.relay_domain}"
+
+    def _relay_may_use(self, domain: str) -> bool:
+        """True if the relay's URL fits *domain*, so a proof can be signed for it.
+
+        A proof for another relay's address could be replayed there for a
+        token.  A relay on this machine is trusted with any domain.
+        """
+        host = (urlparse(self._config.relay_url).hostname or "").lower()
+        domain = domain.lower()
+        if host == domain or host.endswith(f".{domain}"):
+            return True
+        if host == "localhost":
+            return True
+        try:
+            return ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            return False
+
+    async def _fetch_relay_domain(self) -> str | None:
+        """Ask the relay for its domain; ``None`` if it cannot say."""
+        url = f"{self._config.relay_url}/.well-known/uam-relay.json"
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                domain = resp.json()["relay_domain"]
+        except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+            logger.warning("Could not read the relay's domain from %s: %s", url, exc)
+            return None
+        if not isinstance(domain, str) or not domain:
+            logger.warning("The relay at %s gave no usable domain", url)
+            return None
+        return domain

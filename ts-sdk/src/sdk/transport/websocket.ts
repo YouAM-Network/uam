@@ -7,6 +7,7 @@
  */
 
 import WebSocket from "ws";
+import { log } from "../log.js";
 import { TransportBase } from "./base.js";
 
 // Reconnection constants
@@ -14,8 +15,12 @@ const BASE_DELAY = 1.0; // Initial delay in seconds
 const MAX_DELAY = 60.0; // Maximum delay cap
 const JITTER_RANGE = 1.0; // Random jitter 0 to JITTER_RANGE
 
+/** How long a close waits for the relay to answer sends, in seconds. */
+export const SEND_SETTLE_SECONDS = 5;
+
 export class WebSocketTransport extends TransportBase {
   private _url: string;
+  private _token: string;
   private _onMessage:
     | ((msg: Record<string, unknown>) => Promise<void>)
     | null;
@@ -26,6 +31,13 @@ export class WebSocketTransport extends TransportBase {
   private _connectReject: ((err: Error) => void) | null = null;
   private _running: boolean = false;
   private _reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+  /** Envelopes sent that the relay hasn't answered yet. */
+  private _unanswered: number = 0;
+  private _settling: Promise<void> | null = null;
+  private _settled: (() => void) | null = null;
+
+  /** @internal How long a close waits, in ms. Replaceable in tests. */
+  _settleMs: number = SEND_SETTLE_SECONDS * 1000;
 
   constructor(
     wsUrl: string,
@@ -33,7 +45,12 @@ export class WebSocketTransport extends TransportBase {
     onMessage?: (msg: Record<string, unknown>) => Promise<void>
   ) {
     super();
-    this._url = `${wsUrl}?token=${token}`;
+    // The token travels in the `bearer.<token>` WebSocket subprotocol, not
+    // in a ?token= query string, so it stays out of HTTP access logs and
+    // proxy logs. The relay accepts this form and echoes the subprotocol
+    // back (relay/ws.py); the Python SDK does the same.
+    this._url = wsUrl;
+    this._token = token;
     this._onMessage = onMessage ?? null;
   }
 
@@ -60,7 +77,14 @@ export class WebSocketTransport extends TransportBase {
     });
   }
 
+  /**
+   * Close the connection, once the relay has answered what was sent.
+   *
+   * The relay stops reading a socket when it can't write an ack to it, so
+   * closing straight after send() loses every frame but the first.
+   */
   async disconnect(): Promise<void> {
+    await this._allAnswered();
     this._running = false;
     if (this._reconnectTimeout !== null) {
       clearTimeout(this._reconnectTimeout);
@@ -79,6 +103,7 @@ export class WebSocketTransport extends TransportBase {
       throw new Error("WebSocket not connected");
     }
     this._ws.send(JSON.stringify(envelope));
+    this._unanswered += 1;
   }
 
   async receive(limit: number = 50): Promise<Record<string, unknown>[]> {
@@ -93,13 +118,36 @@ export class WebSocketTransport extends TransportBase {
     this._onMessage = callback;
   }
 
+  /** Resolves when nothing is unanswered, or after _settleMs regardless. */
+  private _allAnswered(): Promise<void> {
+    if (this._unanswered === 0) return Promise.resolve();
+    this._settling ??= new Promise<void>((resolve) => {
+      const timeout = setTimeout(() => {
+        log.warn(`Closing with ${this._unanswered} sends unanswered`);
+        this._settled?.();
+      }, this._settleMs);
+      this._settled = () => {
+        clearTimeout(timeout);
+        this._settling = null;
+        this._settled = null;
+        resolve();
+      };
+    });
+    return this._settling;
+  }
+
+  private _answered(): void {
+    this._unanswered = Math.max(0, this._unanswered - 1);
+    if (this._unanswered === 0) this._settled?.();
+  }
+
   private _startConnectionLoop(): void {
     let attempt = 0;
 
     const tryConnect = () => {
       if (!this._running) return;
 
-      const ws = new WebSocket(this._url);
+      const ws = new WebSocket(this._url, [`bearer.${this._token}`]);
       this._ws = ws;
 
       ws.on("open", () => {
@@ -124,6 +172,9 @@ export class WebSocketTransport extends TransportBase {
       ws.on("close", () => {
         this._connected = false;
         this._ws = null;
+        // Their answers went with the socket.
+        this._unanswered = 0;
+        this._settled?.();
         if (!this._running) return;
 
         attempt += 1;
@@ -149,17 +200,8 @@ export class WebSocketTransport extends TransportBase {
   private _handleMessage(msg: Record<string, unknown>): void {
     const msgType = msg["type"] as string | undefined;
 
-    if (msgType === "ping") {
-      // Respond to relay heartbeat
-      if (this._ws && this._ws.readyState === WebSocket.OPEN) {
-        this._ws.send(JSON.stringify({ type: "pong" }));
-      }
-    } else if (msgType === "ack") {
-      // Acknowledgment -- log silently
-    } else if (msgType === "error" || "error" in msg) {
-      // Relay error -- log silently
-    } else if ("uam_version" in msg) {
-      // Inbound envelope
+    // First: an envelope's type and keys are the sender's to choose.
+    if ("uam_version" in msg) {
       if (this._onMessage) {
         this._onMessage(msg).catch(() => {
           // Fire-and-forget callback errors
@@ -167,6 +209,15 @@ export class WebSocketTransport extends TransportBase {
       } else {
         this._pending.push(msg);
       }
+    } else if (msgType === "ping") {
+      // Respond to relay heartbeat
+      if (this._ws && this._ws.readyState === WebSocket.OPEN) {
+        this._ws.send(JSON.stringify({ type: "pong" }));
+      }
+    } else if (msgType === "ack") {
+      this._answered();
+    } else if (msgType === "error" || "error" in msg) {
+      this._answered();
     }
   }
 }

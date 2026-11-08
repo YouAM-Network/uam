@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "UAM Relay",
-    "version": "0.1.0"
+    "version": "1.0.1"
   },
   "paths": {
     "/api/v1/register": {
@@ -87,7 +87,7 @@
     "/api/v1/agents/{address}": {
       "patch": {
         "summary": "Patch Agent",
-        "description": "Update agent fields (display_name, contact_card, public_key).\n\nRequires Bearer token auth.  Agent can only update their own record.\nIf ``public_key`` is provided, it must be a valid Ed25519 key.",
+        "description": "Update agent fields (display_name, contact_card).\n\nRequires Bearer token auth.  Agent can only update their own record.\n``public_key`` is refused: the relay serves this key to senders and\npeer relays, and a bearer token alone must not be able to change it.",
         "operationId": "patch_agent_api_v1_agents__address__patch",
         "security": [
           {
@@ -229,10 +229,86 @@
         }
       }
     },
+    "/api/v1/agents/{address}/card.vcf": {
+      "get": {
+        "summary": "Get Agent Vcf",
+        "description": "Download the identity vCard for a registered agent (VCF-05).\n\nReturns a vCard 3.0 file with the agent's identity card image embedded\nas PHOTO, plus X-UAM-* fields for programmatic use.",
+        "operationId": "get_agent_vcf_api_v1_agents__address__card_vcf_get",
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Address"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agents/{address}/card.png": {
+      "get": {
+        "summary": "Get Agent Card Image",
+        "description": "Serve the identity card image for a registered agent (CARD-06).\n\nReturns a 600x600 JPEG image with Cache-Control headers for CDN caching.\nNote: The endpoint path says .png but serves JPEG for size efficiency --\nthe card renderer produces JPEG (under 200KB).",
+        "operationId": "get_agent_card_image_api_v1_agents__address__card_png_get",
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Address"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/send": {
       "post": {
         "summary": "Send Message",
-        "description": "Send a signed message envelope via REST.\n\nOrder of operations (DoS-resistant):\n1.  Auth (via dependency injection -- already done)\n2.  Blocklist check (SPAM-01 -- O(1) set lookup)\n3.  Allowlist check (SPAM-01 -- O(1), sets skip_reputation flag)\n4.  Adaptive sender rate limit (SPAM-04 -- reputation-based limit)\n5.  Parse envelope\n6.  Sender identity match\n7.  Domain rate limit (SPAM-03 -- relay domain exempt)\n8.  Recipient rate limit (RELAY-05)\n9.  Reputation score check (SPAM-06 -- drop if score <20)\n10. Signature verification (expensive -- LAST)\n11. Route or store",
+        "description": "Send a signed message envelope via REST.\n\nOrder of operations:\n1. Auth (via dependency injection -- already done)\n2. Early refusal (relay/policy.py): blocklist, reputation, sender limit\n3. Parse envelope\n4. Sender identity match\n5. Dedup (MSG-03) -- a duplicate is accepted again, idempotently\n6. Delivery checks (relay/policy.py): blocklist, expiry, reputation,\n   sender / domain / recipient rate limits\n7. Signature verification (expensive -- after the cheap checks)\n8. Route or store\n\nSteps 5-8 share one transaction: a refusal rolls back the dedup row,\nso the sender can send the same message again later.",
         "operationId": "send_message_api_v1_send_post",
         "requestBody": {
           "content": {
@@ -445,7 +521,7 @@
     "/api/v1/federation/deliver": {
       "post": {
         "summary": "Federation Deliver",
-        "description": "Accept an inbound federated envelope from a remote relay.\n\nValidation order (DoS-resistant, cheapest checks first):\n1.  Federation enabled check\n2.  Parse request fields\n3.  Timestamp freshness\n4.  Loop prevention (hop_count + via chain)\n5.  Destination domain verification\n6.  Relay signature verification (with key rotation retry)\n7.  Agent envelope signature verification\n8.  Dedup check\n9.  Deliver (WebSocket > webhook > store)\n10. Log to federation_log",
+        "description": "Accept an inbound federated envelope from a remote relay.\n\nValidation order (DoS-resistant, cheapest checks first):\n1.   Federation enabled check\n2.   Parse request fields\n3.   Timestamp freshness\n4.   Loop prevention (hop_count + via chain)\n5.   Destination domain verification\n6.   Relay signature verification (with key rotation retry)\n6.5. Federation nonce dedup (T3.2 \u2014 Phase 45) \u2014 single cheap INSERT,\n     gates the expensive crypto verify in Step 7. (Comes AFTER the\n     cheap stale-timestamp/loop checks so a stale-ts DoS can't fill\n     the table; comes BEFORE expensive crypto verify so an attacker\n     can't burn cycles replaying a signed body.)\n7.   Agent envelope signature verification\n8.   Dedup check (envelope-level, by message_id)\n8.5. Delivery checks (relay/policy.py), keyed on the verified sender\n9.   Deliver (WebSocket > webhook > store)\n10.  Log to federation_log\n\nSteps 3-8 failing count against the source relay's reputation; a\nrefusal at 8.5 does not (one sender's message is not the peer's\nfault). A refusal rolls back the dedup row, so it can be sent again.",
         "operationId": "federation_deliver_api_v1_federation_deliver_post",
         "requestBody": {
           "content": {
@@ -670,7 +746,7 @@
     "/api/v1/agents/{address}/webhook": {
       "put": {
         "summary": "Set Webhook Url",
-        "description": "Set or update the webhook URL for an agent (HOOK-01).",
+        "description": "Set or update the webhook URL for an agent (HOOK-01).\n\nThe response carries the secret to verify ``X-UAM-Signature`` with.  Setting\nthe same URL again returns it again.",
         "operationId": "set_webhook_url_api_v1_agents__address__webhook_put",
         "security": [
           {
@@ -1439,45 +1515,19 @@
           "handshakes"
         ],
         "summary": "Send Handshake",
-        "description": "Initiate a relay-mediated handshake with another agent.\n\nCreates a pending handshake request from the authenticated agent\nto the target address.  Optionally includes a contact card.",
+        "description": "Gone: send a signed ``handshake.request`` envelope instead.",
         "operationId": "send_handshake_api_v1_handshakes_send_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HandshakeSendRequest"
-              }
-            }
-          },
-          "required": true
-        },
         "responses": {
-          "201": {
+          "410": {
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HandshakeResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
+                "schema": {}
               }
             }
           }
         },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
+        "deprecated": true
       }
     },
     "/api/v1/handshakes/pending/{address}": {
@@ -1534,7 +1584,7 @@
           "handshakes"
         ],
         "summary": "Respond To Handshake",
-        "description": "Respond to a pending handshake (approve or deny).\n\nThe authenticated agent must be the ``to_addr`` of the handshake.",
+        "description": "Deny a pending handshake (approving here is refused).\n\nThe authenticated agent must be the ``to_addr`` of the handshake.",
         "operationId": "respond_to_handshake_api_v1_handshakes__handshake_id__respond_post",
         "security": [
           {
@@ -1586,6 +1636,238 @@
         }
       }
     },
+    "/api/v1/reserve/check/{name}": {
+      "get": {
+        "summary": "Reserve Check",
+        "description": "Check whether an agent name is available for reservation (RES-01).\n\nQueries both the agents table (registered agents) and the reservations\ntable (active reservations) to determine availability.",
+        "operationId": "reserve_check_api_v1_reserve_check__name__get",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReserveCheckResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/reserve": {
+      "post": {
+        "summary": "Reserve Address",
+        "description": "Reserve an agent address with a time-limited claim token (RES-02, RES-06).\n\nCreates a reservation with a 256-bit claim token and configurable TTL\n(default 48 hours). Rate limited to 5 active reservations per IP per hour.",
+        "operationId": "reserve_address_api_v1_reserve_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReserveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReserveResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/reserve/claim": {
+      "post": {
+        "summary": "Reserve Claim",
+        "description": "Claim a reserved address using a claim token (RES-04).\n\nValidates the claim token, checks the reservation is still valid,\nregisters the agent via create_agent(), and marks the reservation\nas claimed -- all in a single transaction.",
+        "operationId": "reserve_claim_api_v1_reserve_claim_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReserveClaimRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReserveClaimResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/reserve/{token}/card.jpg": {
+      "get": {
+        "summary": "Download Reservation Card",
+        "description": "Download the reservation card image as JPEG for a given claim token.",
+        "operationId": "download_reservation_card_api_v1_reserve__token__card_jpg_get",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/reserve/{token}/vcf": {
+      "get": {
+        "summary": "Download Reservation Vcf",
+        "description": "Download the reservation vCard file for a given claim token (VCF-04).\n\nReturns a vCard 3.0 file with text/vcard MIME type and\nContent-Disposition: attachment header for browser download.",
+        "operationId": "download_reservation_vcf_api_v1_reserve__token__vcf_get",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/avatar/{address}.png": {
+      "get": {
+        "summary": "Get Avatar",
+        "description": "Generate a PNG avatar for an agent address.\n\nReturns a 200x200 PNG avatar deterministically generated from the address\nusing the local SVG avatar engine. No external HTTP calls.",
+        "operationId": "get_avatar_api_v1_avatar__address__png_get",
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Address"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/health": {
       "get": {
         "summary": "Health",
@@ -1598,6 +1880,27 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/versions": {
+      "get": {
+        "summary": "Get Versions",
+        "description": "Expose protocol version policy for peer-relay version negotiation.\n\nPhase 48 Q4 \u2014 public endpoint, no auth required. Peer relays call this\nbefore attempting federation to discover the supported MAJOR-version set.\n\n.. note::\n   The ``health_router`` is included into the FastAPI app WITHOUT a\n   ``/api/v1`` prefix (see ``uam.relay.app.create_app``), so the full\n   path is hard-coded here rather than relying on a router prefix.",
+        "operationId": "get_versions_api_v1_versions_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Get Versions Api V1 Versions Get"
                 }
               }
             }
@@ -1642,6 +1945,40 @@
           }
         }
       }
+    },
+    "/new": {
+      "get": {
+        "summary": "Viral New",
+        "description": "GET /new -- User-Agent detection (VIRAL-01).\n\n* CLI clients (curl/wget) receive a thin POSIX sh wrapper that downloads\n  the full installer to a temp file before executing it.\n* Browsers receive a 302 redirect to the website's /reserve page.",
+        "operationId": "viral_new_new_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/new/install.sh": {
+      "get": {
+        "summary": "Viral Installer",
+        "description": "GET /new/install.sh -- Full interactive installer (VIRAL-02, VIRAL-03).\n\nReturns a POSIX sh script that walks the user through picking an agent\nname, checking availability, creating a reservation, downloading the\nvCard, and running ``uam init --claim``.  The script is auto-branded\nper relay -- domain, relay URL, and signup URL are substituted from\nthe relay config with no hardcoded values.",
+        "operationId": "viral_installer_new_install_sh_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1657,6 +1994,7 @@
           },
           "count": {
             "type": "integer",
+            "minimum": 0.0,
             "title": "Count"
           }
         },
@@ -1671,20 +2009,26 @@
         "properties": {
           "address": {
             "type": "string",
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*::[a-z0-9.-]+$",
             "title": "Address"
           },
           "public_key": {
             "type": "string",
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9+/_-]{40,48}={0,2}$",
             "title": "Public Key"
           },
           "status": {
             "type": "string",
+            "maxLength": 32,
             "title": "Status"
           },
           "display_name": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 128
               },
               {
                 "type": "null"
@@ -1695,7 +2039,9 @@
           "webhook_url": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 2048,
+                "pattern": "^https://"
               },
               {
                 "type": "null"
@@ -1706,7 +2052,8 @@
           "last_seen": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 64
               },
               {
                 "type": "null"
@@ -1716,16 +2063,19 @@
           },
           "created_at": {
             "type": "string",
+            "maxLength": 64,
             "title": "Created At"
           },
           "updated_at": {
             "type": "string",
+            "maxLength": 64,
             "title": "Updated At"
           },
           "deleted_at": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 64
               },
               {
                 "type": "null"
@@ -1748,6 +2098,7 @@
         "properties": {
           "status": {
             "type": "string",
+            "maxLength": 32,
             "title": "Status"
           },
           "db_ok": {
@@ -1756,20 +2107,24 @@
           },
           "queue_depth": {
             "type": "integer",
+            "minimum": 0.0,
             "title": "Queue Depth"
           },
           "ws_connections": {
             "type": "integer",
+            "minimum": 0.0,
             "title": "Ws Connections"
           },
           "uptime_seconds": {
             "type": "number",
+            "minimum": 0.0,
             "title": "Uptime Seconds"
           },
           "migration_version": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 64
               },
               {
                 "type": "null"
@@ -1792,20 +2147,26 @@
         "properties": {
           "address": {
             "type": "string",
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*::[a-z0-9.-]+$",
             "title": "Address"
           },
           "public_key": {
             "type": "string",
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9+/_-]{40,48}={0,2}$",
             "title": "Public Key"
           },
           "status": {
             "type": "string",
+            "maxLength": 32,
             "title": "Status"
           },
           "display_name": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 128
               },
               {
                 "type": "null"
@@ -1816,7 +2177,9 @@
           "webhook_url": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 2048,
+                "pattern": "^https://"
               },
               {
                 "type": "null"
@@ -1827,7 +2190,8 @@
           "last_seen": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 64
               },
               {
                 "type": "null"
@@ -1837,6 +2201,7 @@
           },
           "created_at": {
             "type": "string",
+            "maxLength": 64,
             "title": "Created At"
           }
         },
@@ -1853,16 +2218,20 @@
         "properties": {
           "id": {
             "type": "integer",
+            "minimum": 0.0,
             "title": "Id"
           },
           "pattern": {
             "type": "string",
+            "maxLength": 128,
+            "pattern": "^(\\*::|[A-Za-z0-9_-]+::)?[a-z0-9.-]+$",
             "title": "Pattern"
           },
           "reason": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 256
               },
               {
                 "type": "null"
@@ -1872,6 +2241,7 @@
           },
           "created_at": {
             "type": "string",
+            "maxLength": 64,
             "title": "Created At"
           }
         },
@@ -1890,10 +2260,12 @@
               "$ref": "#/components/schemas/AllowlistEntry"
             },
             "type": "array",
+            "maxItems": 10000,
             "title": "Entries"
           },
           "count": {
             "type": "integer",
+            "minimum": 0.0,
             "title": "Count"
           }
         },
@@ -1908,12 +2280,15 @@
         "properties": {
           "pattern": {
             "type": "string",
+            "maxLength": 128,
+            "pattern": "^(\\*::|[A-Za-z0-9_-]+::)?[a-z0-9.-]+$",
             "title": "Pattern"
           },
           "reason": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 256
               },
               {
                 "type": "null"
@@ -1932,24 +2307,30 @@
         "properties": {
           "id": {
             "type": "integer",
+            "minimum": 0.0,
             "title": "Id"
           },
           "action": {
             "type": "string",
+            "maxLength": 64,
             "title": "Action"
           },
           "entity_type": {
             "type": "string",
+            "maxLength": 64,
             "title": "Entity Type"
           },
           "entity_id": {
             "type": "string",
+            "maxLength": 128,
             "title": "Entity Id"
           },
           "actor_address": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*::[a-z0-9.-]+$"
               },
               {
                 "type": "null"
@@ -1959,6 +2340,7 @@
           },
           "timestamp": {
             "type": "string",
+            "maxLength": 64,
             "title": "Timestamp"
           },
           "details": {
@@ -1976,7 +2358,8 @@
           "ip_address": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 64
               },
               {
                 "type": "null"
@@ -2006,6 +2389,7 @@
           },
           "count": {
             "type": "integer",
+            "minimum": 0.0,
             "title": "Count"
           }
         },
@@ -2020,16 +2404,20 @@
         "properties": {
           "id": {
             "type": "integer",
+            "minimum": 0.0,
             "title": "Id"
           },
           "pattern": {
             "type": "string",
+            "maxLength": 128,
+            "pattern": "^(\\*::|[A-Za-z0-9_-]+::)?[a-z0-9.-]+$",
             "title": "Pattern"
           },
           "reason": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 256
               },
               {
                 "type": "null"
@@ -2039,6 +2427,7 @@
           },
           "created_at": {
             "type": "string",
+            "maxLength": 64,
             "title": "Created At"
           }
         },
@@ -2057,10 +2446,12 @@
               "$ref": "#/components/schemas/BlocklistEntry"
             },
             "type": "array",
+            "maxItems": 10000,
             "title": "Entries"
           },
           "count": {
             "type": "integer",
+            "minimum": 0.0,
             "title": "Count"
           }
         },
@@ -2075,12 +2466,15 @@
         "properties": {
           "pattern": {
             "type": "string",
+            "maxLength": 128,
+            "pattern": "^(\\*::|[A-Za-z0-9_-]+::)?[a-z0-9.-]+$",
             "title": "Pattern"
           },
           "reason": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 256
               },
               {
                 "type": "null"
@@ -2099,10 +2493,14 @@
         "properties": {
           "session_id": {
             "type": "string",
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$",
             "title": "Session Id"
           },
           "address": {
             "type": "string",
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*::[a-z0-9.-]+$",
             "title": "Address"
           }
         },
@@ -2133,18 +2531,24 @@
         "properties": {
           "from_address": {
             "type": "string",
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*::[a-z0-9.-]+$",
             "title": "From Address"
           },
           "content": {
             "type": "string",
+            "maxLength": 2048,
             "title": "Content"
           },
           "timestamp": {
             "type": "string",
+            "maxLength": 64,
             "title": "Timestamp"
           },
           "message_id": {
             "type": "string",
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$",
             "title": "Message Id"
           }
         },
@@ -2161,14 +2565,19 @@
         "properties": {
           "session_id": {
             "type": "string",
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$",
             "title": "Session Id"
           },
           "to_address": {
             "type": "string",
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*::[a-z0-9.-]+$",
             "title": "To Address"
           },
           "message": {
             "type": "string",
+            "maxLength": 2048,
             "title": "Message"
           }
         },
@@ -2184,6 +2593,8 @@
         "properties": {
           "message_id": {
             "type": "string",
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$",
             "title": "Message Id"
           }
         },
@@ -2205,28 +2616,40 @@
               "type": "string"
             },
             "type": "array",
-            "title": "Via",
-            "default": []
+            "maxItems": 16,
+            "title": "Via"
           },
           "hop_count": {
             "type": "integer",
+            "maximum": 16.0,
+            "minimum": 0.0,
             "title": "Hop Count",
             "default": 0
           },
           "timestamp": {
             "type": "string",
+            "maxLength": 64,
             "title": "Timestamp"
           },
           "from_relay": {
             "type": "string",
+            "maxLength": 255,
+            "pattern": "^[a-z0-9.-]+$",
             "title": "From Relay"
+          },
+          "nonce": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 22,
+            "title": "Nonce"
           }
         },
         "type": "object",
         "required": [
           "envelope",
           "timestamp",
-          "from_relay"
+          "from_relay",
+          "nonce"
         ],
         "title": "FederationDeliverRequest"
       },
@@ -2234,12 +2657,14 @@
         "properties": {
           "status": {
             "type": "string",
+            "maxLength": 32,
             "title": "Status"
           },
           "detail": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 512
               },
               {
                 "type": "null"
@@ -2278,6 +2703,7 @@
           },
           "count": {
             "type": "integer",
+            "minimum": 0.0,
             "title": "Count"
           }
         },
@@ -2292,6 +2718,10 @@
         "properties": {
           "response": {
             "type": "string",
+            "enum": [
+              "approved",
+              "denied"
+            ],
             "title": "Response"
           }
         },
@@ -2305,18 +2735,24 @@
         "properties": {
           "id": {
             "type": "integer",
+            "minimum": 0.0,
             "title": "Id"
           },
           "status": {
             "type": "string",
+            "maxLength": 32,
             "title": "Status"
           },
           "from_addr": {
             "type": "string",
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*::[a-z0-9.-]+$",
             "title": "From Addr"
           },
           "to_addr": {
             "type": "string",
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*::[a-z0-9.-]+$",
             "title": "To Addr"
           }
         },
@@ -2329,43 +2765,21 @@
         ],
         "title": "HandshakeResponse"
       },
-      "HandshakeSendRequest": {
-        "properties": {
-          "to_address": {
-            "type": "string",
-            "title": "To Address"
-          },
-          "contact_card": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Contact Card"
-          }
-        },
-        "type": "object",
-        "required": [
-          "to_address"
-        ],
-        "title": "HandshakeSendRequest"
-      },
       "HealthResponse": {
         "properties": {
           "status": {
             "type": "string",
+            "maxLength": 32,
             "title": "Status"
           },
           "agents_online": {
             "type": "integer",
+            "minimum": 0.0,
             "title": "Agents Online"
           },
           "version": {
             "type": "string",
+            "maxLength": 32,
             "title": "Version"
           }
         },
@@ -2381,6 +2795,8 @@
         "properties": {
           "address": {
             "type": "string",
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*::[a-z0-9.-]+$",
             "title": "Address"
           },
           "messages": {
@@ -2393,6 +2809,7 @@
           },
           "count": {
             "type": "integer",
+            "minimum": 0.0,
             "title": "Count"
           }
         },
@@ -2408,6 +2825,8 @@
         "properties": {
           "address": {
             "type": "string",
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*::[a-z0-9.-]+$",
             "title": "Address"
           },
           "online": {
@@ -2417,7 +2836,8 @@
           "last_seen": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 64
               },
               {
                 "type": "null"
@@ -2437,21 +2857,29 @@
         "properties": {
           "address": {
             "type": "string",
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*::[a-z0-9.-]+$",
             "title": "Address"
           },
           "public_key": {
             "type": "string",
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9+/_-]{40,48}={0,2}$",
             "title": "Public Key"
           },
           "tier": {
             "type": "integer",
+            "maximum": 3.0,
+            "minimum": 1.0,
             "title": "Tier",
             "default": 1
           },
           "verified_domain": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 255,
+                "pattern": "^[a-z0-9.-]+$"
               },
               {
                 "type": "null"
@@ -2471,6 +2899,7 @@
         "properties": {
           "purged": {
             "type": "integer",
+            "minimum": 0.0,
             "title": "Purged"
           }
         },
@@ -2484,12 +2913,18 @@
         "properties": {
           "type": {
             "type": "string",
+            "enum": [
+              "receipt.read",
+              "receipt.delivered",
+              "receipt.failed"
+            ],
             "title": "Type"
           },
           "timestamp": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 64
               },
               {
                 "type": "null"
@@ -2508,10 +2943,13 @@
         "properties": {
           "status": {
             "type": "string",
+            "maxLength": 32,
             "title": "Status"
           },
           "message_id": {
             "type": "string",
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$",
             "title": "Message Id"
           }
         },
@@ -2526,16 +2964,22 @@
         "properties": {
           "agent_name": {
             "type": "string",
+            "maxLength": 64,
+            "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
             "title": "Agent Name"
           },
           "public_key": {
             "type": "string",
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9+/_-]{40,48}={0,2}$",
             "title": "Public Key"
           },
           "webhook_url": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 2048,
+                "pattern": "^https://"
               },
               {
                 "type": "null"
@@ -2555,15 +2999,32 @@
         "properties": {
           "address": {
             "type": "string",
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*::[a-z0-9.-]+$",
             "title": "Address"
           },
           "token": {
             "type": "string",
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$",
             "title": "Token"
           },
           "relay": {
             "type": "string",
+            "maxLength": 512,
             "title": "Relay"
+          },
+          "webhook_secret": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 128
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhook Secret"
           }
         },
         "type": "object",
@@ -2578,30 +3039,39 @@
         "properties": {
           "address": {
             "type": "string",
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*::[a-z0-9.-]+$",
             "title": "Address"
           },
           "score": {
             "type": "integer",
+            "maximum": 100.0,
+            "minimum": 0.0,
             "title": "Score"
           },
           "tier": {
             "type": "string",
+            "maxLength": 32,
             "title": "Tier"
           },
           "messages_sent": {
             "type": "integer",
+            "minimum": 0.0,
             "title": "Messages Sent"
           },
           "messages_rejected": {
             "type": "integer",
+            "minimum": 0.0,
             "title": "Messages Rejected"
           },
           "created_at": {
             "type": "string",
+            "maxLength": 64,
             "title": "Created At"
           },
           "updated_at": {
             "type": "string",
+            "maxLength": 64,
             "title": "Updated At"
           }
         },
@@ -2616,6 +3086,150 @@
           "updated_at"
         ],
         "title": "ReputationResponse"
+      },
+      "ReserveCheckResponse": {
+        "properties": {
+          "address": {
+            "type": "string",
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*::[a-z0-9.-]+$",
+            "title": "Address"
+          },
+          "available": {
+            "type": "boolean",
+            "title": "Available"
+          }
+        },
+        "type": "object",
+        "required": [
+          "address",
+          "available"
+        ],
+        "title": "ReserveCheckResponse"
+      },
+      "ReserveClaimRequest": {
+        "properties": {
+          "claim_token": {
+            "type": "string",
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "title": "Claim Token"
+          },
+          "public_key": {
+            "type": "string",
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9+/_-]{40,48}={0,2}$",
+            "title": "Public Key"
+          },
+          "webhook_url": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2048,
+                "pattern": "^https://"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhook Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "claim_token",
+          "public_key"
+        ],
+        "title": "ReserveClaimRequest"
+      },
+      "ReserveClaimResponse": {
+        "properties": {
+          "address": {
+            "type": "string",
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*::[a-z0-9.-]+$",
+            "title": "Address"
+          },
+          "token": {
+            "type": "string",
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "title": "Token"
+          },
+          "relay": {
+            "type": "string",
+            "maxLength": 512,
+            "title": "Relay"
+          },
+          "webhook_secret": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 128
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhook Secret"
+          }
+        },
+        "type": "object",
+        "required": [
+          "address",
+          "token",
+          "relay"
+        ],
+        "title": "ReserveClaimResponse"
+      },
+      "ReserveRequest": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 64,
+            "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "ReserveRequest"
+      },
+      "ReserveResponse": {
+        "properties": {
+          "address": {
+            "type": "string",
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*::[a-z0-9.-]+$",
+            "title": "Address"
+          },
+          "claim_token": {
+            "type": "string",
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "title": "Claim Token"
+          },
+          "expires_at": {
+            "type": "string",
+            "maxLength": 64,
+            "title": "Expires At"
+          },
+          "vcf_url": {
+            "type": "string",
+            "maxLength": 2048,
+            "title": "Vcf Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "address",
+          "claim_token",
+          "expires_at",
+          "vcf_url"
+        ],
+        "title": "ReserveResponse"
       },
       "SendRequest": {
         "properties": {
@@ -2635,6 +3249,8 @@
         "properties": {
           "message_id": {
             "type": "string",
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$",
             "title": "Message Id"
           },
           "delivered": {
@@ -2653,6 +3269,8 @@
         "properties": {
           "score": {
             "type": "integer",
+            "maximum": 100.0,
+            "minimum": 0.0,
             "title": "Score"
           }
         },
@@ -2666,6 +3284,8 @@
         "properties": {
           "thread_id": {
             "type": "string",
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$",
             "title": "Thread Id"
           },
           "messages": {
@@ -2674,10 +3294,12 @@
               "type": "object"
             },
             "type": "array",
+            "maxItems": 10000,
             "title": "Messages"
           },
           "count": {
             "type": "integer",
+            "minimum": 0.0,
             "title": "Count"
           }
         },
@@ -2694,7 +3316,8 @@
           "display_name": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 128
               },
               {
                 "type": "null"
@@ -2717,7 +3340,9 @@
           "public_key": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 64,
+                "pattern": "^[A-Za-z0-9+/_-]{40,48}={0,2}$"
               },
               {
                 "type": "null"
@@ -2773,6 +3398,8 @@
         "properties": {
           "domain": {
             "type": "string",
+            "maxLength": 255,
+            "pattern": "^[a-z0-9.-]+$",
             "title": "Domain"
           }
         },
@@ -2786,20 +3413,29 @@
         "properties": {
           "status": {
             "type": "string",
+            "enum": [
+              "verified",
+              "failed"
+            ],
             "title": "Status"
           },
           "domain": {
             "type": "string",
+            "maxLength": 255,
+            "pattern": "^[a-z0-9.-]+$",
             "title": "Domain"
           },
           "tier": {
             "type": "integer",
+            "maximum": 3.0,
+            "minimum": 1.0,
             "title": "Tier"
           },
           "detail": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 512
               },
               {
                 "type": "null"
@@ -2820,6 +3456,8 @@
         "properties": {
           "address": {
             "type": "string",
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*::[a-z0-9.-]+$",
             "title": "Address"
           },
           "deliveries": {
@@ -2831,6 +3469,7 @@
           },
           "count": {
             "type": "integer",
+            "minimum": 0.0,
             "title": "Count"
           }
         },
@@ -2846,24 +3485,31 @@
         "properties": {
           "id": {
             "type": "integer",
+            "minimum": 0.0,
             "title": "Id"
           },
           "message_id": {
             "type": "string",
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$",
             "title": "Message Id"
           },
           "status": {
             "type": "string",
+            "maxLength": 32,
             "title": "Status"
           },
           "attempt_count": {
             "type": "integer",
+            "minimum": 0.0,
             "title": "Attempt Count"
           },
           "last_status_code": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "integer",
+                "maximum": 599.0,
+                "minimum": 100.0
               },
               {
                 "type": "null"
@@ -2874,7 +3520,8 @@
           "last_error": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 512
               },
               {
                 "type": "null"
@@ -2884,12 +3531,14 @@
           },
           "created_at": {
             "type": "string",
+            "maxLength": 64,
             "title": "Created At"
           },
           "completed_at": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 64
               },
               {
                 "type": "null"
@@ -2912,6 +3561,8 @@
         "properties": {
           "webhook_url": {
             "type": "string",
+            "maxLength": 2048,
+            "pattern": "^https://",
             "title": "Webhook Url"
           }
         },
@@ -2925,24 +3576,39 @@
         "properties": {
           "address": {
             "type": "string",
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*::[a-z0-9.-]+$",
             "title": "Address"
           },
           "webhook_url": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 2048,
+                "pattern": "^https://"
               },
               {
                 "type": "null"
               }
             ],
             "title": "Webhook Url"
+          },
+          "webhook_secret": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 128
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhook Secret"
           }
         },
         "type": "object",
         "required": [
-          "address",
-          "webhook_url"
+          "address"
         ],
         "title": "WebhookUrlResponse"
       },
@@ -2950,18 +3616,24 @@
         "properties": {
           "relay_domain": {
             "type": "string",
+            "maxLength": 255,
+            "pattern": "^[a-z0-9.-]+$",
             "title": "Relay Domain"
           },
           "federation_endpoint": {
             "type": "string",
+            "maxLength": 2048,
             "title": "Federation Endpoint"
           },
           "public_key": {
             "type": "string",
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9+/_-]{40,48}={0,2}$",
             "title": "Public Key"
           },
           "version": {
             "type": "string",
+            "maxLength": 32,
             "title": "Version",
             "default": "0.1"
           }

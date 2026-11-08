@@ -9,7 +9,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from uam.db.crud.agents import get_agent_by_address, update_agent
+from uam.db.crud.agents import clear_webhook, get_agent_by_address, set_webhook
 from uam.db.crud.webhooks import get_deliveries_for_agent
 from uam.db.session import get_session
 from uam.relay.auth import verify_token_http
@@ -19,7 +19,7 @@ from uam.relay.models import (
     WebhookUrlRequest,
     WebhookUrlResponse,
 )
-from uam.relay.webhook_validator import validate_webhook_url
+from uam.relay.webhook_validator import async_validate_webhook_url
 
 router = APIRouter()
 
@@ -40,16 +40,22 @@ async def set_webhook_url(
     agent: dict = Depends(verify_token_http),
     session: AsyncSession = Depends(get_session),
 ) -> WebhookUrlResponse:
-    """Set or update the webhook URL for an agent (HOOK-01)."""
+    """Set or update the webhook URL for an agent (HOOK-01).
+
+    The response carries the secret to verify ``X-UAM-Signature`` with.  Setting
+    the same URL again returns it again.
+    """
     _check_ownership(agent, address)
 
     # SSRF validation
-    valid, reason = validate_webhook_url(body.webhook_url)
+    valid, reason = await async_validate_webhook_url(body.webhook_url)
     if not valid:
         raise HTTPException(status_code=400, detail=f"Invalid webhook URL: {reason}")
 
-    await update_agent(session, address, webhook_url=body.webhook_url)
-    return WebhookUrlResponse(address=address, webhook_url=body.webhook_url)
+    secret = await set_webhook(session, address, body.webhook_url)
+    return WebhookUrlResponse(
+        address=address, webhook_url=body.webhook_url, webhook_secret=secret
+    )
 
 
 @router.delete("/agents/{address}/webhook", response_model=WebhookUrlResponse)
@@ -61,7 +67,7 @@ async def delete_webhook_url(
 ) -> WebhookUrlResponse:
     """Remove the webhook URL for an agent."""
     _check_ownership(agent, address)
-    await update_agent(session, address, webhook_url=None)
+    await clear_webhook(session, address)
     return WebhookUrlResponse(address=address, webhook_url=None)
 
 

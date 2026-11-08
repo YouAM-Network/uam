@@ -85,6 +85,22 @@ async def get_pending_deliveries(
     return list(result.scalars().all())
 
 
+async def get_unfinished_deliveries(
+    session: AsyncSession, limit: int = 100
+) -> list[WebhookDelivery]:
+    """Deliveries not yet finished, including those waiting between retries."""
+    stmt = (
+        select(WebhookDelivery)
+        .where(
+            WebhookDelivery.status.in_(["pending", "in_progress"]),  # type: ignore[attr-defined]
+            WebhookDelivery.deleted_at.is_(None),  # type: ignore[union-attr]
+        )
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
 async def record_attempt(
     session: AsyncSession,
     delivery_id: int,

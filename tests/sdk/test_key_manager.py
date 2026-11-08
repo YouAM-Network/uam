@@ -92,6 +92,17 @@ class TestTokenPersistence:
         loaded = km.load_token("alice")
         assert loaded == "test-token-abc123"
 
+    def test_save_and_load_address(self, key_dir):
+        km = KeyManager(key_dir)
+        assert km.load_address("alice") is None
+
+        km.save_address("alice", "alice::youam.network", "https://relay.example/")
+
+        assert (
+            KeyManager(key_dir).load_address("alice", "https://relay.example")
+            == "alice::youam.network"
+        )
+
     def test_load_token_not_found(self, key_dir):
         km = KeyManager(key_dir)
         assert km.load_token("nonexistent") is None

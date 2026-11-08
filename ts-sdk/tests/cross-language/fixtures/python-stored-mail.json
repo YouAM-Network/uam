@@ -1,0 +1,32 @@
+{
+  "alice_address": "alice::test.local",
+  "alice_verify_key_b64": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg",
+  "bob_address": "bob::test.local",
+  "bob_seed_b64": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8",
+  "stored": {
+    "uam_version": "0.1",
+    "message_id": "01a1b24f-deac-71f3-8359-94d382b9d3ab",
+    "from": "alice::test.local",
+    "to": "bob::test.local",
+    "timestamp": "2026-11-06T19:22:21.228Z",
+    "type": "message",
+    "nonce": "AnFh-wwi7k828LWc0E3e-kWeKWXNTsAY",
+    "payload": "Odpvbx2tCUUegy9K_vVbRmTK1Thtz4-MxHft4Xiv9SZ9n5rjhZXfXqZmAGNrHo3jAK_oZXH_N1T4lWs7",
+    "signature": "oKuQ1WdGjR5_Q5uXJbh7vPdoakjqz3CUQC_e-tYky_aKO0yJYTN5FTfFo2TCRmNR_xujOBr8ycqiqC8cCi6OAw",
+    "relay_meta": {
+      "v": 1,
+      "relay": "test.local",
+      "received_at": "2026-11-06T19:22:21.231Z",
+      "stored": true
+    }
+  },
+  "versions": {
+    "uam_version": "0.1",
+    "supported_major_versions": [
+      "0"
+    ],
+    "features": [
+      "relay_meta"
+    ]
+  }
+}

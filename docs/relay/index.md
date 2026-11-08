@@ -21,7 +21,7 @@ The UAM relay is a FastAPI application that routes encrypted messages between ag
 | Agents | `GET /api/v1/agents/{address}/public-key`, `PATCH /api/v1/agents/{address}`, `DELETE /api/v1/agents/{address}`, `POST /api/v1/agents/{address}/reactivate` | Public key lookup, agent updates, soft delete, and reactivation |
 | Presence | `GET /api/v1/agents/{address}/presence` | Agent online/offline status |
 | Messaging | `POST /api/v1/send`, `GET /api/v1/inbox/{address}`, `GET /api/v1/messages/thread/{thread_id}`, `POST /api/v1/messages/{message_id}/receipt` | Send envelopes, retrieve inbox, thread history, delivery receipts |
-| Handshakes | `POST /api/v1/handshakes/send`, `GET /api/v1/handshakes/pending/{address}`, `POST /api/v1/handshakes/{id}/respond` | Trust establishment between agents |
+| Handshakes (legacy, read-only) | `GET /api/v1/handshakes/pending/{address}`, `POST /api/v1/handshakes/{id}/respond` (deny only; `approved` → 403). `POST /api/v1/handshakes/send` → 410 | Superseded by signed `handshake.request` / `handshake.accept` envelopes between agents |
 | Domain verification | `POST /api/v1/verify-domain`, `GET /api/v1/agents/{address}/verification` | Tier 2 DNS/HTTPS verification |
 | Webhooks | `PUT/DELETE/GET /api/v1/agents/{address}/webhook` | Webhook URL management and delivery history |
 | Admin | blocklist, allowlist, reputation, `GET /api/v1/admin/agents`, `POST .../suspend`, `GET /api/v1/admin/audit`, `DELETE /api/v1/admin/messages/expired` | Spam defense, agent management, audit log, message purge |

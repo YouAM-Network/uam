@@ -8,6 +8,7 @@
 export {
   UAM_VERSION,
   MAX_ENVELOPE_SIZE,
+  MAX_ENVELOPE_AGE,
   MessageType,
   b64Encode,
   b64Decode,

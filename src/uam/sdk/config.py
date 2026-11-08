@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -37,11 +37,15 @@ class SDKConfig:
     trust_policy: str = "auto-accept"
     relay_domain: str = ""
     registrar_url: str | None = None
+    # True when the caller chose the domain, rather than the relay's hostname
+    # standing in for it.
+    domain_is_explicit: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
         # Apply defaults from env vars where None is passed
         if self.relay_url is None:
             self.relay_url = os.getenv("UAM_RELAY_URL", _DEFAULT_RELAY_URL)
+        self.relay_url = self.relay_url.rstrip("/")
 
         # Registrar URL: env var > constructor arg > default
         if self.registrar_url is None:
@@ -58,6 +62,7 @@ class SDKConfig:
 
         # Derive relay_domain: env var > constructor arg > URL hostname
         env_domain = os.getenv("UAM_RELAY_DOMAIN")
+        self.domain_is_explicit = bool(env_domain or self.relay_domain)
         if env_domain:
             self.relay_domain = env_domain
         elif not self.relay_domain:

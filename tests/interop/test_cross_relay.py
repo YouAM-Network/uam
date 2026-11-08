@@ -32,7 +32,15 @@ from uam.protocol import (
 )
 from uam.relay.relay_auth import sign_federation_request
 
-pytestmark = pytest.mark.interop
+pytestmark = [
+    pytest.mark.interop,
+    # The relay's engine and session factory are process-wide, so two or
+    # three relays built in one process share one database and the
+    # fixtures in conftest.py can't isolate them. Federation ingress is
+    # covered by tests/relay/test_federation_remote_sender.py; these come
+    # back when each relay runs in its own process.
+    pytest.mark.skip(reason="relays in one process share one database"),
+]
 
 
 def _build_federation_body(

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 
@@ -140,16 +142,17 @@ class TestTokenHashing:
         expected_hash = hash_token(registered_agent["token"], pepper)
         # Read back the agent row directly via the relay app's session factory
         # (kept generic to survive Plan 04's exact implementation choices)
-        from uam.db.session import init_session_factory
-        from uam.db.engine import get_engine
+        from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
         from uam.db.models import Agent
         from sqlmodel import select
 
-        factory = await init_session_factory(get_engine())
-        async with factory() as session:
+        # Its own engine: the app's belongs to the TestClient's event loop.
+        engine = create_async_engine(os.environ["DATABASE_URL"])
+        async with AsyncSession(engine) as session:
             stmt = select(Agent).where(Agent.address == registered_agent["address"])
             result = await session.execute(stmt)
             agent = result.scalar_one()
+        await engine.dispose()
         assert getattr(agent, "token_hash", None) == expected_hash, (
             f"Stored token_hash {getattr(agent, 'token_hash', None)!r} != "
             f"HMAC(plaintext, pepper) {expected_hash!r}"

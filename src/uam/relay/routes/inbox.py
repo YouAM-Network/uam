@@ -18,6 +18,7 @@ from uam.db.crud.messages import get_inbox as get_inbox_crud, get_message_by_id,
 from uam.db.session import get_session
 from uam.relay.auth import verify_token_http
 from uam.relay.models import InboxResponse, ReceiptRequest, ReceiptResponse, ThreadResponse
+from uam.relay.relay_meta import mark_stored
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +51,7 @@ async def get_inbox(
     messages: list[dict] = []
     ids: list[int] = []
     for msg in stored:
-        messages.append(json.loads(msg.envelope))
+        messages.append(mark_stored(json.loads(msg.envelope)))
         ids.append(msg.id)
 
     # Mark as delivered
@@ -111,7 +112,9 @@ async def get_thread_messages(
     envelopes = []
     for msg in messages:
         try:
-            envelope = json.loads(msg.envelope) if isinstance(msg.envelope, str) else msg.envelope
+            envelope = mark_stored(
+                json.loads(msg.envelope) if isinstance(msg.envelope, str) else msg.envelope
+            )
         except (json.JSONDecodeError, TypeError):
             envelope = {"raw": msg.envelope}
         envelopes.append(envelope)
@@ -152,6 +155,10 @@ async def submit_receipt(
             status_code=403,
             detail="Only the recipient can submit a receipt for this message",
         )
+
+    # The same bucket as unbound receipts on /send: accepted, not forwarded.
+    if not await request.app.state.receipt_limiter.check(agent["address"]):
+        return ReceiptResponse(status="submitted", message_id=message_id)
 
     # Build receipt envelope
     receipt_envelope = {

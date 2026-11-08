@@ -135,6 +135,12 @@ def run_migrations_offline() -> None:
 
 def _do_run_migrations(connection) -> None:  # noqa: ANN001
     """Configure context with a live connection and run migrations."""
+    if connection.dialect.name == "postgresql":
+        # Fail instead of queueing behind the running relay, where every
+        # query that arrives next would queue behind this migration.
+        connection.exec_driver_sql("SET lock_timeout = '30s'")
+        # Alembic won't commit a transaction it didn't begin.
+        connection.commit()
     context.configure(
         connection=connection,
         target_metadata=target_metadata,

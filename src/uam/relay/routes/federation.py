@@ -6,6 +6,7 @@ GET  /.well-known/uam-relay.json -- advertise this relay's identity
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -35,7 +36,9 @@ from uam.relay.models import (
     WellKnownRelayResponse,
 )
 from uam.relay.peer_key_cache import peer_key_cache
+from uam.relay.policy import DeliveryDenied, authorize_delivery
 from uam.relay.relay_auth import verify_federation_signature
+from uam.relay.relay_meta import peer_received_at, stamp
 from uam.relay.ssrf import (
     SSRFBlockedError,
     build_pinned_url,
@@ -73,8 +76,13 @@ async def federation_deliver(
          can't burn cycles replaying a signed body.)
     7.   Agent envelope signature verification
     8.   Dedup check (envelope-level, by message_id)
+    8.5. Delivery checks (relay/policy.py), keyed on the verified sender
     9.   Deliver (WebSocket > webhook > store)
     10.  Log to federation_log
+
+    Steps 3-8 failing count against the source relay's reputation; a
+    refusal at 8.5 does not (one sender's message is not the peer's
+    fault). A refusal rolls back the dedup row, so it can be sent again.
     """
     manager = request.app.state.manager
     settings = request.app.state.settings
@@ -92,9 +100,9 @@ async def federation_deliver(
 
     # Relay blocklist check (FED-07) -- O(1), before everything else
     relay_blocklist = getattr(request.app.state, "relay_blocklist", None)
+    # Nothing is written: this runs before the signature, so anyone can name
+    # a blocked relay.
     if relay_blocklist and relay_blocklist.is_blocked(from_relay):
-        envelope_msg_id = envelope_dict.get("message_id", "")
-        await log_federation(session, envelope_msg_id, from_relay, settings.relay_domain, "inbound", hop_count, "rejected", "blocklisted")
         raise HTTPException(status_code=403, detail="Source relay is blocked")
 
     # Relay allowlist check (FED-07) -- sets skip flag for reputation-based limits
@@ -102,19 +110,29 @@ async def federation_deliver(
     if relay_blocklist and relay_blocklist.is_allowed(from_relay):
         relay_allowlisted = True
 
-    # Per-source-relay rate limit (FED-06) -- before expensive validation
-    if not relay_allowlisted:
-        relay_reputation = getattr(request.app.state, "relay_reputation", None)
-        federation_limiter = getattr(request.app.state, "federation_limiter", None)
-        if relay_reputation and federation_limiter:
-            relay_limit = relay_reputation.get_rate_limit(from_relay)
-            if relay_limit == 0:
-                raise HTTPException(status_code=403, detail="Source relay reputation too low")
-            if not await federation_limiter.check(from_relay, limit=relay_limit):
-                raise HTTPException(status_code=429, detail="Federation rate limit exceeded")
-
-    # Resolve relay_reputation once for use in validation and success/failure recording
+    # Per-source-relay rate limit (FED-06).  ``from_relay`` is only a claim until
+    # the signature checks out, so this looks without taking a slot: a stranger
+    # naming a peer must not use up that peer's limit.
     relay_reputation = getattr(request.app.state, "relay_reputation", None)
+    federation_limiter = getattr(request.app.state, "federation_limiter", None)
+    relay_limit = None
+    rate_limited = (
+        not relay_allowlisted
+        and relay_reputation is not None
+        and federation_limiter is not None
+    )
+    if rate_limited:
+        relay_limit = relay_reputation.get_rate_limit(from_relay)
+        if relay_limit == 0:
+            raise HTTPException(status_code=403, detail="Source relay reputation too low")
+        if await federation_limiter.remaining(from_relay, limit=relay_limit) == 0:
+            raise HTTPException(status_code=429, detail="Federation rate limit exceeded")
+
+    # Only a request the peer really sent can count against its reputation.
+    relay_verified = False
+    # sender_key isn't signed and a sender can delete itself: some refusals
+    # are the sender's doing, which is no reason to mark down its relay.
+    peer_at_fault = True
 
     # Wrap core validation in try/except for reputation tracking (FED-08)
     try:
@@ -199,6 +217,9 @@ async def federation_deliver(
                 status_code=401, detail="Invalid relay signature"
             )
 
+        if rate_limited and not await federation_limiter.check(from_relay, limit=relay_limit):
+            raise HTTPException(status_code=429, detail="Federation rate limit exceeded")
+
         # ---- Step 6.5: Federation nonce dedup (T3.2 — Phase 45) ----
         # Pydantic already validated body.nonce length on the request shape
         # (min_length=22 → 422 on missing). A second sighting of the
@@ -213,6 +234,7 @@ async def federation_deliver(
                 status_code=409,
                 detail="Federation request replay (nonce already seen)",
             )
+        relay_verified = True
 
         # ---- Step 7: Agent envelope signature verification (T1.4) ----
         #
@@ -241,6 +263,7 @@ async def federation_deliver(
                 request.app.state, "federation_service", None
             )
             if federation_service is None:
+                peer_at_fault = False
                 raise HTTPException(
                     status_code=403,
                     detail=(
@@ -252,6 +275,7 @@ async def federation_deliver(
                 session, envelope.from_address, federation_service, settings
             )
             if authoritative_key is None:
+                peer_at_fault = False
                 raise HTTPException(
                     status_code=403,
                     detail=(
@@ -270,6 +294,7 @@ async def federation_deliver(
                 sender_key_envelope[:16],
                 authoritative_key[:16],
             )
+            peer_at_fault = False
             raise HTTPException(
                 status_code=403,
                 detail="Envelope sender_key does not match home-relay record",
@@ -286,30 +311,63 @@ async def federation_deliver(
             ) from exc
 
         # ---- Step 8: Dedup check ----
+        # Commit the nonce first: finding a duplicate rolls back, and then
+        # this exact request could be replayed.
+        await session.commit()
         is_new = await record_message_id(session, envelope.message_id, envelope.from_address, commit=False)
         if not is_new:
             return FederationDeliverResponse(status="duplicate", detail="Message already delivered")
 
     except HTTPException:
         # Record reputation failure for the source relay (FED-08)
-        if relay_reputation:
-            await relay_reputation.record_failure(from_relay, "validation_error")
+        if relay_verified:
+            # Keep the nonce, so replaying this request can't charge the peer
+            # again.  Commit first: record_failure uses its own connection.
+            await session.commit()
+            if relay_reputation is not None and peer_at_fault:
+                await relay_reputation.record_failure(from_relay, "validation_error")
         raise
 
     # --- Transaction-wrapped DB section (RES-01) ---
     # dedup (flushed above) + store + federation log in a single commit.
     try:
+        # ---- Step 8.5: Delivery checks (outside the reputation block) ----
+        try:
+            clearance = await authorize_delivery(
+                request.app.state, envelope, session, federated=True
+            )
+        except DeliveryDenied as denied:
+            raise HTTPException(status_code=denied.status, detail=denied.detail) from denied
+
+        if not clearance.deliver:
+            # A receipt past its bucket: accepted, not delivered (relay/policy.py).
+            # The nonce must survive, or the request could be replayed.
+            await session.commit()
+            return FederationDeliverResponse(status="dropped", detail="Receipt not delivered")
+
+        # ---- Step 8.6: relay_meta ----
+        # Keep the origin relay's receive time when it vouches for it in
+        # the body it signed; otherwise this relay received it now.
+        envelope_dict = stamp(
+            envelope_dict,
+            settings.relay_domain,
+            received_at=peer_received_at(
+                envelope_dict, from_relay, datetime.now(timezone.utc)
+            ),
+        )
+
         # ---- Step 9: Deliver (WebSocket > webhook > store) ----
         delivered = await manager.send_to(envelope.to_address, envelope_dict)
         delivery_method = "websocket" if delivered else None
+        start_webhook = None
 
         if not delivered:
             # Try webhook
             webhook_service = request.app.state.webhook_service
-            webhook_initiated = await webhook_service.try_deliver(
-                envelope.to_address, envelope_dict
+            start_webhook = await webhook_service.prepare(
+                session, envelope.to_address, envelope_dict
             )
-            if webhook_initiated:
+            if start_webhook is not None:
                 delivery_method = "webhook"
                 delivered = True
 
@@ -321,6 +379,7 @@ async def federation_deliver(
                 envelope.from_address,
                 envelope.to_address,
                 json.dumps(envelope_dict),
+                expires_at=clearance.expires_at,
                 commit=False,
             )
             delivery_method = "stored"
@@ -339,6 +398,8 @@ async def federation_deliver(
 
         # Single commit for dedup + store + federation log
         await session.commit()
+        if start_webhook is not None:
+            start_webhook()
 
     except Exception:
         await session.rollback()
@@ -387,7 +448,9 @@ async def _rediscover_relay_key(session: AsyncSession, from_relay: str) -> str |
     # request header value, so an attacker can set it to ``169.254.169.254``
     # or any internal hostname. Validate before fetching.
     try:
-        validate_outbound_target(url, allowed_ports=(443, 8443))
+        await asyncio.to_thread(
+            validate_outbound_target, url, allowed_ports=(443, 8443)
+        )
     except SSRFBlockedError as exc:
         logger.warning(
             "T5.1: refusing relay key re-discover %s: %s", url, exc
@@ -397,8 +460,8 @@ async def _rediscover_relay_key(session: AsyncSession, from_relay: str) -> str |
     # is fully attacker-controlled (inbound header value), so the rebind
     # attack surface here is identical to FederationService outbound paths.
     try:
-        original_host, pinned_ip = resolve_pinned(
-            from_relay, allowed_ports=(443, 8443)
+        original_host, pinned_ip = await asyncio.to_thread(
+            resolve_pinned, from_relay, allowed_ports=(443, 8443)
         )
     except SSRFBlockedError as exc:
         logger.warning(
@@ -506,7 +569,9 @@ async def _resolve_remote_sender_key(
     # federation_service._client below is already constructed with
     # follow_redirects=False (Plan 45-04 / federation.py __init__).
     try:
-        validate_outbound_target(url, allowed_ports=(443, 8443))
+        await asyncio.to_thread(
+            validate_outbound_target, url, allowed_ports=(443, 8443)
+        )
     except SSRFBlockedError as exc:
         logger.warning(
             "T5.1: refusing remote-sender-key fetch %s: %s", url, exc
@@ -517,8 +582,8 @@ async def _resolve_remote_sender_key(
     # discovery output (above), so the rebind window is the same as for
     # forward()/_fetch_well_known_key().
     try:
-        original_host, pinned_ip = resolve_pinned(
-            parsed.hostname, allowed_ports=(443, 8443)
+        original_host, pinned_ip = await asyncio.to_thread(
+            resolve_pinned, parsed.hostname, allowed_ports=(443, 8443)
         )
     except SSRFBlockedError as exc:
         logger.warning(

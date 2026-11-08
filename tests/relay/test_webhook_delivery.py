@@ -3,7 +3,7 @@
 Covers:
 - compute_webhook_signature() HMAC-SHA256 signing
 - WebhookCircuitBreaker state transitions
-- WebhookDeliveryService.try_deliver() with mocked dependencies
+- WebhookDeliveryService.prepare() with mocked dependencies
 - _deliver_with_retries() retry schedule and non-retriable status codes
 """
 
@@ -161,35 +161,26 @@ def _mock_delivery(delivery_id: int = 1):
     return delivery
 
 
-class TestWebhookDeliveryServiceTryDeliver:
-    """WebhookDeliveryService.try_deliver() -- high-level dispatch tests."""
+class TestWebhookDeliveryServicePrepare:
+    """WebhookDeliveryService.prepare() -- high-level dispatch tests."""
 
     @pytest.mark.asyncio
-    async def test_try_deliver_returns_false_no_webhook(self):
-        """Agent without webhook_url returns False."""
+    async def test_prepare_returns_none_no_webhook(self):
+        """Agent without webhook_url has nothing to start."""
         cb = WebhookCircuitBreaker()
         service = WebhookDeliveryService(cb)
 
-        with (
-            patch(
-                "uam.relay.webhook.get_agent_by_address",
-                new_callable=AsyncMock,
-                return_value=_mock_agent(webhook_url=None),
-            ),
-            patch("uam.relay.webhook.get_engine", return_value=MagicMock()),
-            patch("uam.relay.webhook.async_session_factory") as mock_factory,
+        with patch(
+            "uam.relay.webhook.get_agent_by_address",
+            new_callable=AsyncMock,
+            return_value=_mock_agent(webhook_url=None),
         ):
-            mock_session = AsyncMock()
-            mock_ctx = MagicMock()
-            mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
-            mock_ctx.__aexit__ = AsyncMock(return_value=None)
-            mock_factory.return_value = mock_ctx
-            result = await service.try_deliver("nope::test.local", {"id": "m1"})
-        assert result is False
+            result = await service.prepare(AsyncMock(), "nope::test.local", {"id": "m1"})
+        assert result is None
 
     @pytest.mark.asyncio
-    async def test_try_deliver_returns_false_circuit_open(self):
-        """Open circuit breaker returns False without querying DB."""
+    async def test_prepare_returns_none_circuit_open(self):
+        """Open circuit breaker returns None without querying DB."""
         cb = WebhookCircuitBreaker()
         addr = "agent::test.local"
         # Open the circuit
@@ -197,43 +188,58 @@ class TestWebhookDeliveryServiceTryDeliver:
             cb.record_failure(addr)
 
         service = WebhookDeliveryService(cb)
-        result = await service.try_deliver(addr, {"id": "m1"})
-        assert result is False
+        session = AsyncMock()
+        result = await service.prepare(session, addr, {"id": "m1"})
+        assert result is None
+        session.execute.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_try_deliver_starts_background_task(self):
-        """Successful try_deliver creates an asyncio background task."""
-        cb = WebhookCircuitBreaker()
-        service = WebhookDeliveryService(cb)
-
-        agent = _mock_agent()
-        delivery = _mock_delivery(delivery_id=1)
+    async def test_prepare_uses_the_callers_session_without_committing(self):
+        """The delivery row joins the caller's transaction."""
+        service = WebhookDeliveryService(WebhookCircuitBreaker())
+        session = AsyncMock()
 
         with (
             patch(
                 "uam.relay.webhook.get_agent_by_address",
                 new_callable=AsyncMock,
-                return_value=agent,
+                return_value=_mock_agent(),
             ),
             patch(
                 "uam.relay.webhook.create_delivery",
                 new_callable=AsyncMock,
-                return_value=delivery,
+                return_value=_mock_delivery(delivery_id=1),
+            ) as mock_create,
+        ):
+            await service.prepare(session, "agent::test.local", {"id": "m1"})
+
+        assert mock_create.await_args.args[0] is session
+        assert mock_create.await_args.kwargs["commit"] is False
+        session.commit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_delivery_starts_only_when_the_caller_says_so(self):
+        """No background task until the caller has committed and calls start."""
+        service = WebhookDeliveryService(WebhookCircuitBreaker())
+
+        with (
+            patch(
+                "uam.relay.webhook.get_agent_by_address",
+                new_callable=AsyncMock,
+                return_value=_mock_agent(),
             ),
-            patch("uam.relay.webhook.get_engine", return_value=MagicMock()),
-            patch("uam.relay.webhook.async_session_factory") as mock_factory,
+            patch(
+                "uam.relay.webhook.create_delivery",
+                new_callable=AsyncMock,
+                return_value=_mock_delivery(delivery_id=1),
+            ),
+            patch.object(service, "_deliver_with_retries", new=MagicMock()),
             patch("asyncio.create_task") as mock_create_task,
         ):
-            mock_session = AsyncMock()
-            mock_ctx = MagicMock()
-            mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
-            mock_ctx.__aexit__ = AsyncMock(return_value=None)
-            mock_factory.return_value = mock_ctx
-            mock_task = MagicMock()
-            mock_create_task.return_value = mock_task
-            result = await service.try_deliver("agent::test.local", {"id": "m1"})
+            start = await service.prepare(AsyncMock(), "agent::test.local", {"id": "m1"})
+            mock_create_task.assert_not_called()
+            start()
 
-        assert result is True
         mock_create_task.assert_called_once()
 
     @pytest.mark.asyncio
