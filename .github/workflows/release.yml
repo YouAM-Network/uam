@@ -148,4 +148,6 @@ jobs:
           # Trusted publishing needs npm 11.5.1+; this Node ships npm 11.19.1.
           node-version: '24.22.0'
           registry-url: 'https://registry.npmjs.org'
-      - run: npm publish dist/*.tgz --access public --ignore-scripts
+      # "./" makes npm read a file path. "dist/x.tgz" alone is read as a GitHub
+      # repo (user "dist"), and the publish fails with a git error.
+      - run: npm publish ./dist/*.tgz --access public --ignore-scripts
