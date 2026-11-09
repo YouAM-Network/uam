@@ -426,3 +426,71 @@ def test_a_blocked_relay_s_request_leaves_no_row(fed_enabled_client, remote_part
 
     assert response.status_code == 403
     log.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# The delivery gate (P1): a gated local agent's unapproved remote senders
+# get "pending"; only the federation nonce is kept.
+# ---------------------------------------------------------------------------
+
+
+async def _inbound(bob_address, *, policy=None, allow_key=None):
+    from uam.db.crud.inbound import put_contact, set_policy
+    from uam.db.engine import get_engine
+    from uam.db.session import init_session_factory
+
+    factory = await init_session_factory(get_engine())
+    async with factory() as session:
+        if policy:
+            await set_policy(session, bob_address, policy, expected_revision=0, set_by="admin")
+        if allow_key:
+            await put_contact(session, bob_address, REMOTE_SENDER,
+                              key=allow_key, state="allowed", source="admin")
+
+
+def _gate(client, bob, *, allow_key=None):
+    client.portal.call(lambda: _inbound(bob["address"], policy="contacts", allow_key=allow_key))
+
+
+def test_a_gated_agent_s_unapproved_remote_sender_gets_pending(
+    fed_enabled_client, remote_parties
+):
+    relay_sk, sender_sk = remote_parties
+    bob = _register(fed_enabled_client, "bob")
+    _gate(fed_enabled_client, bob)
+    wire = _remote_message(sender_sk, bob)
+
+    resp = _post_federated(fed_enabled_client, wire, relay_sk)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"status": "pending", "detail": "Not delivered", "status_version": 2}
+    assert _inbox_ids(fed_enabled_client, bob) == []
+
+    # Only the nonce was kept: once carol is allowed, the same message is new.
+    carol_key = serialize_verify_key(sender_sk.verify_key)
+    fed_enabled_client.portal.call(lambda: _inbound(bob["address"], allow_key=carol_key))
+    again = _post_federated(fed_enabled_client, wire, relay_sk)
+    assert again.json()["status"] == "stored"
+    assert _inbox_ids(fed_enabled_client, bob) == [wire["message_id"]]
+
+
+def test_a_remote_sender_with_another_key_than_approved_gets_pending(
+    fed_enabled_client, remote_parties
+):
+    relay_sk, sender_sk = remote_parties
+    bob = _register(fed_enabled_client, "bob")
+    _gate(fed_enabled_client, bob, allow_key="not-carols-key")
+
+    resp = _post_federated(fed_enabled_client, _remote_message(sender_sk, bob), relay_sk)
+
+    assert resp.json()["status"] == "pending"
+
+
+def test_a_pending_answer_costs_the_peer_relay_nothing(fed_enabled_client, remote_parties):
+    relay_sk, sender_sk = remote_parties
+    bob = _register(fed_enabled_client, "bob")
+    _gate(fed_enabled_client, bob)
+    state = fed_enabled_client.app.state
+    with patch.object(state.relay_reputation, "record_failure", AsyncMock()) as failure:
+        _post_federated(fed_enabled_client, _remote_message(sender_sk, bob), relay_sk)
+    failure.assert_not_awaited()

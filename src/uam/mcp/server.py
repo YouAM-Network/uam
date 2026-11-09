@@ -42,6 +42,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from uam.sdk.agent import Agent
+from uam.sdk.message import PENDING_NOTE
 
 logger = logging.getLogger(__name__)
 
@@ -233,9 +234,11 @@ async def uam_send(
     try:
         agent = await _get_agent()
         result = await agent.send(to_address, message, thread_id=thread_id)
-        return _ok_envelope(
-            {"message_id": str(result), "status": getattr(result, "status", "accepted")}
-        )
+        status = getattr(result, "status", "accepted")
+        data = {"message_id": str(result), "status": status}
+        if status == "pending":
+            data["note"] = PENDING_NOTE.format(to=to_address)
+        return _ok_envelope(data)
     except Exception as exc:
         return _error_envelope(exc)
 

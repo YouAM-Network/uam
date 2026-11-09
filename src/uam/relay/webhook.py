@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from uam import __version__
 from uam.relay.config import Settings
 from uam.relay.connections import ConnectionManager
+from uam.relay.gate import still_allowed
 from uam.relay.policy import parse_expires
 from uam.relay.receipts import delivery_receipt, wants_delivery_receipt
 from uam.relay.webhook_validator import async_validate_webhook_url
@@ -325,6 +326,17 @@ class WebhookDeliveryService:
         for attempt, delay in enumerate(RETRY_DELAYS, start=1):
             if delay > 0:
                 await asyncio.sleep(delay)
+
+            # The delivery gate again: the recipient may have been gated, or
+            # the sender blocked, since the message was accepted.
+            async with factory() as session:
+                if not await still_allowed(session, address, envelope_dict):
+                    await complete_delivery(
+                        session, delivery_id, "failed", "Withheld by the inbound gate",
+                        commit=False,
+                    )
+                    await session.commit()
+                    return
 
             # TOCTOU re-validation
             valid, reason = await async_validate_webhook_url(webhook_url)

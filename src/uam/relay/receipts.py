@@ -27,6 +27,8 @@ from uam.relay.policy import is_receipt
 #: queued     the peer relay couldn't be reached; this relay keeps retrying
 #: duplicate  this message_id was accepted before; nothing new happened
 #: dropped    a receipt over its rate bucket: accepted, not delivered
+#: pending    the recipient takes mail only from approved senders and hasn't
+#:            approved this one; nothing was kept (gate.py)
 SEND_STATUSES: tuple[str, ...] = (
     "delivered",
     "stored",
@@ -34,15 +36,25 @@ SEND_STATUSES: tuple[str, ...] = (
     "queued",
     "duplicate",
     "dropped",
+    "pending",
 )
 
 #: Listed in GET /api/v1/versions "features": this relay's send answers carry
 #: one of SEND_STATUSES, and receipt.delivered means delivered.
 SEND_STATUS_FEATURE = "send_status"
 
+#: The same, with ``pending``. A feature ``name:N`` means "supports
+#: version N or later"; relays list both so clients that match the bare
+#: name keep trusting the status.
+SEND_STATUS_V2_FEATURE = "send_status:2"
+
+#: This relay may answer ``pending`` (it runs the delivery gate).
+INBOUND_GATE_FEATURE = "inbound_gate"
+
 #: In a federation deliver answer: the status field means what SEND_STATUSES
 #: says.  Relays before 1.1 answered "delivered" for stored mail too.
-FEDERATION_STATUS_VERSION = 1
+#: Version 2 adds ``pending``.
+FEDERATION_STATUS_VERSION = 2
 
 
 def wants_delivery_receipt(message_type: Any) -> bool:

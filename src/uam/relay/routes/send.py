@@ -27,6 +27,7 @@ from uam.relay.policy import (
     authorize_delivery,
     charge_duplicate,
     goes_to_peer,
+    held_back,
     is_receipt,
     refuse_early,
 )
@@ -51,13 +52,15 @@ async def send_message(
     2. Early refusal (relay/policy.py): blocklist, reputation, sender limit
     3. Parse envelope
     4. Sender identity match
-    5. Dedup (MSG-03) -- a duplicate is accepted again, idempotently
-    6. Delivery checks (relay/policy.py): blocklist, expiry, reputation,
+    5. Signature verification
+    6. Delivery gate (relay/gate.py): a recipient that hasn't approved the
+       sender gets "pending", and nothing is written
+    7. Dedup (MSG-03) -- a duplicate is accepted again, idempotently
+    8. Delivery checks (relay/policy.py): blocklist, expiry, reputation,
        sender / domain / recipient rate limits
-    7. Signature verification (expensive -- after the cheap checks)
-    8. Route or store
+    9. Route or store
 
-    Steps 5-8 share one transaction: a refusal rolls back the dedup row,
+    Steps 7-9 share one transaction: a refusal rolls back the dedup row,
     so the sender can send the same message again later.
     """
     manager = request.app.state.manager
@@ -84,6 +87,25 @@ async def send_message(
             detail=f"Sender mismatch: envelope from '{envelope.from_address}' but authenticated as '{agent['address']}'",
         )
 
+    # Verify the signature before the gate, so a bad one is refused the
+    # same way whether or not the recipient is gated.
+    try:
+        verify_envelope(envelope, deserialize_verify_key(agent["public_key"]))
+    except SignatureVerificationError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid signature: {exc}") from exc
+
+    # The delivery gate (gate.py): reads only, before any write.
+    try:
+        if await held_back(
+            request.app.state, envelope, session, sender_key=agent["public_key"]
+        ):
+            await session.rollback()
+            return SendResponse(
+                message_id=envelope.message_id, status="pending", delivered=False
+            )
+    except DeliveryDenied as denied:
+        raise HTTPException(status_code=denied.status, detail=denied.detail) from denied
+
     # What the relay delivers, stores and forwards: the envelope with this
     # relay's relay_meta in place of any relay_* keys the sender sent.
     wire = stamp(body.envelope, settings.relay_domain)
@@ -109,13 +131,6 @@ async def send_message(
             clearance = await authorize_delivery(request.app.state, envelope, session)
         except DeliveryDenied as denied:
             raise HTTPException(status_code=denied.status, detail=denied.detail) from denied
-
-        # Verify signature (expensive -- only after cheap checks pass)
-        try:
-            sender_vk = deserialize_verify_key(agent["public_key"])
-            verify_envelope(envelope, sender_vk)
-        except SignatureVerificationError as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid signature: {exc}") from exc
 
         if not clearance.deliver:
             # A receipt past its bucket: accepted, not delivered (relay/policy.py)

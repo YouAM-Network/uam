@@ -20,6 +20,7 @@ from uam.sdk.agent import Agent
 from uam.sdk.config import SDKConfig
 from uam.sdk.contact_book import ContactBook
 from uam.sdk.key_manager import KeyManager
+from uam.sdk.message import PENDING_NOTE
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +318,8 @@ def send(ctx: click.Context, address: str, message: str) -> None:
         agent.close_sync()
         status = getattr(msg_id, "status", "accepted")
         click.echo(f"Message to {address}: {status} (id: {msg_id})")
+        if status == "pending":
+            click.echo(PENDING_NOTE.format(to=address))
     except UAMError as exc:
         _error(f"Error: {exc}")
     except RuntimeError as exc:

@@ -23,10 +23,12 @@ from uam.relay.connections import ConnectionManager, LockedWebSocket
 from uam.relay.federation import forward_to_peer
 from uam.relay.receipts import delivery_receipt, wants_delivery_receipt
 from uam.relay.models import check_envelope_size
+from uam.relay.gate import release
 from uam.relay.policy import (
     DeliveryDenied,
     authorize_delivery,
     charge_duplicate,
+    held_back,
     goes_to_peer,
     is_receipt,
     refuse_early,
@@ -63,9 +65,12 @@ async def _deliver_stored_messages(
     """
     while True:
         async with factory() as session:
-            stored = await get_inbox(session, address)
-        if not stored:
+            fetched = await get_inbox(session, address)
+            stored = await release(session, address, fetched)
+        if not fetched:
             return
+        if not stored:
+            continue  # the whole page was withheld; fetch the next one
 
         ids: list[int] = []
         for msg in stored:
@@ -189,6 +194,34 @@ async def handle_inbound_message(
 
     async with factory() as session:
         try:
+            # Sender's key and signature first, then the delivery gate
+            # (gate.py), both before any write: a stranger writing to a
+            # gated agent gets "pending" and leaves nothing behind.
+            sender_agent = await get_agent_by_address(session, sender_address)
+            if sender_agent is None:
+                await _error(wrapped_ws, raw, "sender_not_found", f"Sender agent not found: {sender_address}")
+                return
+            if sender_agent.status != "active":
+                await _error(wrapped_ws, raw, "sender_not_active", f"Sender agent is not active: {sender_address}")
+                return
+            try:
+                verify_envelope(envelope, deserialize_verify_key(sender_agent.public_key))
+            except SignatureVerificationError as exc:
+                await _error(wrapped_ws, raw, "invalid_signature", str(exc))
+                return
+            try:
+                if await held_back(
+                    wrapped_ws.app.state, envelope, session,
+                    sender_key=sender_agent.public_key,
+                ):
+                    await session.rollback()
+                    await _ack(wrapped_ws, envelope.message_id, "pending")
+                    return
+            except DeliveryDenied as denied:
+                await session.rollback()
+                await _error(wrapped_ws, raw, denied.code, denied.detail)
+                return
+
             # Dedup check (MSG-03) -- before expensive delivery chain
             is_new = await record_message_id(
                 session, envelope.message_id, sender_address, commit=False
@@ -210,25 +243,6 @@ async def handle_inbound_message(
             except DeliveryDenied as denied:
                 await session.rollback()
                 await _error(wrapped_ws, raw, denied.code, denied.detail)
-                return
-
-            # Look up sender's public key and verify signature (expensive)
-            sender_agent = await get_agent_by_address(session, sender_address)
-            if sender_agent is None:
-                await session.rollback()
-                await _error(wrapped_ws, raw, "sender_not_found", f"Sender agent not found: {sender_address}")
-                return
-            if sender_agent.status != "active":
-                await session.rollback()
-                await _error(wrapped_ws, raw, "sender_not_active", f"Sender agent is not active: {sender_address}")
-                return
-
-            try:
-                sender_vk = deserialize_verify_key(sender_agent.public_key)
-                verify_envelope(envelope, sender_vk)
-            except SignatureVerificationError as exc:
-                await session.rollback()
-                await _error(wrapped_ws, raw, "invalid_signature", str(exc))
                 return
 
             if not clearance.deliver:

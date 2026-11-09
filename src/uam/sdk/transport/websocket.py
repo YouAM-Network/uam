@@ -218,6 +218,15 @@ class WebSocketTransport(TransportBase):
             if self._ws:
                 await self._ws.send(json.dumps({"type": "pong"}))
 
+        elif msg_type == "relay.notice":
+            # Mail the relay had answered "queued" turned out pending at the
+            # recipient's relay: it was not delivered. (The 1.4 outbox acts
+            # on this; until then it is logged.)
+            logger.warning(
+                "Message %s was not delivered (status=%s)",
+                msg.get("message_id"), msg.get("status"),
+            )
+
         elif msg_type == "ack":
             logger.debug(
                 "ACK for message %s (status=%s)",

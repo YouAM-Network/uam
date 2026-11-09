@@ -84,6 +84,11 @@ class Settings:
         )
         # What to do with a message type the protocol does not define:
         # "log" delivers it with a warning, "reject" refuses it (400).
+        # Pending answers (the delivery gate) per sender per minute. They
+        # don't take the recipient's slots, so they have their own bucket.
+        self.pending_rate_limit: int = int(
+            os.getenv("UAM_PENDING_RATE_LIMIT", "300")
+        )
         self.unknown_message_types: str = os.getenv(
             "UAM_UNKNOWN_MESSAGE_TYPES", "log"
         ).lower()

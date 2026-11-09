@@ -72,7 +72,8 @@ EXPECTED_TABLES = sorted([
     "reservations",          # +1 from 0002
     "federation_nonces",     # +1 from 0004 (Phase 45)
     "routed_messages",       # +1 from 0010
-])  # 20 tables
+    "inbound_policies", "inbound_contacts",  # +2 from 0012
+])  # 22 tables
 
 
 class TestMigrationUpgrade:
@@ -463,3 +464,66 @@ class TestWebhookSecretMigration:
         assert secrets["c::test.local"] is None
         assert len(secrets["a::test.local"]) >= 32
         assert secrets["a::test.local"] != secrets["b::test.local"]
+
+
+# ===========================================================================
+# 0012 — delivery gate tables (P1)
+# ===========================================================================
+
+
+class TestGateTables:
+    """0012 adds tables only: per-agent inbound policy and contacts."""
+
+    def _upgraded(self, alembic_cfg):
+        cfg, db_path = alembic_cfg
+        command.upgrade(cfg, "0012_add_gate_tables")
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute(
+            "INSERT INTO agents (address, public_key, token_hash, status, "
+            "created_at, updated_at) "
+            "VALUES ('bob::test.local', 'pk', 'h', 'active', datetime('now'), datetime('now'))"
+        )
+        return cfg, db_path, conn
+
+    def test_0012_adds_the_two_tables(self, alembic_cfg):
+        cfg, db_path, conn = self._upgraded(alembic_cfg)
+        conn.close()
+        tables = set(_get_tables(db_path))
+        assert {"inbound_policies", "inbound_contacts"} <= tables
+
+    def test_one_contact_row_per_agent_and_sender(self, alembic_cfg):
+        _, _, conn = self._upgraded(alembic_cfg)
+        insert = (
+            "INSERT INTO inbound_contacts (agent_address, contact_address, contact_key, "
+            "state, source, created_at, updated_at) "
+            "VALUES ('bob::test.local', 'alice::x', 'k', 'allowed', 'admin', "
+            "datetime('now'), datetime('now'))"
+        )
+        try:
+            conn.execute(insert)
+            with pytest.raises(sqlite3.IntegrityError):
+                conn.execute(insert)
+        finally:
+            conn.close()
+
+    def test_policies_and_contacts_belong_to_a_local_agent(self, alembic_cfg):
+        _, _, conn = self._upgraded(alembic_cfg)
+        try:
+            with pytest.raises(sqlite3.IntegrityError):
+                conn.execute(
+                    "INSERT INTO inbound_policies (agent_address, policy, revision, "
+                    "set_by, updated_at) "
+                    "VALUES ('nobody::test.local', 'contacts', 0, 'admin', datetime('now'))"
+                )
+        finally:
+            conn.close()
+
+    def test_0012_downgrade_removes_only_its_tables(self, alembic_cfg):
+        cfg, db_path, conn = self._upgraded(alembic_cfg)
+        conn.commit()
+        conn.close()
+        command.downgrade(cfg, "0011_add_webhook_secret")
+        tables = set(_get_tables(db_path))
+        assert not {"inbound_policies", "inbound_contacts"} & tables
+        assert {"agents", "seen_message_ids"} <= tables

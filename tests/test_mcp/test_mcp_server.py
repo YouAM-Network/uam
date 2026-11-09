@@ -177,6 +177,26 @@ class TestUamSend:
         await sender.close()
         await receiver.close()
 
+    async def test_a_pending_send_says_it_was_not_delivered(self):
+        """A gated recipient's pending answer reaches the LLM as fixed text:
+        not delivered, don't resend. Nothing from the recipient is quoted."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from uam.sdk.message import SendResult
+
+        agent = MagicMock()
+        agent.send = AsyncMock(return_value=SendResult("m1", "pending"))
+        with patch.object(mcp_server, "_agent", agent):
+            result = await mcp_server.uam_send(to_address="bob::x.example", message="hi")
+
+        assert result["ok"] is True
+        assert result["data"] == {
+            "message_id": "m1",
+            "status": "pending",
+            "note": "Not delivered: bob::x.example only accepts messages from "
+                    "approved contacts. Do not resend it.",
+        }
+
     async def test_uam_send_returns_error_on_invalid_address(
         self, relay_app, tmp_path
     ):

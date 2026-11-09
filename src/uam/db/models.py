@@ -290,6 +290,85 @@ class SeenMessageId(SQLModel, table=True):
     )
 
 
+class InboundPolicy(SQLModel, table=True):
+    """Who may deliver to an agent (P1, migration 0012).
+
+    No row means ``open`` (everyone, as before P1). ``contacts`` and
+    ``closed`` deliver only from ``allowed`` rows in ``inbound_contacts``.
+    ``set_by`` is ``admin`` in P1; owners set it from P2.
+    """
+
+    __tablename__ = "inbound_policies"
+
+    agent_address: str = Field(
+        sa_column=Column(
+            String,
+            ForeignKey("agents.address", ondelete="CASCADE", name="fk_inbound_policies_agent"),
+            primary_key=True,
+        ),
+    )
+    policy: str = Field(sa_column=Column(String, nullable=False))
+    revision: int = Field(
+        default=0, sa_column=Column(Integer, nullable=False, server_default="0")
+    )
+    set_by: str = Field(sa_column=Column(String, nullable=False))
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True),
+            server_default=func.now(),
+            nullable=False,
+        ),
+    )
+
+
+class InboundContact(SQLModel, table=True):
+    """A sender an agent with a policy accepts or refuses (P1, migration 0012).
+
+    ``contact_key`` is the key the sender must sign with; a different key
+    is held back, never auto-updated. ``grant_ref`` and ``expires_at`` are
+    filled from P2 (owner grants, reply windows).
+    """
+
+    __tablename__ = "inbound_contacts"
+    __table_args__ = (
+        UniqueConstraint("agent_address", "contact_address", name="uq_inbound_contacts_pair"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    agent_address: str = Field(
+        sa_column=Column(
+            String,
+            ForeignKey("agents.address", ondelete="CASCADE", name="fk_inbound_contacts_agent"),
+            nullable=False,
+        ),
+    )
+    contact_address: str = Field(sa_column=Column(String, nullable=False))
+    contact_key: str = Field(sa_column=Column(String, nullable=False))
+    state: str = Field(sa_column=Column(String, nullable=False))
+    source: str = Field(sa_column=Column(String, nullable=False))
+    grant_ref: str | None = Field(default=None, sa_column=Column(String, nullable=True))
+    expires_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True),
+            server_default=func.now(),
+            nullable=False,
+        ),
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True),
+            server_default=func.now(),
+            nullable=False,
+        ),
+    )
+
+
 class RoutedMessage(SQLModel, table=True):
     """Messages this relay accepted for delivery, so a receipt can be
     matched to the message it answers (MSG-05).

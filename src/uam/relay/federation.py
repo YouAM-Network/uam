@@ -21,6 +21,7 @@ import dns.resolver
 import dns.exception
 import httpx
 
+from sqlalchemy import delete as sa_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from urllib.parse import urlparse
 
@@ -42,6 +43,7 @@ from uam.db.crud.federation import (
     update_queue_entry,
     upsert_known_relay,
 )
+from uam.db.models import FederationQueueEntry, RoutedMessage, SeenMessageId
 from uam.db.session import async_session_factory
 from uam.db.engine import get_engine
 
@@ -69,6 +71,8 @@ def peer_send_status(resp: Any) -> str:
     Only a peer that sends ``status_version`` means its ``status``; earlier
     relays answered "delivered" for stored mail too, so their 2xx is "relayed".
     A peer's "duplicate" means it already holds the message: "stored".
+    "pending" (status version 2) means the peer's recipient hasn't approved
+    the sender and the peer kept nothing.
     """
     try:
         body = resp.json()
@@ -77,6 +81,9 @@ def peer_send_status(resp: Any) -> str:
     if not isinstance(body, dict) or not body.get("status_version"):
         return "relayed"
     status = body.get("status")
+    version = body.get("status_version")
+    if status == "pending" and isinstance(version, int) and version >= 2:
+        return "pending"
     if status == "delivered":
         return "delivered"
     if status in ("stored", "duplicate"):
@@ -572,13 +579,56 @@ async def forward_to_peer(
         return "queued"
     if not result.delivered:
         return "queued"
-    await update_queue_entry(session, entry_id, "delivered")
     status = getattr(result, "status", None)
+    if status == "pending":
+        await forget_forwarded(
+            session, envelope_dict.get("message_id", ""), envelope_dict.get("from", ""), entry_id
+        )
+        return "pending"
+    await update_queue_entry(session, entry_id, "delivered")
     return status if status in ("delivered", "stored", "relayed") else "relayed"
 
 
-async def retry_pending_federation(factory: Any, service: Any, settings: Any) -> None:
-    """Retry the queue rows that are due.  A row that raises is a failed attempt."""
+async def forget_forwarded(
+    session: AsyncSession, message_id: str, from_addr: str, queue_id: int | None
+) -> None:
+    """Drop this relay's rows for a message a peer answered ``pending``.
+
+    The peer kept nothing, so neither does this relay: the dedup and routed
+    rows and the queue row go, and the sender's later resend of the same
+    message is new, not a "duplicate". Commits.
+    """
+    await session.execute(
+        sa_delete(SeenMessageId).where(
+            SeenMessageId.message_id == message_id, SeenMessageId.from_addr == from_addr
+        )
+    )
+    await session.execute(
+        sa_delete(RoutedMessage).where(
+            RoutedMessage.message_id == message_id, RoutedMessage.from_addr == from_addr
+        )
+    )
+    if queue_id is not None:
+        await session.execute(
+            sa_delete(FederationQueueEntry).where(FederationQueueEntry.id == queue_id)
+        )
+    await session.commit()
+
+
+def pending_notice(message_id: str) -> dict:
+    """Tells a sender that mail this relay had answered ``queued`` turned out
+    pending at the peer. No ``uam_version``, so SDKs before 1.2 skip it."""
+    return {"type": "relay.notice", "message_id": message_id, "status": "pending"}
+
+
+async def retry_pending_federation(
+    factory: Any, service: Any, settings: Any, manager: Any = None
+) -> None:
+    """Retry the queue rows that are due.  A row that raises is a failed attempt.
+
+    A peer answering ``pending`` clears this relay's rows for the message
+    and, when *manager* is given and the sender is connected, tells it.
+    """
     async with factory() as session:
         pending = await get_pending_queue(session, limit=50)
 
@@ -595,6 +645,17 @@ async def retry_pending_federation(factory: Any, service: Any, settings: Any) ->
             result = ForwardResult(delivered=False, error=f"{type(exc).__name__}: {exc}")
 
         async with factory() as session:
+            if result.delivered and getattr(result, "status", None) == "pending":
+                envelope = json.loads(entry.envelope)
+                await forget_forwarded(
+                    session, envelope.get("message_id", ""), envelope.get("from", ""), entry.id
+                )
+                if manager is not None:
+                    await manager.send_to(
+                        envelope.get("from", ""), pending_notice(envelope.get("message_id", ""))
+                    )
+                logger.info("Federation retry answered pending: queue_id=%d", entry.id)
+                continue
             if result.delivered:
                 await update_queue_entry(session, entry.id, status="delivered")
                 logger.info(

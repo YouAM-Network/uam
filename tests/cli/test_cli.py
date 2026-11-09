@@ -345,6 +345,25 @@ def test_send_success(runner: CliRunner, uam_home: Path):
     instance.send_sync.assert_called_once_with("bob::youam.network", "hello bob")
 
 
+def test_send_pending_says_it_was_not_delivered(runner: CliRunner, uam_home: Path):
+    key_dir = uam_home / "keys"
+    key_dir.mkdir(parents=True)
+    KeyManager(key_dir).load_or_generate("testagent")
+
+    with patch("uam.cli.main.Agent") as MockAgent:
+        from uam.sdk.message import SendResult
+
+        instance = MagicMock()
+        instance.send_sync.return_value = SendResult("msg-1", "pending")
+        MockAgent.return_value = instance
+        result = runner.invoke(
+            cli, ["send", "bob::youam.network", "hi"], env={"UAM_HOME": str(uam_home)}
+        )
+
+    assert result.exit_code == 0
+    assert "Not delivered: bob::youam.network only accepts messages from approved contacts." in result.output
+
+
 # ---------------------------------------------------------------------------
 # test_inbox_success (mocked)
 # ---------------------------------------------------------------------------

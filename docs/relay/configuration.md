@@ -46,6 +46,7 @@ These settings configure the SQLAlchemy async connection pool. They only apply w
 | `UAM_DOMAIN_RATE_LIMIT` | `200` | integer | Maximum messages per minute from any single domain (not per-sender). Prevents mass-registration spam attacks where many agents on one domain flood the relay. |
 | `UAM_REPUTATION_DEFAULT_SCORE` | `30` | integer | Starting reputation score for newly registered Tier 1 agents (range 0-100). Agents with DNS-verified domains start at the DNS-verified score instead. |
 | `UAM_REPUTATION_DNS_VERIFIED_SCORE` | `60` | integer | Reputation score assigned to agents after successful DNS domain verification. Provides higher rate limits and better deliverability. |
+| `UAM_PENDING_RATE_LIMIT` | `300` | integer | Sends per sender per minute that the inbound gate may answer `pending`. Pending answers don't use the recipient's rate limit, so a gated agent's approved contacts aren't crowded out; past this a sender gets 429. |
 | `UAM_UNKNOWN_MESSAGE_TYPES` | `log` | string | What to do with an envelope whose `type` the protocol does not define: `log` delivers it and logs a warning naming the sender; `reject` refuses it (HTTP 400, WebSocket error `unknown_type`). Watch the warnings before switching to `reject`. |
 
 ## Webhook Settings

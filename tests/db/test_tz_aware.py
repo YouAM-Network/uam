@@ -1,7 +1,7 @@
 """Failing-by-design tz-aware datetime tests (T7.3b / T7.4).
 
 Per RESEARCH Pattern 4: every datetime column in models.py must declare
-sa.DateTime(timezone=True). The 38-column census below is the contract; if a
+sa.DateTime(timezone=True). The column census below is the contract; if a
 new datetime column is added to a model, the census drift assertion catches it.
 
 Tz-naive datetime storage is the textbook bug: row written in container timezone
@@ -20,7 +20,7 @@ from alembic import command
 from alembic.config import Config
 
 
-# 38-column census (table, column, nullable) from RESEARCH Pattern 4.
+# Column census (table, column, nullable) from RESEARCH Pattern 4.
 DATETIME_COLUMNS = [
     ("agents", "last_seen", True),
     ("agents", "created_at", False),
@@ -62,9 +62,14 @@ DATETIME_COLUMNS = [
     ("reservations", "expires_at", False),
     ("reservations", "claimed_at", True),
     ("reservations", "deleted_at", True),
+    ("routed_messages", "routed_at", False),
+    ("federation_nonces", "seen_at", False),
+    ("inbound_policies", "updated_at", False),
+    ("inbound_contacts", "expires_at", True),
+    ("inbound_contacts", "created_at", False),
+    ("inbound_contacts", "updated_at", False),
 ]
-# Note: census above has 40 entries; federation_nonces.seen_at adds a 41st on
-# Phase 45+. The census-drift test below allows ±2 to absorb minor additions.
+# The census-drift test below allows ±2 to absorb minor additions.
 
 
 @pytest.fixture

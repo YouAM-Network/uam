@@ -327,6 +327,35 @@ class TestDeliverWithRetries:
         assert args[2] == "succeeded"  # status
 
     @pytest.mark.asyncio
+    async def test_a_message_the_gate_now_holds_back_is_not_posted(self):
+        """The recipient was gated (or the sender blocked) after the message
+        was accepted: no attempt is made and nothing is stored."""
+        service = WebhookDeliveryService(WebhookCircuitBreaker())
+        mock_client = AsyncMock()
+        service._http_client = mock_client
+
+        with (
+            patch("uam.relay.webhook.still_allowed", new_callable=AsyncMock, return_value=False),
+            patch("uam.relay.webhook.complete_delivery", new_callable=AsyncMock) as mock_complete,
+            patch("uam.relay.webhook._store_for_pickup", new_callable=AsyncMock) as mock_store,
+            patch("uam.relay.webhook.get_engine", return_value=MagicMock()),
+            patch("uam.relay.webhook.async_session_factory") as mock_factory,
+            patch("asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_ctx = MagicMock()
+            mock_ctx.__aenter__ = AsyncMock(return_value=AsyncMock())
+            mock_ctx.__aexit__ = AsyncMock(return_value=None)
+            mock_factory.return_value = mock_ctx
+
+            await service._deliver_with_retries(
+                "agent::test.local", {"id": "msg1"}, "https://example.com/hook", "k", 1,
+            )
+
+        mock_client.post.assert_not_called()
+        mock_store.assert_not_awaited()
+        assert mock_complete.call_args[0][2] == "failed"
+
+    @pytest.mark.asyncio
     async def test_retry_stops_on_non_retriable_4xx(self):
         """Non-retriable 400 stops retries immediately (1 attempt)."""
         cb = WebhookCircuitBreaker()

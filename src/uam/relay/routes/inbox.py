@@ -22,6 +22,7 @@ from uam.relay.receipts import delivery_receipt, wants_delivery_receipt
 from uam.relay.relay_meta import mark_stored
 
 logger = logging.getLogger(__name__)
+from uam.relay.gate import release
 
 router = APIRouter()
 
@@ -47,7 +48,7 @@ async def get_inbox(
         )
 
     # Fetch undelivered messages (CRUD returns Message model objects)
-    stored = await get_inbox_crud(session, address, limit)
+    stored = await release(session, address, await get_inbox_crud(session, address, limit))
 
     messages: list[dict] = []
     ids: list[int] = []

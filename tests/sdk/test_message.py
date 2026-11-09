@@ -134,7 +134,7 @@ class TestSendStatus:
     """send_status reads the relay's answer to one send."""
 
     @pytest.mark.parametrize(
-        "status", ["delivered", "stored", "relayed", "queued", "duplicate", "dropped"]
+        "status", ["delivered", "stored", "relayed", "queued", "duplicate", "dropped", "pending"]
     )
     def test_relay_status_is_taken(self, status):
         from uam.sdk.message import send_status
@@ -151,7 +151,6 @@ class TestSendStatus:
         [
             {"message_id": "m", "delivered": True},  # relay before 1.1
             {},
-            {"status": "pending"},  # not sent until A2b
             {"status": "unknown"},  # SDK-only values never come from a relay
             {"status": "accepted"},
             "not a dict",
@@ -189,3 +188,24 @@ class TestAge:
 
     def test_received_at_defaults_to_none(self):
         assert _make_msg().received_at is None
+
+
+class TestFeatures:
+    """A relay feature "name:N" means "supports version N or later"."""
+
+    @pytest.mark.parametrize(
+        ("features", "name", "version", "expected"),
+        [
+            ({"send_status"}, "send_status", 1, True),
+            ({"send_status"}, "send_status", 2, False),
+            ({"send_status", "send_status:2"}, "send_status", 2, True),
+            ({"send_status:3"}, "send_status", 2, True),
+            ({"send_status:3"}, "send_status", 1, True),
+            ({"send_status:x"}, "send_status", 1, False),
+            (set(), "send_status", 1, False),
+        ],
+    )
+    def test_supports(self, features, name, version, expected):
+        from uam.sdk.message import supports
+
+        assert supports(features, name, version) is expected

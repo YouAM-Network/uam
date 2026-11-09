@@ -14,6 +14,8 @@ from typing import Any, Optional
 #: What the relay said about a sent message (relay/receipts.py), plus two of
 #: the SDK's own: "accepted" (the relay took it but reports no status: before
 #: 1.1) and "unknown" (no answer in time over WebSocket; it may have arrived).
+#: "pending" (1.2): the recipient accepts mail only from approved senders and
+#: hasn't approved this one; it was not delivered and nothing was kept.
 SEND_STATUSES = (
     "delivered",
     "stored",
@@ -21,6 +23,7 @@ SEND_STATUSES = (
     "queued",
     "duplicate",
     "dropped",
+    "pending",
     "accepted",
     "unknown",
 )
@@ -68,6 +71,31 @@ def send_status(answer: Any) -> str:
     if status in SEND_STATUSES and status not in ("accepted", "unknown"):
         return status
     return "accepted"
+
+
+def supports(features: set[str], name: str, version: int = 1) -> bool:
+    """True when a relay's *features* include *name* at *version* or later.
+
+    ``"name"`` is version 1; ``"name:N"`` means version N or later.
+    """
+    if version <= 1 and name in features:
+        return True
+    prefix = name + ":"
+    for feature in features:
+        if feature.startswith(prefix):
+            try:
+                if int(feature[len(prefix):]) >= version:
+                    return True
+            except ValueError:
+                continue
+    return False
+
+
+#: What a pending send means, for people and for an LLM reading a tool result.
+PENDING_NOTE = (
+    "Not delivered: {to} only accepts messages from approved contacts. "
+    "Do not resend it."
+)
 
 
 @dataclass(frozen=True)

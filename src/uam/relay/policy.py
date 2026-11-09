@@ -55,6 +55,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from uam.db.crud.agents import get_agent_by_address
 from uam.db.crud.routed import claim_receipt, record_routed
 from uam.protocol import MessageEnvelope, MessageType
+from uam.relay.gate import recipient_gate
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +166,37 @@ async def charge_duplicate(state: Any, sender: str, *, receipt: bool) -> None:
     send_limit = _send_limit(state, sender)
     if not await state.sender_limiter.check(sender, limit=send_limit):
         raise DeliveryDenied(429, "rate_limited", "Sender rate limit exceeded")
+
+
+async def held_back(
+    state: Any,
+    envelope: MessageEnvelope,
+    session: AsyncSession,
+    *,
+    sender_key: str,
+) -> bool:
+    """True when the recipient's gate holds this message back (``pending``).
+
+    Run after the signature check (so a bad signature is refused the same
+    way for every recipient) and before any write. A held-back message
+    takes a slot in the sender's pending bucket, never the recipient's.
+    Raises :class:`DeliveryDenied` when that bucket is full. Mail for a
+    peer relay is gated there, not here.
+    """
+    if goes_to_peer(state, envelope.to_address):
+        return False
+    if await recipient_gate(
+        session,
+        recipient=envelope.to_address,
+        sender=envelope.from_address,
+        message_type=envelope.type,
+        sender_key=sender_key,
+        reply_to=envelope.reply_to,
+    ):
+        return False
+    if not await state.pending_limiter.check(envelope.from_address):
+        raise DeliveryDenied(429, "rate_limited", "Sender rate limit exceeded")
+    return True
 
 
 async def authorize_delivery(

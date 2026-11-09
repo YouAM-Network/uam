@@ -36,7 +36,7 @@ from uam.relay.models import (
     DemoSendRequest,
     DemoSendResponse,
 )
-from uam.relay.policy import DeliveryDenied, authorize_delivery
+from uam.relay.policy import DeliveryDenied, authorize_delivery, held_back
 from uam.relay.relay_meta import stamp
 from uam.relay.token_hashing import hash_token
 
@@ -124,8 +124,13 @@ async def demo_send(body: DemoSendRequest, request: Request, db_session: AsyncSe
     )
     wire = stamp(to_wire_dict(envelope), request.app.state.settings.relay_domain)
 
-    # Same blocklist and sender / recipient rate limits as /send (relay/policy.py)
+    # Same gate, blocklist and rate limits as /send (relay/policy.py)
     try:
+        if await held_back(
+            request.app.state, envelope, db_session, sender_key=session.verify_key_b64
+        ):
+            await db_session.rollback()
+            return DemoSendResponse(message_id=envelope.message_id, status="pending")
         await authorize_delivery(request.app.state, envelope, db_session)
     except DeliveryDenied as denied:
         raise HTTPException(status_code=denied.status, detail=denied.detail) from denied
@@ -139,7 +144,9 @@ async def demo_send(body: DemoSendRequest, request: Request, db_session: AsyncSe
         )
     await db_session.commit()
 
-    return DemoSendResponse(message_id=envelope.message_id)
+    return DemoSendResponse(
+        message_id=envelope.message_id, status="delivered" if delivered else "stored"
+    )
 
 
 @router.get("/demo/inbox", response_model=DemoInboxResponse)

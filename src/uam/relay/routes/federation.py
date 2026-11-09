@@ -36,7 +36,7 @@ from uam.relay.models import (
     WellKnownRelayResponse,
 )
 from uam.relay.peer_key_cache import peer_key_cache
-from uam.relay.policy import DeliveryDenied, authorize_delivery
+from uam.relay.policy import DeliveryDenied, authorize_delivery, held_back
 from uam.relay.receipts import FEDERATION_STATUS_VERSION
 from uam.relay.relay_auth import relay_key_id, verify_federation_signature
 from uam.relay.relay_meta import peer_received_at, stamp
@@ -311,10 +311,26 @@ async def federation_deliver(
                 detail=f"Invalid agent envelope signature: {exc}",
             ) from exc
 
-        # ---- Step 8: Dedup check ----
-        # Commit the nonce first: finding a duplicate rolls back, and then
-        # this exact request could be replayed.
+        # Commit the nonce first: a pending answer or a duplicate leaves
+        # nothing else, and this exact request must not be replayable.
         await session.commit()
+
+        # ---- Step 7.5: Delivery gate (gate.py), before any other write ----
+        # The nonce is the one row a pending answer leaves behind.
+        try:
+            if await held_back(
+                request.app.state, envelope, session, sender_key=authoritative_key
+            ):
+                return FederationDeliverResponse(
+                    status="pending",
+                    detail="Not delivered",
+                    status_version=FEDERATION_STATUS_VERSION,
+                )
+        except DeliveryDenied as denied:
+            peer_at_fault = False  # a sender's rate, not the peer relay's fault
+            raise HTTPException(status_code=denied.status, detail=denied.detail) from denied
+
+        # ---- Step 8: Dedup check ----
         is_new = await record_message_id(session, envelope.message_id, envelope.from_address, commit=False)
         if not is_new:
             return FederationDeliverResponse(

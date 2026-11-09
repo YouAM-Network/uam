@@ -272,6 +272,8 @@ def _peer(body, status_code=200):
         ({"status": "stored", "status_version": 1}, "stored"),
         ({"status": "duplicate", "status_version": 1}, "stored"),
         ({"status": "relayed", "status_version": 1}, "relayed"),
+        ({"status": "pending", "status_version": 2}, "pending"),
+        ({"status": "pending", "status_version": 1}, "relayed"),  # not a v1 status
         ({"status": "delivered"}, "relayed"),  # 1.0.x said delivered for stored mail
         ({"status": "accepted"}, "relayed"),
         ("not json", "relayed"),
@@ -280,3 +282,90 @@ def _peer(body, status_code=200):
 )
 def test_peer_status_is_trusted_only_with_a_status_version(body, status):
     assert peer_send_status(_peer(body)) == status
+
+
+# -- a peer relay answers pending (P1) -------------------------------------------
+
+
+async def _rows(message_id):
+    from sqlalchemy import func, select
+
+    from uam.db.engine import get_engine
+    from uam.db.models import FederationQueueEntry, RoutedMessage, SeenMessageId
+    from uam.db.session import init_session_factory
+
+    factory = await init_session_factory(get_engine())
+    async with factory() as session:
+        out = {}
+        for name, model, col in (
+            ("seen", SeenMessageId, SeenMessageId.message_id),
+            ("routed", RoutedMessage, RoutedMessage.message_id),
+        ):
+            out[name] = (await session.execute(
+                select(func.count()).select_from(model).where(col == message_id)
+            )).scalar_one()
+        out["queue"] = (await session.execute(
+            select(func.count()).select_from(FederationQueueEntry).where(
+                FederationQueueEntry.envelope.contains(message_id)
+            )
+        )).scalar_one()
+        return out
+
+
+def test_a_peer_s_pending_leaves_nothing_here_so_the_resend_is_new(
+    client, app, registered_agent_pair, monkeypatch
+):
+    alice, bob = registered_agent_pair
+    forward = AsyncMock(return_value=ForwardResult(delivered=True, status="pending"))
+    app.state.federation_service = AsyncMock(forward=forward)
+    monkeypatch.setattr(app.state.settings, "federation_enabled", True)
+    wire = _wire(alice, bob, to_address="carol::elsewhere.example")
+
+    first = _send(client, alice, wire)
+
+    assert first == {"message_id": wire["message_id"], "status": "pending", "delivered": False}
+    assert client.portal.call(_rows, wire["message_id"]) == {"seen": 0, "routed": 0, "queue": 0}
+    assert _send(client, alice, wire)["status"] == "pending"  # not "duplicate"
+    assert forward.await_count == 2
+
+
+def test_queued_mail_that_turns_pending_is_forgotten_and_the_sender_told(
+    client, app, registered_agent_pair, frames, monkeypatch
+):
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import update
+
+    from uam.db.engine import get_engine
+    from uam.db.models import FederationQueueEntry
+    from uam.db.session import init_session_factory
+    from uam.relay.federation import retry_pending_federation
+
+    alice, bob = registered_agent_pair
+    frames.online.add(alice["address"])
+    monkeypatch.setattr(app.state.settings, "federation_enabled", True)
+    app.state.federation_service = AsyncMock(forward=AsyncMock(
+        return_value=ForwardResult(delivered=False, queued=True, error="down")
+    ))
+    wire = _wire(alice, bob, to_address="carol::elsewhere.example")
+    assert _send(client, alice, wire)["status"] == "queued"
+
+    async def retry():
+        factory = await init_session_factory(get_engine())
+        async with factory() as session:
+            await session.execute(update(FederationQueueEntry).values(
+                next_retry=datetime.now(timezone.utc) - timedelta(hours=1)
+            ))
+            await session.commit()
+        service = AsyncMock(forward=AsyncMock(
+            return_value=ForwardResult(delivered=True, status="pending")
+        ))
+        await retry_pending_federation(
+            factory, service, app.state.settings, manager=app.state.manager
+        )
+
+    client.portal.call(retry)
+
+    assert client.portal.call(_rows, wire["message_id"]) == {"seen": 0, "routed": 0, "queue": 0}
+    notices = [f for a, f in frames.pushed if a == alice["address"] and f.get("type") == "relay.notice"]
+    assert notices == [{"type": "relay.notice", "message_id": wire["message_id"], "status": "pending"}]

@@ -47,6 +47,7 @@ from uam.sdk.agent import Agent as SdkAgent
 
 ROOT = Path(__file__).resolve().parents[2]
 GATE = asyncio.Semaphore(32)
+ADMIN_KEY = "pressure-admin-key-0123456789abcdef"
 
 
 # -- the relay as a process ---------------------------------------------------
@@ -95,6 +96,7 @@ class Relay:
             "UAM_RELAY_DOMAIN": self.domain,
             "UAM_RELAY_KEY_PATH": str(self.folder / f"{self.domain}.pem"),
             "UAM_TOKEN_PEPPER": "pressure-test-pepper-1234567890abcdef",
+            "UAM_ADMIN_API_KEY": ADMIN_KEY,
             "UAM_FEDERATION_ENABLED": "true" if self.peers else "false",
             "UAM_DRAIN_SECONDS": "0",
             "UAM_LOG_LEVEL": "WARNING",
@@ -362,6 +364,91 @@ async def steady_load(client, relay: Relay, agents: list[Agent], messages: int) 
     report["pass"] = (
         report["lost_stored"] == 0 and report["lost_live"] == 0
         and report["server_errors"] == 0 and report["refused"] == {}
+    )
+    return report
+
+
+async def gated(client, relay: Relay, agents: list[Agent], messages: int) -> dict:
+    """A quarter of the agents take mail only from approved contacts.
+
+    Mail from a stranger to a gated agent must be answered pending and never
+    arrive; everything else must arrive as in steady_load.
+    """
+    admin = {"X-Admin-Key": ADMIN_KEY}
+    gated_agents = agents[: len(agents) // 4]
+    approved: dict[str, set[str]] = {}
+    for recipient in gated_agents:
+        resp = await client.put(
+            f"{relay.url}/api/v1/admin/agents/{recipient.address}/inbound/policy",
+            json={"policy": "contacts"}, headers={**admin, "If-Match": "0"},
+        )
+        resp.raise_for_status()
+        contacts = random.sample(agents, k=len(agents) // 3)
+        approved[recipient.address] = {c.address for c in contacts}
+        for contact in contacts:
+            resp = await client.put(
+                f"{relay.url}/api/v1/admin/agents/{recipient.address}/inbound/contacts/{contact.address}",
+                json={"key": serialize_verify_key(contact.verify_key), "state": "allowed"},
+                headers=admin,
+            )
+            resp.raise_for_status()
+
+    online = agents[: len(agents) // 2]
+    await asyncio.gather(*(connect(a) for a in online))
+    ledger = Ledger()
+    held: dict[str, Agent] = {}
+    wrong = Counter()
+
+    async def send(sender: Agent, recipient: Agent, via_ws: bool) -> None:
+        wire = envelope(sender, recipient)
+        should_hold = (
+            recipient.address in approved and sender.address not in approved[recipient.address]
+        )
+        async with GATE:
+            try:
+                if via_ws and sender.ws is not None:
+                    reply = await send_ws(sender, wire)
+                    ok, status = reply.get("type") == "ack", reply.get("status")
+                    delivered = reply.get("delivered")
+                else:
+                    resp = await send_rest(client, sender, wire)
+                    if resp.status_code >= 500:
+                        ledger.server_errors += 1
+                        return
+                    ok = resp.status_code == 200
+                    body = resp.json() if ok else {}
+                    status, delivered = body.get("status"), body.get("delivered")
+            except (asyncio.TimeoutError, websockets.ConnectionClosed, httpx.HTTPError) as exc:
+                ledger.refused[type(exc).__name__] += 1
+                return
+        if not ok:
+            ledger.refused[str(status)] += 1
+        elif status == "pending":
+            held[wire["message_id"]] = recipient
+            if not should_hold:
+                wrong["pending_for_a_contact"] += 1
+        else:
+            ledger.accepted[wire["message_id"]] = (recipient, delivered)
+            if should_hold:
+                wrong["delivered_from_a_stranger"] += 1
+
+    jobs = [
+        send(sender, random.choice(agents), i % 2 == 0)
+        for sender in agents for i in range(messages)
+    ]
+    random.shuffle(jobs)
+    await asyncio.gather(*jobs)
+    await asyncio.gather(*(connect(a) for a in agents if a.ws is None))
+    await settle(lambda: ledger.tally()["lost_stored"] == 0 and ledger.tally()["lost_live"] == 0)
+    await asyncio.gather(*(collect_inbox(client, a) for a in agents))
+    await asyncio.gather(*(disconnect(a) for a in agents))
+    leaked = sum(1 for mid, r in held.items() if r.received[mid])
+    report = ledger.tally()
+    report.update(pending=len(held), leaked=leaked, wrong=dict(wrong))
+    report["pass"] = (
+        report["lost_stored"] == 0 and report["lost_live"] == 0
+        and report["server_errors"] == 0 and report["refused"] == {}
+        and leaked == 0 and not wrong and len(held) > 0
     )
     return report
 
@@ -754,6 +841,7 @@ async def main(args: argparse.Namespace) -> int:
 
         scenarios = [
             ("steady_load", lambda a: steady_load(client, relay, a, args.messages), args.agents),
+            ("gated", lambda a: gated(client, relay, a, args.messages), args.agents // 2),
             ("reconnect_storm", lambda a: reconnect_storm(client, relay, a, 3), args.agents // 2),
             ("stalled_socket", lambda a: stalled_socket(client, relay, a), 4),
             ("close_after_send", lambda a: close_after_send(client, relay, a, folder), 1),

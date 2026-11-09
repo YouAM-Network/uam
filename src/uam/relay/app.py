@@ -62,6 +62,7 @@ async def _rate_limiter_cleanup_loop(app: FastAPI) -> None:
         await asyncio.sleep(_RATE_LIMIT_CLEANUP_INTERVAL)
         await app.state.sender_limiter.cleanup()
         await app.state.receipt_limiter.cleanup()
+        await app.state.pending_limiter.cleanup()
         await app.state.recipient_limiter.cleanup()
         await app.state.register_limiter.cleanup()
         await app.state.domain_limiter.cleanup()
@@ -271,7 +272,9 @@ async def _federation_retry_loop(app: FastAPI) -> None:
 
             factory = async_session_factory(get_engine())
 
-            await retry_pending_federation(factory, federation_service, settings)
+            await retry_pending_federation(
+                factory, federation_service, settings, manager=app.state.manager
+            )
         except Exception as exc:
             if is_transient_error(exc):
                 logger.warning("Transient DB error in federation retry loop, will retry next cycle: %s", exc)
@@ -358,6 +361,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.recipient_limiter = SlidingWindowCounter(limit=100, window_seconds=60.0)
     # Receipts that don't answer a message routed here (MSG-05, relay/policy.py)
     app.state.receipt_limiter = SlidingWindowCounter(limit=60, window_seconds=60.0)
+    app.state.pending_limiter = SlidingWindowCounter(
+        limit=settings.pending_rate_limit, window_seconds=60.0
+    )
     app.state.register_limiter = SlidingWindowCounter(limit=5, window_seconds=60.0)
     # Domain-level rate limiter (SPAM-03)
     app.state.domain_limiter = SlidingWindowCounter(
@@ -708,6 +714,7 @@ def create_app() -> FastAPI:
     from uam.relay.routes.verify_domain import router as verify_domain_router
     from uam.relay.routes.webhook_admin import router as webhook_admin_router
     from uam.relay.routes.admin import router as admin_router
+    from uam.relay.routes.admin_inbound import router as admin_inbound_router
     from uam.relay.routes.presence import router as presence_router
     from uam.relay.routes.handshakes import router as handshakes_router
     from uam.relay.routes.reserve import router as reserve_router
@@ -721,6 +728,7 @@ def create_app() -> FastAPI:
     app.include_router(verify_domain_router, prefix="/api/v1")
     app.include_router(webhook_admin_router, prefix="/api/v1")
     app.include_router(admin_router, prefix="/api/v1")
+    app.include_router(admin_inbound_router, prefix="/api/v1")
     app.include_router(presence_router, prefix="/api/v1")
     app.include_router(handshakes_router, prefix="/api/v1")
     app.include_router(reserve_router, prefix="/api/v1")
