@@ -67,6 +67,11 @@ VALID = {
         "keys": [{"id": P256_DID, "rpId": "youam.network", "backupEligible": True,
                   "label": "Alice iPhone"}],
     },
+    "owner_keys_punctuated_label": {
+        "type": "UamOwnerKeys", "v": 1, "owner": {"relay": "youam.network"}, "seq": 0,
+        "keys": [{"id": P256_DID, "rpId": "youam.network", "backupEligible": True,
+                  "label": "Alice's iPhone (work) #2"}],
+    },
     "owner_keys_later": {
         "type": "UamOwnerKeys", "v": 1, "owner": {"relay": "youam.network", "ownerId": OWNER_ID},
         "seq": 3, "prev": H1,
@@ -172,6 +177,10 @@ INVALID_OBJECTS = {
     "later_without_prev": broken("owner_keys_later", _drop("prev")),
     "later_without_owner_id": broken("owner_keys_later", lambda b: b["owner"].pop("ownerId")),
     "no_keys": broken("owner_keys_later", _set(["keys"], [])),
+    # A label is quoted in the text an owner signs, so it can't hold a quote.
+    "label_with_quote": broken("owner_keys_entry0", _set(["keys", 0, "label"],
+                                                         'Laptop" to your account. Remove "Phone')),
+    "label_too_long": broken("owner_keys_entry0", _set(["keys", 0, "label"], "x" * 65)),
     "bad_removed_reason": broken("owner_keys_later", _set(["removed", 0, "reason"], "lost")),
     "preapproved_without_email": broken("invite_preapproved", _drop("emailHash")),
     "two_uses": broken("invite_preapproved", _set(["maxUses"], 2)),

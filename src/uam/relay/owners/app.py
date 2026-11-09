@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, HTTPException, Path, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
@@ -22,7 +22,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from uam.db.crud import owners as crud
 from uam.db.session import get_session
-from uam.relay.owners import service
+from uam.relay.owners import passkeys, service
 from uam.relay.owners.crypto import EmailVault, normalise_email
 
 COOKIE = "__Host-uam_owner"
@@ -109,6 +109,46 @@ class FinishRequest(EmailRequest):
     code: Annotated[str, Field(pattern=r"^[0-9]{6}$")]
 
 
+class FinishRegistration(BaseModel):
+    attestationObject: Annotated[str, Field(max_length=8192)]
+    clientDataJSON: Annotated[str, Field(max_length=4096)]
+    # Printable ASCII without '"': labels are quoted in the text owners sign.
+    label: Annotated[str, Field(pattern=r"^[\x20\x21\x23-\x7e]{1,64}$")]
+
+
+class SignEntry(BaseModel):
+    credentialId: Annotated[str, Field(max_length=1400)]
+    authenticatorData: Annotated[str, Field(max_length=4096)]
+    clientDataJSON: Annotated[str, Field(max_length=4096)]
+    signature: Annotated[str, Field(max_length=512)]
+
+
+def _refused(exc: passkeys.PasskeyError) -> JSONResponse:
+    return JSONResponse({"error": exc.code, "detail": exc.detail}, status_code=exc.status)
+
+
+def key_log_router() -> APIRouter:
+    """``GET /api/owner/keys/{owner_id}``: an owner's key log, for anyone to
+    verify. Served on the owner origin and on the relay origin."""
+    router = APIRouter()
+
+    @router.get("/api/owner/keys/{owner_id}")
+    async def key_log(
+        request: Request,
+        owner_id: Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]{22}$")],
+        since: Annotated[int, Query(ge=0)] = 0,
+        session: AsyncSession = Depends(get_session),
+    ) -> dict:
+        if not request.app.state.settings.owners_enabled:
+            raise HTTPException(status_code=404, detail="Not Found")
+        entries = await passkeys.public_log(session, owner_id, since)
+        if entries is None:
+            raise HTTPException(status_code=404, detail="no such owner")
+        return {"owner_id": owner_id, "entries": entries}
+
+    return router
+
+
 class MeResponse(BaseModel):
     email: str
     status: str
@@ -125,6 +165,7 @@ def _email(raw: str) -> str:
 def build_owner_app(settings, parent: FastAPI) -> FastAPI:
     """The owner app for *settings*; *parent* is the relay app (code sink)."""
     app = FastAPI(title="UAM owners", docs_url=None, redoc_url=None, openapi_url=None)
+    app.state.settings = settings
     vault = EmailVault(settings.email_pepper, settings.email_key)
     secure = settings.owner_origin.startswith("https://")
 
@@ -197,6 +238,57 @@ def build_owner_app(settings, parent: FastAPI) -> FastAPI:
             status=who.owner.status,
             owner_id=who.owner.owner_id,
         )
+
+    @app.post("/api/owner/passkeys/register/start")
+    async def register_start(
+        who: service.SignedIn = Depends(signed_in), session: AsyncSession = Depends(get_session)
+    ) -> Response:
+        email = await crud.primary_email(session, who.owner.id)
+        try:
+            return JSONResponse(await passkeys.register_options(
+                session, settings, owner=who.owner,
+                email=vault.decrypt(email.email_enc) if email else "",
+                user_handle=vault.user_handle(who.owner.id),
+            ))
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.post("/api/owner/passkeys/register/finish")
+    async def register_finish(
+        body: FinishRegistration,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(await passkeys.register_finish(
+                session, settings, owner=who.owner, attestation_object=body.attestationObject,
+                client_data_json=body.clientDataJSON, label=body.label,
+            ))
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.post("/api/owner/keys/sign")
+    async def sign_entry(
+        body: SignEntry,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(await passkeys.sign_entry(
+                session, settings, owner=who.owner, credential_id=body.credentialId,
+                authenticator_data=body.authenticatorData,
+                client_data_json=body.clientDataJSON, signature=body.signature,
+            ))
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.get("/api/owner/passkeys")
+    async def list_passkeys(
+        who: service.SignedIn = Depends(signed_in), session: AsyncSession = Depends(get_session)
+    ) -> dict:
+        return {"passkeys": await passkeys.list_passkeys(session, who.owner)}
+
+    app.include_router(key_log_router())
 
     @app.post("/api/owner/sign-out", status_code=204)
     async def sign_out(request: Request, session: AsyncSession = Depends(get_session)) -> Response:

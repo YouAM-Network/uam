@@ -736,6 +736,9 @@ def create_app() -> FastAPI:
     app.include_router(reserve_router, prefix="/api/v1")
     from uam.relay.routes.admin_owners import router as admin_owners_router
     app.include_router(admin_owners_router, prefix="/api/v1")
+    # An owner's key log is public on the relay origin too (404 while owners are off).
+    from uam.relay.owners.app import key_log_router
+    app.include_router(key_log_router())
 
     # Health, WebSocket, and .well-known (no prefix)
     from uam.relay.routes.health import router as health_router

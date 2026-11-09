@@ -185,6 +185,10 @@ def _label(value: Any, path: str) -> None:
     _string(value, path)
     if len(value) > 64:
         _fail(path, "at most 64 characters")
+    # Labels are quoted in the text an owner signs (keylog.screen_for), so a
+    # quote in one could make that text say something the object doesn't.
+    if '"' in value:
+        _fail(path, 'must not contain "')
 
 
 def _matching(regex: re.Pattern[str], what: str) -> Check:

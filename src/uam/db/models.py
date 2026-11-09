@@ -38,6 +38,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     Column,
     DateTime,
     ForeignKey,
@@ -487,6 +488,106 @@ class OwnerAudit(SQLModel, table=True):
         default="{}", sa_column=Column(Text, nullable=False, server_default="{}")
     )
     at: datetime = Field(default_factory=_now, sa_column=_created_at())
+
+
+class OwnerPasskey(SQLModel, table=True):
+    """An owner's passkey (P2c-2, migration 0014): ``held`` from registration
+    until the key log entry that adds it is signed, then ``active``."""
+
+    __tablename__ = "owner_passkeys"
+    __table_args__ = (
+        UniqueConstraint("credential_id", name="uq_owner_passkeys_credential_id"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    owner_pk: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("owners.id", ondelete="CASCADE", name="fk_owner_passkeys_owner"),
+            nullable=False,
+            index=True,
+        )
+    )
+    credential_id: str = Field(sa_column=Column(String, nullable=False))
+    public_key: str = Field(sa_column=Column(String, nullable=False))
+    did: str = Field(sa_column=Column(String, nullable=False))
+    backup_eligible: bool = Field(sa_column=Column(Boolean, nullable=False))
+    sign_count: int = Field(
+        default=0, sa_column=Column(Integer, nullable=False, server_default="0")
+    )
+    label: str = Field(sa_column=Column(String, nullable=False))
+    state: str = Field(
+        default="held", sa_column=Column(String, nullable=False, server_default="held")
+    )
+    created_at: datetime = Field(default_factory=_now, sa_column=_created_at())
+    removed_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    removed_reason: str | None = Field(default=None, sa_column=Column(String, nullable=True))
+
+
+class OwnerKeyLogEntry(SQLModel, table=True):
+    """One signed UamOwnerKeys entry. Keyed by (owner, seq) so the chain
+    can't fork."""
+
+    __tablename__ = "owner_key_log"
+    __table_args__ = (UniqueConstraint("hash", name="uq_owner_key_log_hash"),)
+
+    owner_pk: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("owners.id", ondelete="CASCADE", name="fk_owner_key_log_owner"),
+            primary_key=True,
+        )
+    )
+    seq: int = Field(sa_column=Column(Integer, primary_key=True))
+    body: str = Field(sa_column=Column(Text, nullable=False))
+    hash: str = Field(sa_column=Column(String, nullable=False))
+    signer: str = Field(sa_column=Column(String, nullable=False))
+    authenticator_data: str = Field(sa_column=Column(Text, nullable=False))
+    client_data_json: str = Field(sa_column=Column(Text, nullable=False))
+    signature: str = Field(sa_column=Column(Text, nullable=False))
+    screen: str = Field(sa_column=Column(Text, nullable=False))
+    created_at: datetime = Field(default_factory=_now, sa_column=_created_at())
+
+
+class WebAuthnChallenge(SQLModel, table=True):
+    """A single-use WebAuthn challenge: ``register`` (a new passkey) or
+    ``approve`` (signs ``body``, shown as ``screen``)."""
+
+    __tablename__ = "webauthn_challenges"
+    __table_args__ = (
+        UniqueConstraint("challenge", name="uq_webauthn_challenges_challenge"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    owner_pk: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("owners.id", ondelete="CASCADE", name="fk_webauthn_challenges_owner"),
+            nullable=False,
+            index=True,
+        )
+    )
+    purpose: str = Field(sa_column=Column(String, nullable=False))
+    challenge: str = Field(sa_column=Column(String, nullable=False))
+    passkey_pk: int | None = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey(
+                "owner_passkeys.id", ondelete="CASCADE", name="fk_webauthn_challenges_passkey"
+            ),
+            nullable=True,
+        ),
+    )
+    body: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    screen: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    expires_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    used_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    created_at: datetime = Field(default_factory=_now, sa_column=_created_at())
 
 
 class RoutedMessage(SQLModel, table=True):

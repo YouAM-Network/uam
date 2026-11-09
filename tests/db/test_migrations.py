@@ -75,7 +75,8 @@ EXPECTED_TABLES = sorted([
     "inbound_policies", "inbound_contacts",  # +2 from 0012
     "owners", "owner_emails", "owner_login_codes",  # +5 from 0013
     "owner_sessions", "owner_audit",
-])  # 27 tables
+    "owner_passkeys", "owner_key_log", "webauthn_challenges",  # +3 from 0014
+])  # 30 tables
 
 
 class TestMigrationUpgrade:

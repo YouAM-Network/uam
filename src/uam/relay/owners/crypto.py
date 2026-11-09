@@ -72,6 +72,11 @@ class EmailVault:
         raw = _b64d(stored[len(_ENC_PREFIX):])
         return self._aead.decrypt(raw[:12], raw[12:], _EMAIL_AAD).decode()
 
+    def user_handle(self, owner_pk: int) -> str:
+        """The WebAuthn user.id for an owner: stable, opaque, 16 bytes."""
+        digest = hmac.new(self._pepper, f"user\n{owner_pk}".encode(), hashlib.sha256).digest()
+        return _b64e(digest[:16])
+
     def code_hash(self, email_hmac: str, code: str) -> str:
         """A sign-in code's hash, bound to the email it was sent to."""
         msg = f"code\n{email_hmac}\n{code}".encode()

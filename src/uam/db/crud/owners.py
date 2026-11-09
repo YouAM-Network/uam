@@ -10,11 +10,20 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from uam.db.models import Owner, OwnerAudit, OwnerEmail, OwnerLoginCode, OwnerSession
+from uam.db.models import (
+    Owner,
+    OwnerAudit,
+    OwnerEmail,
+    OwnerKeyLogEntry,
+    OwnerLoginCode,
+    OwnerPasskey,
+    OwnerSession,
+    WebAuthnChallenge,
+)
 
 
 class EmailTaken(Exception):
@@ -146,3 +155,103 @@ async def audit(session: AsyncSession, owner_pk: int, action: str, details: dict
         owner_pk=owner_pk, action=action, details=json.dumps(details or {}, sort_keys=True)
     ))
     await session.flush()
+
+
+# --- passkeys, key log, WebAuthn challenges (P2c-2) --------------------------
+
+
+async def add_challenge(
+    session: AsyncSession,
+    *,
+    owner_pk: int,
+    purpose: str,
+    challenge: str,
+    now: datetime,
+    expires_at: datetime,
+    passkey_pk: int | None = None,
+    body: str | None = None,
+    screen: str | None = None,
+) -> WebAuthnChallenge:
+    row = WebAuthnChallenge(
+        owner_pk=owner_pk, purpose=purpose, challenge=challenge, created_at=now,
+        expires_at=expires_at, passkey_pk=passkey_pk, body=body, screen=screen,
+    )
+    session.add(row)
+    await session.flush()
+    return row
+
+
+async def find_challenge(
+    session: AsyncSession, owner_pk: int, purpose: str, challenge: str
+) -> WebAuthnChallenge | None:
+    return await session.scalar(
+        select(WebAuthnChallenge).where(
+            WebAuthnChallenge.owner_pk == owner_pk,
+            WebAuthnChallenge.purpose == purpose,
+            WebAuthnChallenge.challenge == challenge,
+        )
+    )
+
+
+async def use_challenge(session: AsyncSession, challenge_id: int, now: datetime) -> bool:
+    """Use a challenge up, atomically; False if something already did."""
+    result = await session.execute(
+        update(WebAuthnChallenge)
+        .where(WebAuthnChallenge.id == challenge_id, WebAuthnChallenge.used_at.is_(None))
+        .values(used_at=now)
+    )
+    return result.rowcount == 1
+
+
+async def passkeys(
+    session: AsyncSession, owner_pk: int, states: tuple[str, ...] = ("active",)
+) -> list[OwnerPasskey]:
+    return list((await session.execute(
+        select(OwnerPasskey)
+        .where(OwnerPasskey.owner_pk == owner_pk, OwnerPasskey.state.in_(states))
+        .order_by(OwnerPasskey.id)
+    )).scalars())
+
+
+async def passkey_by_credential(
+    session: AsyncSession, owner_pk: int, credential_id: str
+) -> OwnerPasskey | None:
+    return await session.scalar(
+        select(OwnerPasskey).where(
+            OwnerPasskey.owner_pk == owner_pk, OwnerPasskey.credential_id == credential_id
+        )
+    )
+
+
+async def drop_stale_held(session: AsyncSession, owner_pk: int, before: datetime) -> None:
+    """Held passkeys whose entry was never signed in time."""
+    await session.execute(
+        delete(OwnerPasskey).where(
+            OwnerPasskey.owner_pk == owner_pk,
+            OwnerPasskey.state == "held",
+            OwnerPasskey.created_at < before,
+        )
+    )
+
+
+async def key_log_head(session: AsyncSession, owner_pk: int) -> OwnerKeyLogEntry | None:
+    return await session.scalar(
+        select(OwnerKeyLogEntry)
+        .where(OwnerKeyLogEntry.owner_pk == owner_pk)
+        .order_by(OwnerKeyLogEntry.seq.desc())
+        .limit(1)
+    )
+
+
+async def key_log(
+    session: AsyncSession, owner_pk: int, since: int = 0
+) -> list[OwnerKeyLogEntry]:
+    return list((await session.execute(
+        select(OwnerKeyLogEntry)
+        .where(OwnerKeyLogEntry.owner_pk == owner_pk, OwnerKeyLogEntry.seq >= since)
+        .order_by(OwnerKeyLogEntry.seq)
+    )).scalars())
+
+
+async def owner_by_owner_id(session: AsyncSession, owner_id: str) -> Owner | None:
+    return await session.scalar(select(Owner).where(Owner.owner_id == owner_id))

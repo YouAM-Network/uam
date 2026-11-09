@@ -22,6 +22,28 @@
   "hash": "l_uUs_qUWUAvsigZQK3Kre9GhgeYaqJEUrM6TWYUEmI"
  },
  {
+  "name": "owner_keys_punctuated_label",
+  "body": {
+   "type": "UamOwnerKeys",
+   "v": 1,
+   "owner": {
+    "relay": "youam.network"
+   },
+   "seq": 0,
+   "keys": [
+    {
+     "id": "did:key:zDnaebkrzg1EeBrHzATo8o3pBfQfyGXrPe4Zg5zjW65a3vBUH",
+     "rpId": "youam.network",
+     "backupEligible": true,
+     "label": "Alice's iPhone (work) #2"
+    }
+   ]
+  },
+  "ok": true,
+  "canonical": "{\"keys\":[{\"backupEligible\":true,\"id\":\"did:key:zDnaebkrzg1EeBrHzATo8o3pBfQfyGXrPe4Zg5zjW65a3vBUH\",\"label\":\"Alice's iPhone (work) #2\",\"rpId\":\"youam.network\"}],\"owner\":{\"relay\":\"youam.network\"},\"seq\":0,\"type\":\"UamOwnerKeys\",\"v\":1}",
+  "hash": "GIB_2BDICJ-DEc9RdMsB_GGH0zTY_CUR3f0p76x0NXI"
+ },
+ {
   "name": "owner_keys_later",
   "body": {
    "type": "UamOwnerKeys",
@@ -732,6 +754,46 @@
     {
      "id": "did:key:zDnaetGgKPodrrev9GFVRhczRBfFWZ9tXQqRR5ZxSarboHkif",
      "reason": "compromised"
+    }
+   ]
+  },
+  "ok": false
+ },
+ {
+  "name": "label_with_quote",
+  "body": {
+   "type": "UamOwnerKeys",
+   "v": 1,
+   "owner": {
+    "relay": "youam.network"
+   },
+   "seq": 0,
+   "keys": [
+    {
+     "id": "did:key:zDnaebkrzg1EeBrHzATo8o3pBfQfyGXrPe4Zg5zjW65a3vBUH",
+     "rpId": "youam.network",
+     "backupEligible": true,
+     "label": "Laptop\" to your account. Remove \"Phone"
+    }
+   ]
+  },
+  "ok": false
+ },
+ {
+  "name": "label_too_long",
+  "body": {
+   "type": "UamOwnerKeys",
+   "v": 1,
+   "owner": {
+    "relay": "youam.network"
+   },
+   "seq": 0,
+   "keys": [
+    {
+     "id": "did:key:zDnaebkrzg1EeBrHzATo8o3pBfQfyGXrPe4Zg5zjW65a3vBUH",
+     "rpId": "youam.network",
+     "backupEligible": true,
+     "label": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
     }
    ]
   },

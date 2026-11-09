@@ -79,6 +79,12 @@ DATETIME_COLUMNS = [
     ("owner_sessions", "revoked_at", True),
     ("owner_sessions", "created_at", False),
     ("owner_audit", "at", False),
+    ("owner_passkeys", "created_at", False),
+    ("owner_passkeys", "removed_at", True),
+    ("owner_key_log", "created_at", False),
+    ("webauthn_challenges", "expires_at", False),
+    ("webauthn_challenges", "used_at", True),
+    ("webauthn_challenges", "created_at", False),
 ]
 # The census-drift test below allows ±2 to absorb minor additions.
 

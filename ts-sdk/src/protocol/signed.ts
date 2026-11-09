@@ -280,6 +280,9 @@ const string_: Check = (v, p) => {
 const label: Check = (v, p) => {
   string_(v, p);
   if ((v as string).length > 64) fail(p, "at most 64 characters");
+  // Labels are quoted in the text an owner signs, so a quote in one could
+  // make that text say something the object doesn't.
+  if ((v as string).includes('"')) fail(p, 'must not contain "');
 };
 
 const matching = (re: RegExp, what: string): Check => (v, p) => {

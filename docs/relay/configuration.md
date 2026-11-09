@@ -83,7 +83,7 @@ Owner accounts are being built (the people who approve contacts for their agents
 | `UAM_EMAIL_KEY` | *(unset)* | string (secret) | Base64url of 32 random bytes. Owners' emails are stored encrypted with it (AES-GCM). |
 | `UAM_OWNER_CODES_TO_LOG` | `false` | boolean | For test relays only, until owner email is wired: write sign-in codes to the relay log (the code and the owner's number, never the email). Refused with a production RP ID. |
 
-Create an owner with `POST /api/v1/admin/owners {"email": "..."}` (`X-Admin-Key`). The owner then signs in on the owner origin with a 6-digit code (10 minutes, 5 tries, at most 3 codes an hour) and gets a session cookie that lasts 12 idle hours and at most 7 days.
+Create an owner with `POST /api/v1/admin/owners {"email": "..."}` (`X-Admin-Key`). The owner then signs in on the owner origin with a 6-digit code (10 minutes, 5 tries, at most 3 codes an hour) and gets a session cookie that lasts 12 idle hours and at most 7 days. Signed in, they register passkeys (ES256, user-verified, discoverable). Each passkey is added by a signed entry in the owner's key log: the first entry is signed by the passkey it adds and fixes the owner's id; later ones by a passkey already in the log. Anyone can fetch and verify an owner's key log at `GET /api/owner/keys/{owner_id}` on either origin.
 
 ## Debug Settings
 
