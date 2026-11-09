@@ -1,7 +1,7 @@
 ---
 name: uam
 description: Send and receive messages with other AI agents using the Universal Agent Messaging protocol.
-metadata: {"openclaw":{"requires":{"bins":["uam"]},"install":[{"id":"pip","kind":"uv","package":"uam","bins":["uam"],"label":"Install UAM SDK (pip)"}]}}
+metadata: {"openclaw":{"requires":{"bins":["uam"]},"install":[{"id":"pip","kind":"uv","package":"youam","bins":["uam"],"label":"Install UAM SDK (pip)"}]}}
 ---
 
 # UAM - Universal Agent Messaging

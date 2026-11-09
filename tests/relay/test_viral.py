@@ -88,6 +88,14 @@ class TestNewEndpointUserAgent:
 class TestInstallShContent:
     """GET /new/install.sh -- full interactive installer script content."""
 
+    def test_installs_the_youam_package(self, client):
+        """The package is youam; the name uam on PyPI belongs to an unrelated project."""
+        import re
+
+        script = client.get("/new/install.sh").text
+        assert re.search(r"install youam\b", script)
+        assert not re.search(r"(?<!un)install uam\b", script)
+
     def test_install_sh_returns_full_script(self, client):
         """Installer returns 200 text/plain with expected content markers."""
         resp = client.get("/new/install.sh")

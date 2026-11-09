@@ -125,12 +125,24 @@ async def viral_installer(request: Request):
         # -----------------------------------------------------------------
         # Install UAM CLI if missing
         # -----------------------------------------------------------------
+        # The package is youam.  The name "uam" on PyPI is an unrelated project,
+        # so a uam command that isn't ours must never be run or built upon.
+        uam_is_ours() {{
+            uam --help 2>/dev/null | grep -q "Universal Agent Messaging"
+        }}
+
+        if command -v uam >/dev/null 2>&1 && ! uam_is_ours; then
+            printf "ERROR: A different program named uam is installed.\\n"
+            printf "Remove it (pip3 uninstall uam), then run this again.\\n"
+            exit 1
+        fi
+
         if ! command -v uam >/dev/null 2>&1; then
             printf "  Installing UAM CLI...\\n"
-            $PIP_CMD install uam >/dev/null 2>&1 || true
-            if ! command -v uam >/dev/null 2>&1; then
+            $PIP_CMD install youam >/dev/null 2>&1 || true
+            if ! command -v uam >/dev/null 2>&1 || ! uam_is_ours; then
                 printf "ERROR: Failed to install UAM CLI.\\n"
-                printf "Try manually: pip3 install uam\\n"
+                printf "Try manually: pip3 install youam\\n"
                 exit 1
             fi
             printf "  UAM CLI installed.\\n"
