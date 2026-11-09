@@ -12,14 +12,31 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from uam.protocol.errors import SendRefusedError
 from uam.sdk.transport.websocket import WebSocketTransport
 
 
 @pytest.fixture()
-def transport():
+def transport(monkeypatch):
+    # These tests answer after send() returns: don't let send() wait for it.
+    monkeypatch.setattr("uam.sdk.transport.websocket.ACK_TIMEOUT_SECONDS", 0.01)
     transport = WebSocketTransport("ws://relay.test/ws", "a-token")
     transport._ws = AsyncMock()
     return transport
+
+
+@pytest.fixture()
+def waiting_transport():
+    """A transport whose send() waits for the relay's answer, as in use."""
+    transport = WebSocketTransport("ws://relay.test/ws", "a-token")
+    transport._ws = AsyncMock()
+    return transport
+
+
+async def _sending(transport, message_id="m1") -> asyncio.Task:
+    task = asyncio.create_task(transport.send({"message_id": message_id}))
+    await asyncio.sleep(0.01)
+    return task
 
 
 async def _closing(transport) -> asyncio.Task:
@@ -93,3 +110,61 @@ async def test_an_envelope_is_never_read_as_the_relay_s_answer(transport, frame)
 
     assert transport._unanswered == 1
     assert await transport.receive() == [frame]
+
+
+# -- send() returns the relay's answer (A2a) ----------------------------------
+
+
+async def test_send_returns_the_ack_for_its_message(waiting_transport):
+    sending = await _sending(waiting_transport)
+
+    # Another message's ack is not this one's answer
+    await waiting_transport._handle_message({"type": "ack", "message_id": "m0", "status": "stored"})
+    assert not sending.done()
+
+    ack = {"type": "ack", "message_id": "m1", "status": "stored", "delivered": False}
+    await waiting_transport._handle_message(ack)
+    assert await asyncio.wait_for(sending, 0.5) == ack
+
+
+async def test_an_error_naming_the_message_refuses_the_send(waiting_transport):
+    sending = await _sending(waiting_transport)
+
+    await waiting_transport._handle_message(
+        {"error": "rate_limited", "detail": "slow down", "message_id": "m1"}
+    )
+
+    with pytest.raises(SendRefusedError) as refused:
+        await asyncio.wait_for(sending, 0.5)
+    assert refused.value.code == "rate_limited"
+    assert refused.value.message_id == "m1"
+
+
+async def test_no_answer_in_time_is_none(waiting_transport, monkeypatch):
+    monkeypatch.setattr("uam.sdk.transport.websocket.ACK_TIMEOUT_SECONDS", 0.05)
+    # An old relay's error names no message: it can't settle the send
+    sending = await _sending(waiting_transport)
+    await waiting_transport._handle_message({"error": "rate_limited", "detail": "x"})
+
+    assert await asyncio.wait_for(sending, 0.5) is None
+    assert waiting_transport._waiting == {}
+
+
+async def test_a_lost_socket_ends_the_wait(waiting_transport):
+    sending = await _sending(waiting_transport)
+
+    waiting_transport._abandon_waiting()
+
+    assert await asyncio.wait_for(sending, 0.5) is None
+
+
+async def test_a_send_from_the_reader_loop_does_not_wait(waiting_transport):
+    """An on_message callback runs in the loop that reads answers: a send
+    from it (a handshake accept) must not wait for an answer it blocks."""
+
+    async def reader():
+        return await waiting_transport.send({"message_id": "m1"})
+
+    # Named as the reader before it first runs
+    waiting_transport._listen_task = task = asyncio.create_task(reader())
+    assert await asyncio.wait_for(task, 0.5) is None

@@ -110,3 +110,17 @@ class UnknownFieldError(ProtocolError):
     Forward-compat: callers who want lenient parsing should catch this and
     treat unknown fields as opaque pass-through.
     """
+
+
+class SendRefusedError(UAMError):
+    """The relay refused a message sent over WebSocket.
+
+    ``code`` is the relay's error code (e.g. ``"rate_limited"``), ``detail``
+    its explanation.  Over HTTP the same refusal is an ``httpx.HTTPStatusError``.
+    """
+
+    def __init__(self, message_id: str, code: str, detail: str | None = None) -> None:
+        super().__init__(f"Relay refused message {message_id}: [{code}] {detail or ''}".rstrip())
+        self.message_id = message_id
+        self.code = code
+        self.detail = detail

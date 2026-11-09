@@ -17,7 +17,6 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,7 +24,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from uam import __version__
 from uam.relay.config import Settings
 from uam.relay.connections import ConnectionManager
-from uam.relay.policy import is_receipt, parse_expires
+from uam.relay.policy import parse_expires
+from uam.relay.receipts import delivery_receipt, wants_delivery_receipt
 from uam.relay.webhook_validator import async_validate_webhook_url
 
 from uam.db.crud.agents import get_agent_by_address
@@ -399,15 +399,12 @@ class WebhookDeliveryService:
                 if (
                     self._manager
                     and original_from
-                    and not is_receipt(envelope_dict.get("type"))
+                    and wants_delivery_receipt(envelope_dict.get("type"))
                 ):
-                    receipt = {
-                        "type": "receipt.delivered",
-                        "message_id": envelope_dict.get("message_id", ""),
-                        "timestamp": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
-                        "to": address,
-                    }
-                    await self._manager.send_to(original_from, receipt)
+                    await self._manager.send_to(
+                        original_from,
+                        delivery_receipt(envelope_dict.get("message_id", ""), address),
+                    )
 
                 return
 

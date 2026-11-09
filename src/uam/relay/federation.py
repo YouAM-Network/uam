@@ -58,6 +58,30 @@ class ForwardResult:
     delivered: bool
     queued: bool = False
     error: str | None = None
+    # When the peer accepted it (delivered=True): "delivered" or "stored" as
+    # the peer reported them, else "relayed" (see peer_send_status).
+    status: str | None = None
+
+
+def peer_send_status(resp: Any) -> str:
+    """What a peer relay's 2xx answer says happened to the message.
+
+    Only a peer that sends ``status_version`` means its ``status``; earlier
+    relays answered "delivered" for stored mail too, so their 2xx is "relayed".
+    A peer's "duplicate" means it already holds the message: "stored".
+    """
+    try:
+        body = resp.json()
+    except Exception:
+        return "relayed"
+    if not isinstance(body, dict) or not body.get("status_version"):
+        return "relayed"
+    status = body.get("status")
+    if status == "delivered":
+        return "delivered"
+    if status in ("stored", "duplicate"):
+        return "stored"
+    return "relayed"
 
 
 class FederationService:
@@ -457,7 +481,7 @@ class FederationService:
                         hop_count + 1,
                         "delivered",
                     )
-                return ForwardResult(delivered=True)
+                return ForwardResult(delivered=True, status=peer_send_status(resp))
             else:
                 error_detail = f"HTTP {resp.status_code}: {resp.text[:200]}"
                 async with factory() as session:
@@ -521,7 +545,8 @@ async def forward_to_peer(
 ) -> str:
     """Forward an envelope to its home relay; the retry loop finishes the job (FED-10).
 
-    Returns ``"federated"`` or ``"federation_queued"``.  Commits the caller's
+    Returns the send status: "delivered", "stored" or "relayed" as the peer
+    answered (see ``peer_send_status``), or "queued".  Commits the caller's
     transaction first: the queue row must survive a crash, and the forward can
     take 30 seconds and writes its own log rows.
     """
@@ -544,11 +569,12 @@ async def forward_to_peer(
         )
     except Exception:
         logger.exception("Forward to %s failed; the retry loop has it", to_address)
-        return "federation_queued"
+        return "queued"
     if not result.delivered:
-        return "federation_queued"
+        return "queued"
     await update_queue_entry(session, entry_id, "delivered")
-    return "federated"
+    status = getattr(result, "status", None)
+    return status if status in ("delivered", "stored", "relayed") else "relayed"
 
 
 async def retry_pending_federation(factory: Any, service: Any, settings: Any) -> None:

@@ -348,6 +348,7 @@ class FederationNonce(SQLModel, table=True):
             DateTime(timezone=True),
             server_default=func.now(),
             nullable=False,
+            index=True,  # ix_federation_nonces_seen_at (migration 0004): the sweep
         ),
     )
 

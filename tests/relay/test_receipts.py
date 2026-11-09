@@ -400,7 +400,12 @@ class TestUnboundReceipts:
             ws.send_json(receipt)
             ack = ws.receive_json()
 
-        assert ack == {"type": "ack", "message_id": receipt["message_id"], "delivered": False}
+        assert ack == {
+            "type": "ack",
+            "message_id": receipt["message_id"],
+            "status": "dropped",
+            "delivered": False,
+        }
         assert _inbox_ids(client, bob) == []
 
 

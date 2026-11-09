@@ -8,7 +8,66 @@ explicitly extract .content before passing it to LLM context.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Any, Optional
+
+#: What the relay said about a sent message (relay/receipts.py), plus two of
+#: the SDK's own: "accepted" (the relay took it but reports no status: before
+#: 1.1) and "unknown" (no answer in time over WebSocket; it may have arrived).
+SEND_STATUSES = (
+    "delivered",
+    "stored",
+    "relayed",
+    "queued",
+    "duplicate",
+    "dropped",
+    "accepted",
+    "unknown",
+)
+
+
+class SendResult(str):
+    """The message id ``Agent.send()`` returns, with what the relay said.
+
+    A ``str`` subclass, so code that treats the result as the message id keeps
+    working.  ``status`` is one of SEND_STATUSES; ``delivered`` is True only
+    when the relay says the recipient has it.
+    """
+
+    status: str
+
+    def __new__(cls, message_id: str, status: str = "accepted") -> "SendResult":
+        obj = super().__new__(cls, message_id)
+        obj.status = status
+        return obj
+
+    @property
+    def message_id(self) -> str:
+        return str(self)
+
+    @property
+    def delivered(self) -> bool:
+        return self.status == "delivered"
+
+    def __repr__(self) -> str:
+        return f"SendResult({str(self)!r}, status={self.status!r})"
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (SendResult, (str(self), self.status))
+
+
+def send_status(answer: Any) -> str:
+    """The status in a relay's answer to a send (HTTP body or WS ack).
+
+    ``None`` (no answer in time) is "unknown".  An answer without a known
+    ``status`` comes from a relay before 1.1: "accepted".
+    """
+    if answer is None:
+        return "unknown"
+    status = answer.get("status") if isinstance(answer, dict) else None
+    if status in SEND_STATUSES and status not in ("accepted", "unknown"):
+        return status
+    return "accepted"
 
 
 @dataclass(frozen=True)
@@ -30,6 +89,23 @@ class ReceivedMessage:
     reply_to: Optional[str] = None
     media_type: Optional[str] = None
     verified: bool = True  # Signature was valid
+    # When the recipient's relay received it (relay_meta), or, without a
+    # stamp this SDK trusts, when this SDK received it.  ISO 8601, UTC.
+    received_at: Optional[str] = None
+
+    @property
+    def age_seconds(self) -> Optional[float]:
+        """Seconds between the sender signing it and now; None if unknown.
+
+        Mail can wait on a relay for days: show the age to whoever reads it.
+        """
+        try:
+            signed = datetime.fromisoformat(self.timestamp.replace("Z", "+00:00"))
+        except (AttributeError, TypeError, ValueError):
+            return None
+        if signed.tzinfo is None:
+            signed = signed.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - signed).total_seconds())
 
     def __str__(self) -> str:
         """Human-readable summary, NOT the content itself.

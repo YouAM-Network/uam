@@ -19,6 +19,7 @@ from uam.protocol import (
     serialize_verify_key,
     to_wire_dict,
 )
+from uam.relay.federation import ForwardResult
 from uam.relay.policy import parse_expires
 from uam.relay.rate_limit import SlidingWindowCounter
 
@@ -129,14 +130,20 @@ def test_mail_for_another_relay_is_refused_when_federation_is_off(
 
 
 @pytest.mark.parametrize(
-    ("result", "delivered"), [("delivered", True), ("queued", False)]
+    ("result", "status", "peer_status"),
+    [
+        ("delivered", "delivered", "delivered"),
+        ("delivered", "stored", "stored"),
+        ("delivered", "relayed", None),
+        ("queued", "queued", None),
+    ],
 )
 def test_ws_mail_for_another_relay_is_forwarded(
-    client, app, registered_agent_pair, make_envelope, monkeypatch, result, delivered
+    client, app, registered_agent_pair, make_envelope, monkeypatch, result, status, peer_status
 ):
     alice, bob = registered_agent_pair
     forward = AsyncMock(
-        return_value=AsyncMock(delivered=result == "delivered", queued=result == "queued")
+        return_value=ForwardResult(delivered=result == "delivered", status=peer_status)
     )
     app.state.federation_service = AsyncMock(forward=forward)
     monkeypatch.setattr(app.state.settings, "federation_enabled", True)
@@ -144,7 +151,12 @@ def test_ws_mail_for_another_relay_is_forwarded(
 
     reply = _ws_exchange(client, alice, wire)
 
-    assert reply == {"type": "ack", "message_id": wire["message_id"], "delivered": delivered}
+    assert reply == {
+        "type": "ack",
+        "message_id": wire["message_id"],
+        "status": status,
+        "delivered": status == "delivered",
+    }
     forward.assert_awaited_once()
 
 

@@ -93,8 +93,15 @@ class SendRequest(BaseModel):
         return self
 
 
+#: One of uam.relay.receipts.SEND_STATUSES (kept literal here so the OpenAPI
+#: schema lists them).
+SendStatus = Literal["delivered", "stored", "relayed", "queued", "duplicate", "dropped"]
+
+
 class SendResponse(BaseModel):
     message_id: Annotated[str, Field(max_length=64, pattern=_ID_PATTERN)]
+    status: SendStatus
+    # Kept for clients before 1.1: True only when status is "delivered".
     delivered: bool
 
 
@@ -448,8 +455,12 @@ class FederationDeliverRequest(BaseModel):
 
 
 class FederationDeliverResponse(BaseModel):
-    status: Annotated[str, Field(max_length=32)]  # "delivered" | "queued" | "rejected"
+    # "delivered" | "stored" | "relayed" | "duplicate" | "dropped" (see
+    # uam.relay.receipts.SEND_STATUSES).  Relays before 1.1 sent no
+    # status_version and answered "delivered" for stored mail too.
+    status: Annotated[str, Field(max_length=32)]
     detail: Annotated[str | None, Field(default=None, max_length=512)] = None
+    status_version: int | None = None
 
 
 class WellKnownRelayResponse(BaseModel):

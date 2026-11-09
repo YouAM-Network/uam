@@ -315,7 +315,8 @@ def send(ctx: click.Context, address: str, message: str) -> None:
         agent.connect_sync()
         msg_id = agent.send_sync(address, message)
         agent.close_sync()
-        click.echo(f"Message sent to {address} (id: {msg_id})")
+        status = getattr(msg_id, "status", "accepted")
+        click.echo(f"Message to {address}: {status} (id: {msg_id})")
     except UAMError as exc:
         _error(f"Error: {exc}")
     except RuntimeError as exc:
@@ -325,6 +326,18 @@ def send(ctx: click.Context, address: str, message: str) -> None:
 # ---------------------------------------------------------------------------
 # uam inbox (CLI-03)
 # ---------------------------------------------------------------------------
+
+
+def _age_text(seconds: float) -> str:
+    """'3 h 12 min', '2 d 4 h': rough, for a person reading the inbox."""
+    minutes = int(seconds // 60)
+    if minutes < 60:
+        return f"{minutes} min"
+    hours, minutes = divmod(minutes, 60)
+    if hours < 24:
+        return f"{hours} h {minutes} min"
+    days, hours = divmod(hours, 24)
+    return f"{days} d {hours} h"
 
 
 @cli.command()
@@ -349,6 +362,9 @@ def inbox(ctx: click.Context, limit: int) -> None:
         for msg in messages:
             click.echo(f"From: {msg.from_address}")
             click.echo(f"Time: {msg.timestamp}")
+            age = msg.age_seconds
+            if age is not None and age > 300:
+                click.echo(f"Age:  {_age_text(age)} (waited on the relay)")
             click.echo("---")
             click.echo(msg.content)
             click.echo()

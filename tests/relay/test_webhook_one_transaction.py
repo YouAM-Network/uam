@@ -114,7 +114,9 @@ def test_http_send_to_a_webhook_recipient(
     )
 
     assert resp.status_code == 200, resp.text
-    assert resp.json()["delivered"] is True
+    # Started, not confirmed: the webhook's receipt.delivered confirms it
+    assert resp.json()["status"] == "relayed"
+    assert resp.json()["delivered"] is False
     post = receiver.wait_for_post()
     assert post["url"] == WEBHOOK_URL
     assert post["deliveries"] == 1  # committed before the POST went out
@@ -135,7 +137,8 @@ def test_websocket_send_to_a_webhook_recipient(
         ack = ws.receive_json()
 
     assert ack["type"] == "ack"
-    assert ack["delivered"] is True
+    assert ack["status"] == "relayed"
+    assert ack["delivered"] is False
     assert receiver.wait_for_post()["deliveries"] == 1
 
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +20,7 @@ from uam.protocol import (
 )
 from uam.relay.auth import verify_token_http
 from uam.relay.federation import forward_to_peer
+from uam.relay.receipts import delivery_receipt, wants_delivery_receipt
 from uam.relay.models import SendRequest, SendResponse
 from uam.relay.policy import (
     DeliveryDenied,
@@ -101,7 +101,9 @@ async def send_message(
                 await charge_duplicate(request.app.state, agent["address"], receipt=receipt)
             except DeliveryDenied as denied:
                 raise HTTPException(status_code=denied.status, detail=denied.detail) from denied
-            return SendResponse(message_id=envelope.message_id, delivered=True)
+            return SendResponse(
+                message_id=envelope.message_id, status="duplicate", delivered=False
+            )
 
         try:
             clearance = await authorize_delivery(request.app.state, envelope, session)
@@ -118,12 +120,14 @@ async def send_message(
         if not clearance.deliver:
             # A receipt past its bucket: accepted, not delivered (relay/policy.py)
             await session.rollback()
-            return SendResponse(message_id=envelope.message_id, delivered=False)
+            return SendResponse(
+                message_id=envelope.message_id, status="dropped", delivered=False
+            )
 
         # Three-tier delivery chain: WebSocket > webhook > store-and-forward (HOOK-02)
         # Tier 1: WebSocket (real-time)
         delivered = await manager.send_to(envelope.to_address, wire)
-        delivery_method = "websocket" if delivered else None
+        status = "delivered" if delivered else None
         start_webhook = None
 
         if not delivered:
@@ -133,13 +137,14 @@ async def send_message(
                 session, envelope.to_address, wire
             )
             if start_webhook is not None:
-                delivery_method = "webhook"
-                delivered = True  # webhook delivery initiated (async)
+                # Started, not confirmed: the webhook service sends the
+                # receipt.delivered once the recipient's endpoint accepts it.
+                status = "relayed"
 
-        if delivery_method is None:
+        if status is None:
             if goes_to_peer(request.app.state, envelope.to_address):
                 # Step 12: Federation forwarding for non-local recipients (FED-01)
-                delivery_method = await forward_to_peer(
+                status = await forward_to_peer(
                     request.app.state, session, envelope.to_address, wire
                 )
             else:
@@ -150,7 +155,7 @@ async def send_message(
                     expires_at=clearance.expires_at,
                     commit=False,
                 )
-                delivery_method = "stored"
+                status = "stored"
 
         # Single commit for all DB mutations in this request
         await session.commit()
@@ -164,17 +169,14 @@ async def send_message(
         await session.rollback()
         raise
 
-    delivered_flag = delivery_method not in ("stored", "federation_queued")
-
-    # Generate receipt.delivered for the sender (MSG-05 anti-loop guard)
+    # receipt.delivered only for mail that reached the recipient (receipts.py).
     # A webhook's receipt comes from the webhook service, once it succeeds.
-    if delivered_flag and not receipt and delivery_method != "webhook":
-        receipt = {
-            "type": "receipt.delivered",
-            "message_id": envelope.message_id,
-            "timestamp": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
-            "to": envelope.to_address,
-        }
-        await manager.send_to(envelope.from_address, receipt)
+    if status == "delivered" and wants_delivery_receipt(envelope.type):
+        await manager.send_to(
+            envelope.from_address,
+            delivery_receipt(envelope.message_id, envelope.to_address),
+        )
 
-    return SendResponse(message_id=envelope.message_id, delivered=delivered_flag)
+    return SendResponse(
+        message_id=envelope.message_id, status=status, delivered=status == "delivered"
+    )

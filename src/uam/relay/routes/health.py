@@ -14,6 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from uam import __version__
+from uam.relay.receipts import SEND_STATUS_FEATURE
 from uam.relay.relay_meta import FEATURE as RELAY_META_FEATURE
 from uam.db.session import get_session
 from uam.protocol.types import UAM_VERSION
@@ -23,7 +24,7 @@ from uam.relay.routes.admin import verify_admin_key
 
 router = APIRouter()
 
-RELAY_FEATURES: tuple[str, ...] = (RELAY_META_FEATURE,)
+RELAY_FEATURES: tuple[str, ...] = (RELAY_META_FEATURE, SEND_STATUS_FEATURE)
 
 
 @router.get("/health", response_model=HealthResponse)

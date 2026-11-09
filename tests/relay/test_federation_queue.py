@@ -95,5 +95,5 @@ def test_a_forward_that_raises_leaves_the_send_queued(client, app, registered_ag
         async with factory() as session:
             return await forward_to_peer(app.state, session, "x::peer.example", {"to": "x::peer.example"})
 
-    assert client.portal.call(run) == "federation_queued"
+    assert client.portal.call(run) == "queued"
     assert _rows(client) == [("pending", 0)]

@@ -175,8 +175,9 @@ class TestThreeTierWebhookFallback:
                 )
                 assert resp.status_code == 200
                 data = resp.json()
-                # delivered=True because webhook delivery was initiated
-                assert data["delivered"] is True
+                # A webhook delivery was started, not confirmed: "relayed"
+                assert data["status"] == "relayed"
+                assert data["delivered"] is False
 
                 # Give the background task a moment to execute
                 import time

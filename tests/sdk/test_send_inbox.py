@@ -377,3 +377,62 @@ async def test_first_send_initiates_handshake(tmp_path, monkeypatch):
         )
     finally:
         await agent._contact_book.close()
+
+
+# ===========================================================================
+# A2a: Agent.send() reports what the relay said
+# ===========================================================================
+
+
+@pytest.mark.parametrize(
+    ("answer", "status"),
+    [
+        ({"message_id": "x", "status": "stored", "delivered": False}, "stored"),
+        ({"message_id": "x", "status": "delivered", "delivered": True}, "delivered"),
+        ({"message_id": "x", "delivered": True}, "accepted"),  # relay before 1.1
+        (None, "unknown"),  # no WebSocket ack in time
+    ],
+)
+async def test_send_returns_the_relay_status(tmp_path, monkeypatch, answer, status):
+    from unittest.mock import AsyncMock
+
+    from uam.sdk.message import SendResult
+
+    monkeypatch.setenv("UAM_HOME", str(tmp_path / "uam_home"))
+    _, vk_b = generate_keypair()
+
+    agent = Agent(
+        "alice",
+        relay="http://testserver",
+        key_dir=str(tmp_path / "keys"),
+        auto_register=False,
+        transport="http",
+    )
+    agent._key_manager.load_or_generate("alice")
+    agent._address = "alice::test.local"
+    agent._token = "test-token"
+
+    sent: list[dict] = []
+
+    async def _send(wire):
+        sent.append(wire)
+        return answer
+
+    agent._transport = AsyncMock()
+    agent._transport.send = _send
+    agent._resolver = AsyncMock()
+    agent._resolver.resolve_public_key = AsyncMock(return_value=serialize_verify_key(vk_b))
+    agent._get_relay_urls = AsyncMock(return_value=None)
+
+    await agent._contact_book.open()
+    agent._connected = True
+    try:
+        result = await agent.send("bob::test.local", "hello")
+    finally:
+        await agent._contact_book.close()
+
+    assert isinstance(result, SendResult)
+    assert result == sent[-1]["message_id"]
+    assert sent[-1]["type"] == MessageType.MESSAGE.value
+    assert result.status == status
+    assert result.delivered is (status == "delivered")

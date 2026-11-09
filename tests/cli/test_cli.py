@@ -326,7 +326,9 @@ def test_send_success(runner: CliRunner, uam_home: Path):
 
     with patch("uam.cli.main.Agent") as MockAgent:
         instance = MagicMock()
-        instance.send_sync.return_value = "msg-123-abc"
+        from uam.sdk.message import SendResult
+
+        instance.send_sync.return_value = SendResult("msg-123-abc", "stored")
         MockAgent.return_value = instance
 
         result = runner.invoke(
@@ -338,6 +340,7 @@ def test_send_success(runner: CliRunner, uam_home: Path):
     assert result.exit_code == 0
     assert "msg-123-abc" in result.output
     assert "bob::youam.network" in result.output
+    assert "stored" in result.output
     instance.connect_sync.assert_called_once()
     instance.send_sync.assert_called_once_with("bob::youam.network", "hello bob")
 
@@ -349,31 +352,45 @@ def test_send_success(runner: CliRunner, uam_home: Path):
 
 def test_inbox_success(runner: CliRunner, uam_home: Path):
     """inbox with mocked messages displays them correctly."""
-    key_dir = uam_home / "keys"
-    key_dir.mkdir(parents=True)
-    km = KeyManager(key_dir)
-    km.load_or_generate("testagent")
-
-    mock_msg = MagicMock()
-    mock_msg.from_address = "alice::youam.network"
-    mock_msg.timestamp = "2026-02-20T10:30:00Z"
-    mock_msg.content = "Hello, how are you?"
-
-    with patch("uam.cli.main.Agent") as MockAgent:
-        instance = MagicMock()
-        instance.inbox_sync.return_value = [mock_msg]
-        MockAgent.return_value = instance
-
-        result = runner.invoke(
-            cli,
-            ["inbox"],
-            env={"UAM_HOME": str(uam_home)},
-        )
+    result = _inbox_with(runner, uam_home, "2026-02-20T10:30:00Z")
 
     assert result.exit_code == 0
     assert "alice::youam.network" in result.output
     assert "2026-02-20T10:30:00Z" in result.output
     assert "Hello, how are you?" in result.output
+    assert "(waited on the relay)" in result.output  # signed months ago
+
+
+def test_inbox_shows_no_age_for_fresh_mail(runner: CliRunner, uam_home: Path):
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    result = _inbox_with(runner, uam_home, now)
+
+    assert result.exit_code == 0
+    assert "Age:" not in result.output
+
+
+def _inbox_with(runner: CliRunner, uam_home: Path, timestamp: str):
+    from uam.sdk.message import ReceivedMessage
+
+    key_dir = uam_home / "keys"
+    key_dir.mkdir(parents=True)
+    KeyManager(key_dir).load_or_generate("testagent")
+
+    msg = ReceivedMessage(
+        message_id="m1",
+        from_address="alice::youam.network",
+        to_address="testagent::youam.network",
+        content="Hello, how are you?",
+        timestamp=timestamp,
+        type="message",
+    )
+    with patch("uam.cli.main.Agent") as MockAgent:
+        instance = MagicMock()
+        instance.inbox_sync.return_value = [msg]
+        MockAgent.return_value = instance
+        return runner.invoke(cli, ["inbox"], env={"UAM_HOME": str(uam_home)})
 
 
 # ---------------------------------------------------------------------------

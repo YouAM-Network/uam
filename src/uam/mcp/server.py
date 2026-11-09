@@ -232,8 +232,10 @@ async def uam_send(
     """
     try:
         agent = await _get_agent()
-        message_id = await agent.send(to_address, message, thread_id=thread_id)
-        return _ok_envelope({"message_id": str(message_id)})
+        result = await agent.send(to_address, message, thread_id=thread_id)
+        return _ok_envelope(
+            {"message_id": str(result), "status": getattr(result, "status", "accepted")}
+        )
     except Exception as exc:
         return _error_envelope(exc)
 
@@ -253,7 +255,11 @@ async def uam_inbox(limit: int = 50) -> dict[str, Any]:
                                    "to_address": ..., "content": ...,
                                    "timestamp": ..., "type": ...,
                                    "thread_id": ..., "reply_to": ...,
-                                   "media_type": ..., "verified": ...}, ...]}
+                                   "media_type": ..., "verified": ...,
+                                   "received_at": ..., "age_seconds": ...}, ...]}
+
+        ``age_seconds`` is how long ago the sender signed it: mail can wait
+        on a relay for days.
 
         Empty inbox: ``{"ok": True, "data": []}``.
 
@@ -274,6 +280,8 @@ async def uam_inbox(limit: int = 50) -> dict[str, Any]:
                 "reply_to": msg.reply_to,
                 "media_type": msg.media_type,
                 "verified": msg.verified,
+                "received_at": msg.received_at,
+                "age_seconds": None if msg.age_seconds is None else int(msg.age_seconds),
             }
             for msg in messages
         ]

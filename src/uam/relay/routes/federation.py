@@ -37,6 +37,7 @@ from uam.relay.models import (
 )
 from uam.relay.peer_key_cache import peer_key_cache
 from uam.relay.policy import DeliveryDenied, authorize_delivery
+from uam.relay.receipts import FEDERATION_STATUS_VERSION
 from uam.relay.relay_auth import verify_federation_signature
 from uam.relay.relay_meta import peer_received_at, stamp
 from uam.relay.ssrf import (
@@ -316,7 +317,11 @@ async def federation_deliver(
         await session.commit()
         is_new = await record_message_id(session, envelope.message_id, envelope.from_address, commit=False)
         if not is_new:
-            return FederationDeliverResponse(status="duplicate", detail="Message already delivered")
+            return FederationDeliverResponse(
+                status="duplicate",
+                detail="Message already received",
+                status_version=FEDERATION_STATUS_VERSION,
+            )
 
     except HTTPException:
         # Record reputation failure for the source relay (FED-08)
@@ -343,7 +348,11 @@ async def federation_deliver(
             # A receipt past its bucket: accepted, not delivered (relay/policy.py).
             # The nonce must survive, or the request could be replayed.
             await session.commit()
-            return FederationDeliverResponse(status="dropped", detail="Receipt not delivered")
+            return FederationDeliverResponse(
+                status="dropped",
+                detail="Receipt not delivered",
+                status_version=FEDERATION_STATUS_VERSION,
+            )
 
         # ---- Step 8.6: relay_meta ----
         # Keep the origin relay's receive time when it vouches for it in
@@ -358,7 +367,7 @@ async def federation_deliver(
 
         # ---- Step 9: Deliver (WebSocket > webhook > store) ----
         delivered = await manager.send_to(envelope.to_address, envelope_dict)
-        delivery_method = "websocket" if delivered else None
+        delivery_method = "delivered" if delivered else None
         start_webhook = None
 
         if not delivered:
@@ -368,8 +377,7 @@ async def federation_deliver(
                 session, envelope.to_address, envelope_dict
             )
             if start_webhook is not None:
-                delivery_method = "webhook"
-                delivered = True
+                delivery_method = "relayed"
 
         if delivery_method is None:
             # Store for later pickup
@@ -409,7 +417,9 @@ async def federation_deliver(
     if relay_reputation:
         await relay_reputation.record_success(from_relay)
 
-    return FederationDeliverResponse(status="delivered")
+    return FederationDeliverResponse(
+        status=delivery_method, status_version=FEDERATION_STATUS_VERSION
+    )
 
 
 @well_known_router.get(

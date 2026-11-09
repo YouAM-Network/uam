@@ -44,7 +44,8 @@ from uam.protocol.types import MAX_ENVELOPE_AGE
 from uam.sdk.freshness import RELAY_META_FEATURE, relay_vouches
 from uam.sdk.config import SDKConfig
 from uam.sdk.key_manager import KeyManager
-from uam.sdk.message import ReceivedMessage
+from uam.sdk.message import ReceivedMessage, SendResult, send_status
+from uam.sdk.transport.http import relay_answer
 from uam.sdk.contact_book import ContactBook
 from uam.sdk.handshake import HandshakeManager
 from uam.sdk.replay_cache import PersistentReplayCache
@@ -245,8 +246,14 @@ class Agent:
         *,
         thread_id: str | None = None,
         attachments: list[dict] | None = None,
-    ) -> str:
-        """Send an encrypted, signed message.  Returns the message_id.
+    ) -> SendResult:
+        """Send an encrypted, signed message.
+
+        Returns a ``SendResult``: the message_id (a ``str``) with ``.status``,
+        what the relay said happened to it (``"delivered"``, ``"stored"``,
+        ``"relayed"``, ``"queued"``, ``"duplicate"``; ``"accepted"`` from a
+        relay before 1.1; ``"unknown"`` when a WebSocket answer didn't come in
+        time).  Raises when the relay refuses it.
 
         Steps:
           1. Ensure connected
@@ -316,14 +323,14 @@ class Agent:
             and relay_urls[0] == self._config.relay_url
         ):
             # Same relay -- use existing transport (no failover overhead)
-            await self._transport.send(wire)
+            answer = await self._transport.send(wire)
         elif relay_urls is not None and len(relay_urls) > 0:
             # Multi-relay or cross-relay: try each in order
-            await self._try_send_with_failover(wire, relay_urls)
+            answer = await self._try_send_with_failover(wire, relay_urls)
         else:
             # No relay info -- fall back to own transport
-            await self._transport.send(wire)
-        return envelope.message_id
+            answer = await self._transport.send(wire)
+        return SendResult(envelope.message_id, send_status(answer))
 
     async def inbox(self, limit: int = 50) -> list[ReceivedMessage]:
         """Retrieve, decrypt, and verify pending messages.
@@ -512,7 +519,7 @@ class Agent:
 
     # -- Sync wrappers (SDK-04) ---------------------------------------------
 
-    def send_sync(self, to_address: str, message: str, **kwargs) -> str:
+    def send_sync(self, to_address: str, message: str, **kwargs) -> SendResult:
         """Synchronous wrapper for send()."""
         return _run_sync(self.send(to_address, message, **kwargs))
 
@@ -570,7 +577,7 @@ class Agent:
         self,
         wire: dict,
         relay_urls: list[str],
-    ) -> None:
+    ) -> dict:
         """Try sending *wire* envelope to each relay URL in order (CARD-06).
 
         Uses transient ``httpx`` POST requests (not the agent's persistent
@@ -601,7 +608,7 @@ class Agent:
                     )
                     resp.raise_for_status()
                 logger.debug("Sent envelope via relay %s", url)
-                return
+                return relay_answer(resp)
             except (
                 httpx.ConnectError,
                 httpx.ConnectTimeout,
@@ -866,6 +873,14 @@ class Agent:
         ):
             return await self._handshake.handle_inbound(self, envelope, sender_vk)
 
+        # Receipts are bookkeeping between SDKs, never a message for whoever
+        # reads the inbox (an LLM, through MCP).
+        if envelope.type.startswith("receipt."):
+            logger.debug(
+                "%s for %s from %s", envelope.type, envelope.reply_to, envelope.from_address
+            )
+            return None
+
         # For non-auto-accept policies, filter messages from unapproved senders (HAND-01, CARD-05, TOFU)
         if self._handshake._trust_policy != "auto-accept":
             trust = await self._contact_book.get_trust_state(envelope.from_address)
@@ -905,6 +920,22 @@ class Agent:
             reply_to=envelope.reply_to,
             media_type=envelope.media_type,
             verified=True,
+            received_at=self._received_at(raw, envelope.to_address),
+        )
+
+    def _received_at(self, raw: dict, to_address: str) -> str:
+        """When our relay received *raw*, if it stamped it and we know it
+        stamps mail (so a sender can't have); else now."""
+        meta = raw.get("relay_meta")
+        if (
+            self._relay_stamps
+            and isinstance(meta, dict)
+            and meta.get("relay") == to_address.rsplit("::", 1)[-1]
+            and isinstance(meta.get("received_at"), str)
+        ):
+            return meta["received_at"]
+        return (
+            datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         )
 
     async def _sweep_expired_handshakes(self) -> None:

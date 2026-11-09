@@ -23,8 +23,12 @@ class TransportBase(abc.ABC):
         """Close the connection."""
 
     @abc.abstractmethod
-    async def send(self, envelope: dict[str, Any]) -> None:
-        """Send a message envelope to the relay."""
+    async def send(self, envelope: dict[str, Any]) -> dict[str, Any] | None:
+        """Send a message envelope to the relay.
+
+        Returns the relay's answer (``{"status": ..., ...}``), or None when
+        none came in time.  A refusal raises.
+        """
 
     @abc.abstractmethod
     async def receive(self, limit: int = 50) -> list[dict[str, Any]]:

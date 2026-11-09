@@ -21,6 +21,7 @@ from uam.protocol.errors import IncompatibleVersionError
 from uam.relay.auth import verify_token_ws
 from uam.relay.connections import ConnectionManager, LockedWebSocket
 from uam.relay.federation import forward_to_peer
+from uam.relay.receipts import delivery_receipt, wants_delivery_receipt
 from uam.relay.models import check_envelope_size
 from uam.relay.policy import (
     DeliveryDenied,
@@ -77,16 +78,13 @@ async def _deliver_stored_messages(
                 break
             ids.append(msg.id)
 
-            # Send receipt.delivered to the original sender (MSG-05 anti-loop guard)
+            # Send receipt.delivered to the original sender (receipts.py)
             original_from = envelope_data.get("from", "")
-            if original_from and not is_receipt(envelope_data.get("type")):
-                receipt = {
-                    "type": "receipt.delivered",
-                    "message_id": envelope_data.get("message_id", ""),
-                    "timestamp": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
-                    "to": address,
-                }
-                await manager.send_to(original_from, receipt)
+            if original_from and wants_delivery_receipt(envelope_data.get("type")):
+                await manager.send_to(
+                    original_from,
+                    delivery_receipt(envelope_data.get("message_id", ""), address),
+                )
 
         if ids:
             async with factory() as session:
@@ -103,6 +101,32 @@ async def _record_last_seen(address: str, factory) -> None:
             await update_agent(session, address, last_seen=datetime.now(timezone.utc))
     except Exception:
         logger.debug("Failed to update last_seen for %s on disconnect", address)
+
+
+def _sent_id(raw: dict) -> str | None:
+    """The message_id a client's frame names, if it is a plausible one."""
+    mid = raw.get("message_id")
+    return mid if isinstance(mid, str) and 0 < len(mid) <= 64 else None
+
+
+async def _ack(ws, message_id: str, status: str) -> None:
+    """Answer a send: its status (receipts.SEND_STATUSES).  ``delivered`` is
+    kept for clients before 1.1."""
+    await ws.send_json({
+        "type": "ack",
+        "message_id": message_id,
+        "status": status,
+        "delivered": status == "delivered",
+    })
+
+
+async def _error(ws, raw: dict, code: str, detail: str) -> None:
+    """Refuse a send, naming its message_id so the client can match it."""
+    frame = {"error": code, "detail": detail}
+    mid = _sent_id(raw)
+    if mid is not None:
+        frame["message_id"] = mid
+    await ws.send_json(frame)
 
 
 async def handle_inbound_message(
@@ -139,25 +163,24 @@ async def handle_inbound_message(
     try:
         await refuse_early(wrapped_ws.app.state, sender_address, receipt=receipt)
     except DeliveryDenied as denied:
-        await wrapped_ws.send_json({"error": denied.code, "detail": denied.detail})
+        await _error(wrapped_ws, raw, denied.code, denied.detail)
         return
 
     # Parse envelope
     try:
         envelope = from_wire_dict(raw)
     except (InvalidEnvelopeError, IncompatibleVersionError) as exc:
-        await wrapped_ws.send_json({
-            "error": "invalid_envelope",
-            "detail": str(exc),
-        })
+        await _error(wrapped_ws, raw, "invalid_envelope", str(exc))
         return
 
     # Verify sender matches authenticated connection
     if envelope.from_address != sender_address:
-        await wrapped_ws.send_json({
-            "error": "sender_mismatch",
-            "detail": f"Envelope from '{envelope.from_address}' but connected as '{sender_address}'",
-        })
+        await _error(
+            wrapped_ws,
+            raw,
+            "sender_mismatch",
+            f"Envelope from '{envelope.from_address}' but connected as '{sender_address}'",
+        )
         return
 
     # What the relay delivers and stores: the envelope with this relay's
@@ -177,37 +200,27 @@ async def handle_inbound_message(
                         wrapped_ws.app.state, sender_address, receipt=receipt
                     )
                 except DeliveryDenied as denied:
-                    await wrapped_ws.send_json({"error": denied.code, "detail": denied.detail})
+                    await _error(wrapped_ws, raw, denied.code, denied.detail)
                     return
-                await wrapped_ws.send_json({
-                    "type": "ack",
-                    "message_id": envelope.message_id,
-                    "delivered": True,
-                })
+                await _ack(wrapped_ws, envelope.message_id, "duplicate")
                 return
 
             try:
                 clearance = await authorize_delivery(wrapped_ws.app.state, envelope, session)
             except DeliveryDenied as denied:
                 await session.rollback()
-                await wrapped_ws.send_json({"error": denied.code, "detail": denied.detail})
+                await _error(wrapped_ws, raw, denied.code, denied.detail)
                 return
 
             # Look up sender's public key and verify signature (expensive)
             sender_agent = await get_agent_by_address(session, sender_address)
             if sender_agent is None:
                 await session.rollback()
-                await wrapped_ws.send_json({
-                    "error": "sender_not_found",
-                    "detail": f"Sender agent not found: {sender_address}",
-                })
+                await _error(wrapped_ws, raw, "sender_not_found", f"Sender agent not found: {sender_address}")
                 return
             if sender_agent.status != "active":
                 await session.rollback()
-                await wrapped_ws.send_json({
-                    "error": "sender_not_active",
-                    "detail": f"Sender agent is not active: {sender_address}",
-                })
+                await _error(wrapped_ws, raw, "sender_not_active", f"Sender agent is not active: {sender_address}")
                 return
 
             try:
@@ -215,43 +228,38 @@ async def handle_inbound_message(
                 verify_envelope(envelope, sender_vk)
             except SignatureVerificationError as exc:
                 await session.rollback()
-                await wrapped_ws.send_json({
-                    "error": "invalid_signature",
-                    "detail": str(exc),
-                })
+                await _error(wrapped_ws, raw, "invalid_signature", str(exc))
                 return
 
             if not clearance.deliver:
                 # A receipt past its bucket: accepted, not delivered (relay/policy.py)
                 await session.rollback()
-                await wrapped_ws.send_json({
-                    "type": "ack",
-                    "message_id": envelope.message_id,
-                    "delivered": False,
-                })
+                await _ack(wrapped_ws, envelope.message_id, "dropped")
                 return
 
             # Three-tier delivery chain: WebSocket > webhook > store-and-forward (HOOK-02)
             # Tier 1: WebSocket (real-time)
             delivered = await manager.send_to(envelope.to_address, wire)
+            status = "delivered" if delivered else None
             start_webhook = None
 
-            if not delivered:
+            if status is None:
                 # Tier 2: Webhook (near-real-time)
                 webhook_service = wrapped_ws.app.state.webhook_service
                 start_webhook = await webhook_service.prepare(
                     session, envelope.to_address, wire
                 )
                 if start_webhook is not None:
-                    delivered = True  # webhook delivery initiated (async)
+                    # Started, not confirmed: the webhook service sends the
+                    # receipt.delivered once the endpoint accepts it.
+                    status = "relayed"
 
-            if not delivered and goes_to_peer(wrapped_ws.app.state, envelope.to_address):
+            if status is None and goes_to_peer(wrapped_ws.app.state, envelope.to_address):
                 # Non-local recipient -- forward via federation
-                method = await forward_to_peer(
+                status = await forward_to_peer(
                     wrapped_ws.app.state, session, envelope.to_address, wire
                 )
-                delivered = method == "federated"
-            elif not delivered:
+            elif status is None:
                 # Tier 3: Store-and-forward (eventual)
                 await store_message(
                     session,
@@ -262,6 +270,7 @@ async def handle_inbound_message(
                     expires_at=clearance.expires_at,
                     commit=False,
                 )
+                status = "stored"
 
             # Single commit for dedup + store
             await session.commit()
@@ -272,22 +281,15 @@ async def handle_inbound_message(
             raise
 
     # Send ACK first (always before receipt)
-    await wrapped_ws.send_json({
-        "type": "ack",
-        "message_id": envelope.message_id,
-        "delivered": delivered,
-    })
+    await _ack(wrapped_ws, envelope.message_id, status)
 
-    # Generate receipt.delivered for the sender (MSG-05 anti-loop guard)
+    # receipt.delivered only for mail that reached the recipient (receipts.py).
     # A webhook's receipt comes from the webhook service, once it succeeds.
-    if delivered and not receipt and start_webhook is None:
-        receipt = {
-            "type": "receipt.delivered",
-            "message_id": envelope.message_id,
-            "timestamp": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
-            "to": envelope.to_address,
-        }
-        await manager.send_to(envelope.from_address, receipt)
+    if status == "delivered" and wants_delivery_receipt(envelope.type):
+        await manager.send_to(
+            envelope.from_address,
+            delivery_receipt(envelope.message_id, envelope.to_address),
+        )
 
 
 @router.websocket("/ws")
@@ -400,10 +402,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 try:
                     check_envelope_size(raw)
                 except ValueError as exc:
-                    await wrapped_ws.send_json({
-                        "error": "envelope_too_large",
-                        "detail": str(exc),
-                    })
+                    await _error(wrapped_ws, raw, "envelope_too_large", str(exc))
                     continue
                 await handle_inbound_message(wrapped_ws, raw, address, factory, manager)
             else:

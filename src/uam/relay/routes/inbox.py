@@ -18,6 +18,7 @@ from uam.db.crud.messages import get_inbox as get_inbox_crud, get_message_by_id,
 from uam.db.session import get_session
 from uam.relay.auth import verify_token_http
 from uam.relay.models import InboxResponse, ReceiptRequest, ReceiptResponse, ThreadResponse
+from uam.relay.receipts import delivery_receipt, wants_delivery_receipt
 from uam.relay.relay_meta import mark_stored
 
 logger = logging.getLogger(__name__)
@@ -62,15 +63,11 @@ async def get_inbox(
     manager = request.app.state.manager
     for msg_envelope in messages:
         original_from = msg_envelope.get("from", "")
-        msg_type = str(msg_envelope.get("type", ""))
-        if original_from and not msg_type.startswith("receipt."):
-            receipt = {
-                "type": "receipt.delivered",
-                "message_id": msg_envelope.get("message_id", ""),
-                "timestamp": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
-                "to": address,
-            }
-            await manager.send_to(original_from, receipt)
+        if original_from and wants_delivery_receipt(msg_envelope.get("type")):
+            await manager.send_to(
+                original_from,
+                delivery_receipt(msg_envelope.get("message_id", ""), address),
+            )
 
     return InboxResponse(address=address, messages=messages, count=len(messages))
 

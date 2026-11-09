@@ -193,7 +193,9 @@ class TestRestDedup:
         )
         assert resp2.status_code == 200
         data2 = resp2.json()
-        assert data2["delivered"] is True
+        # Accepted again, and said to be a duplicate, not delivered again
+        assert data2["status"] == "duplicate"
+        assert data2["delivered"] is False
         assert data2["message_id"] == wire["message_id"]
 
     def test_rest_different_messages_both_delivered(self, client):
@@ -241,4 +243,5 @@ class TestWebSocketDedup:
             ack2 = ws.receive_json()
             assert ack2["type"] == "ack"
             assert ack2["message_id"] == wire["message_id"]
-            assert ack2["delivered"] is True
+            assert ack2["status"] == "duplicate"
+            assert ack2["delivered"] is False

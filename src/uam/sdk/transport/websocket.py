@@ -11,6 +11,7 @@ from typing import Any, Awaitable, Callable
 import websockets
 from websockets.asyncio.client import connect
 
+from uam.protocol.errors import SendRefusedError
 from uam.sdk.transport.base import TransportBase
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,7 @@ BASE_DELAY = 1.0    # Initial delay in seconds
 MAX_DELAY = 60.0    # Maximum delay cap
 JITTER_RANGE = 1.0  # Random jitter 0 to JITTER_RANGE
 SEND_SETTLE_SECONDS = 5.0  # How long a close waits for the relay to answer sends
+ACK_TIMEOUT_SECONDS = 5.0  # How long send() waits for the relay's answer
 
 
 class WebSocketTransport(TransportBase):
@@ -52,6 +54,8 @@ class WebSocketTransport(TransportBase):
         self._unanswered = 0  # Envelopes sent that the relay hasn't answered yet
         self._all_answered = asyncio.Event()
         self._all_answered.set()
+        # send() waiting for the relay's answer, by message_id
+        self._waiting: dict[str, asyncio.Future] = {}
 
     async def connect(self) -> None:
         """Start the WebSocket connection with automatic reconnection."""
@@ -75,21 +79,67 @@ class WebSocketTransport(TransportBase):
                 await self._listen_task
             except asyncio.CancelledError:
                 pass
+        self._abandon_waiting()
         if self._ws:
             await self._ws.close()
 
-    async def send(self, envelope: dict[str, Any]) -> None:
-        """Send an envelope dict over the WebSocket."""
+    async def send(self, envelope: dict[str, Any]) -> dict[str, Any] | None:
+        """Send an envelope over the WebSocket and wait for the relay's answer.
+
+        Returns the relay's ack (``{"status": ..., ...}``), or None when none
+        came within ACK_TIMEOUT_SECONDS: the message may still have arrived.
+        Raises ``SendRefusedError`` when the relay refuses it by message_id
+        (relays before 1.1 don't name it, so their refusals end as None).
+        A send made from inside an on_message callback returns None at once:
+        the loop that would read its answer is the one running the callback.
+        """
         if self._ws is None:
             raise RuntimeError("WebSocket not connected")
-        # Counted first: the ack can arrive before this send returns.
+        message_id = envelope.get("message_id")
+        answer: asyncio.Future | None = None
+        # The connection loop reads the answers.  A send made from inside it
+        # (an on_message callback answering a handshake) can't wait for one.
+        reading = asyncio.current_task() is self._listen_task
+        if not reading and isinstance(message_id, str) and message_id not in self._waiting:
+            # Registered first: the ack can arrive before ws.send returns.
+            answer = asyncio.get_running_loop().create_future()
+            self._waiting[message_id] = answer
+        # Counted first, for the same reason.
         self._unanswered += 1
         self._all_answered.clear()
         try:
             await self._ws.send(json.dumps(envelope))
         except BaseException:
             self._answered()
+            if answer is not None:
+                self._waiting.pop(message_id, None)
             raise
+        if answer is None:
+            return None
+        try:
+            return await asyncio.wait_for(asyncio.shield(answer), ACK_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            logger.warning("No answer from the relay for %s within %.0fs", message_id, ACK_TIMEOUT_SECONDS)
+            return None
+        finally:
+            if self._waiting.get(message_id) is answer:
+                del self._waiting[message_id]
+
+    def _resolve(self, message_id: Any, result: Any = None, error: BaseException | None = None) -> None:
+        """Hand the relay's answer to the send() waiting for *message_id*."""
+        answer = self._waiting.get(message_id) if isinstance(message_id, str) else None
+        if answer is None or answer.done():
+            return
+        if error is not None:
+            answer.set_exception(error)
+        else:
+            answer.set_result(result)
+
+    def _abandon_waiting(self) -> None:
+        """The socket went: no answers will come for what it carried."""
+        for answer in self._waiting.values():
+            if not answer.done():
+                answer.set_result(None)
 
     def _answered(self) -> None:
         self._unanswered = max(0, self._unanswered - 1)
@@ -136,6 +186,7 @@ class WebSocketTransport(TransportBase):
                 self._ws = None
                 self._unanswered = 0  # Their answers went with the socket
                 self._all_answered.set()
+                self._abandon_waiting()
                 attempt += 1
                 delay = min(BASE_DELAY * (2**attempt), MAX_DELAY)
                 jitter = random.uniform(0, JITTER_RANGE)
@@ -169,16 +220,20 @@ class WebSocketTransport(TransportBase):
 
         elif msg_type == "ack":
             logger.debug(
-                "ACK for message %s (delivered=%s)",
+                "ACK for message %s (status=%s)",
                 msg.get("message_id"),
-                msg.get("delivered"),
+                msg.get("status", msg.get("delivered")),
             )
             self._answered()
+            self._resolve(msg.get("message_id"), result=msg)
 
         elif msg_type == "error" or "error" in msg:
-            logger.error(
-                "Relay error: [%s] %s",
-                msg.get("error") or msg.get("code"),
-                msg.get("detail"),
-            )
+            code = msg.get("error") or msg.get("code")
+            logger.error("Relay error: [%s] %s", code, msg.get("detail"))
             self._answered()
+            message_id = msg.get("message_id")
+            if isinstance(message_id, str):
+                self._resolve(
+                    message_id,
+                    error=SendRefusedError(message_id, str(code), msg.get("detail")),
+                )

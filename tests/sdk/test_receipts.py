@@ -161,8 +161,8 @@ class TestReceiptRead:
         agent._transport.receive = AsyncMock(return_value=[wire])
 
         messages = await agent.inbox()
-        assert len(messages) == 1
-        assert messages[0].type == MessageType.RECEIPT_DELIVERED.value
+        # Receipts are bookkeeping, never shown to whoever reads the inbox
+        assert messages == []
 
         # No receipt.read should be sent
         agent._transport.send.assert_not_called()
@@ -185,7 +185,8 @@ class TestReceiptRead:
         agent._transport.receive = AsyncMock(return_value=[wire])
 
         messages = await agent.inbox()
-        assert len(messages) == 1
+        # Receipts are bookkeeping, never shown to whoever reads the inbox
+        assert messages == []
 
         # No further receipt should be sent
         agent._transport.send.assert_not_called()
@@ -208,7 +209,8 @@ class TestReceiptRead:
         agent._transport.receive = AsyncMock(return_value=[wire])
 
         messages = await agent.inbox()
-        assert len(messages) == 1
+        # Receipts are bookkeeping, never shown to whoever reads the inbox
+        assert messages == []
 
         # No receipt should be sent
         agent._transport.send.assert_not_called()

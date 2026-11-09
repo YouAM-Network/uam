@@ -9,6 +9,15 @@ import httpx
 from uam.sdk.transport.base import TransportBase
 
 
+def relay_answer(resp: httpx.Response) -> dict[str, Any]:
+    """The JSON body of a relay's 2xx answer to a send; {} if it has none."""
+    try:
+        body = resp.json()
+    except ValueError:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
 class HTTPTransport(TransportBase):
     """Stateless HTTP transport using httpx AsyncClient.
 
@@ -40,8 +49,8 @@ class HTTPTransport(TransportBase):
             await self._client.aclose()
             self._client = None
 
-    async def send(self, envelope: dict[str, Any]) -> None:
-        """POST an envelope to the relay.
+    async def send(self, envelope: dict[str, Any]) -> dict[str, Any] | None:
+        """POST an envelope to the relay and return its answer.
 
         Raises ``httpx.HTTPStatusError`` on 4xx/5xx.
         """
@@ -49,6 +58,7 @@ class HTTPTransport(TransportBase):
             raise RuntimeError("HTTPTransport not connected. Call connect() first.")
         resp = await self._client.post("/api/v1/send", json={"envelope": envelope})
         resp.raise_for_status()
+        return relay_answer(resp)
 
     async def receive(self, limit: int = 50) -> list[dict[str, Any]]:
         """GET pending messages from the relay inbox.

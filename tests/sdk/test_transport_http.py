@@ -78,8 +78,11 @@ class TestHTTPTransport:
         )
         wire = to_wire_dict(envelope)
 
-        # Send should succeed without raising
-        await transport.send(wire)
+        # The relay's answer comes back: the recipient isn't connected, so stored
+        answer = await transport.send(wire)
+        assert answer["status"] == "stored"
+        assert answer["delivered"] is False
+        assert answer["message_id"] == envelope.message_id
 
     async def test_http_receive_messages(self, http_transport):
         transport, agent, sk, vk = http_transport
