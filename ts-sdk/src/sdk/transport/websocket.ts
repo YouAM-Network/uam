@@ -7,6 +7,7 @@
  */
 
 import WebSocket from "ws";
+import { SendRefusedError } from "../../protocol/errors.js";
 import { log } from "../log.js";
 import { TransportBase } from "./base.js";
 
@@ -17,6 +18,16 @@ const JITTER_RANGE = 1.0; // Random jitter 0 to JITTER_RANGE
 
 /** How long a close waits for the relay to answer sends, in seconds. */
 export const SEND_SETTLE_SECONDS = 5;
+
+/** How long send() waits for the relay's answer, in seconds. */
+export const ACK_TIMEOUT_SECONDS = 5;
+
+type Answer = Record<string, unknown> | null;
+
+interface Waiting {
+  resolve: (answer: Answer) => void;
+  reject: (err: Error) => void;
+}
 
 export class WebSocketTransport extends TransportBase {
   private _url: string;
@@ -35,9 +46,14 @@ export class WebSocketTransport extends TransportBase {
   private _unanswered: number = 0;
   private _settling: Promise<void> | null = null;
   private _settled: (() => void) | null = null;
+  /** Sends waiting for the relay's answer, by message_id. */
+  private _waiting = new Map<string, Waiting>();
 
   /** @internal How long a close waits, in ms. Replaceable in tests. */
   _settleMs: number = SEND_SETTLE_SECONDS * 1000;
+
+  /** @internal How long send() waits for an answer, in ms. Replaceable in tests. */
+  _ackMs: number = ACK_TIMEOUT_SECONDS * 1000;
 
   constructor(
     wsUrl: string,
@@ -96,14 +112,44 @@ export class WebSocketTransport extends TransportBase {
       this._ws = null;
     }
     this._connected = false;
+    this._abandonWaiting();
   }
 
-  async send(envelope: Record<string, unknown>): Promise<void> {
+  /**
+   * Send an envelope and wait for the relay's answer.
+   *
+   * Resolves with the ack that names the message, or null when none came
+   * within _ackMs or the socket went: the message may still have arrived.
+   * Rejects with SendRefusedError when the relay refuses it by message_id
+   * (relays before 1.1 don't name it, so their refusals end as null).
+   */
+  async send(envelope: Record<string, unknown>): Promise<Answer> {
     if (!this._ws || this._ws.readyState !== WebSocket.OPEN) {
       throw new Error("WebSocket not connected");
     }
+    const messageId = envelope["message_id"];
+    let answer: Promise<Answer> | null = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    if (typeof messageId === "string" && !this._waiting.has(messageId)) {
+      // Registered first: the ack can arrive before ws.send returns.
+      answer = new Promise<Answer>((resolve, reject) => {
+        this._waiting.set(messageId, { resolve, reject });
+        timer = setTimeout(() => {
+          log.warn(
+            `No answer from the relay for ${messageId} within ${this._ackMs / 1000}s`
+          );
+          this._settle(messageId, null);
+        }, this._ackMs);
+      });
+    }
     this._ws.send(JSON.stringify(envelope));
     this._unanswered += 1;
+    if (answer === null) return null;
+    try {
+      return await answer;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async receive(limit: number = 50): Promise<Record<string, unknown>[]> {
@@ -134,6 +180,23 @@ export class WebSocketTransport extends TransportBase {
       };
     });
     return this._settling;
+  }
+
+  /** Hand the relay's answer (or a refusal) to the send waiting for it. */
+  private _settle(messageId: unknown, answer: Answer, error?: Error): void {
+    if (typeof messageId !== "string") return;
+    const waiting = this._waiting.get(messageId);
+    if (!waiting) return;
+    this._waiting.delete(messageId);
+    if (error) waiting.reject(error);
+    else waiting.resolve(answer);
+  }
+
+  /** The socket went: no answers will come for what it carried. */
+  private _abandonWaiting(): void {
+    const waiting = [...this._waiting.values()];
+    this._waiting.clear();
+    for (const w of waiting) w.resolve(null);
   }
 
   private _answered(): void {
@@ -175,6 +238,7 @@ export class WebSocketTransport extends TransportBase {
         // Their answers went with the socket.
         this._unanswered = 0;
         this._settled?.();
+        this._abandonWaiting();
         if (!this._running) return;
 
         attempt += 1;
@@ -216,8 +280,23 @@ export class WebSocketTransport extends TransportBase {
       }
     } else if (msgType === "ack") {
       this._answered();
+      this._settle(msg["message_id"], msg);
+    } else if (msgType === "relay.notice") {
+      // A message the relay had queued for another relay won't be
+      // delivered after all (e.g. the recipient only takes approved
+      // contacts). Not an answer to a send in flight.
+      log.warn(
+        `Relay notice: message ${String(msg["message_id"])} is ${String(msg["status"])}`
+      );
     } else if (msgType === "error" || "error" in msg) {
       this._answered();
+      const code = String(msg["error"] ?? msg["code"] ?? "error");
+      const detail = typeof msg["detail"] === "string" ? msg["detail"] : undefined;
+      log.warn(`Relay error: [${code}] ${detail ?? ""}`.trimEnd());
+      const messageId = msg["message_id"];
+      if (typeof messageId === "string") {
+        this._settle(messageId, null, new SendRefusedError(messageId, code, detail));
+      }
     }
   }
 }

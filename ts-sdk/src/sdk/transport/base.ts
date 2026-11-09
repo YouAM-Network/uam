@@ -13,8 +13,15 @@ export abstract class TransportBase {
   /** Close the connection. */
   abstract disconnect(): Promise<void>;
 
-  /** Send a message envelope to the relay. */
-  abstract send(envelope: Record<string, unknown>): Promise<void>;
+  /**
+   * Send a message envelope to the relay.
+   *
+   * Resolves with the relay's answer (`{status, ...}`), or null when none
+   * came in time: the message may still have arrived.
+   */
+  abstract send(
+    envelope: Record<string, unknown>
+  ): Promise<Record<string, unknown> | null>;
 
   /** Retrieve pending messages from the relay. */
   abstract receive(limit?: number): Promise<Record<string, unknown>[]>;

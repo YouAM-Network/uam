@@ -85,3 +85,23 @@ export class KeyPinningError extends UAMError {
     Object.setPrototypeOf(this, KeyPinningError.prototype);
   }
 }
+
+/**
+ * The relay refused a message sent over WebSocket.
+ *
+ * `code` is the relay's error code (e.g. "rate_limited"), `detail` its
+ * explanation. Over HTTP the same refusal is an HTTP error.
+ */
+export class SendRefusedError extends UAMError {
+  readonly messageId: string;
+  readonly code: string;
+  readonly detail: string | undefined;
+
+  constructor(messageId: string, code: string, detail?: string) {
+    super(`Relay refused message ${messageId}: [${code}] ${detail ?? ""}`.trimEnd());
+    this.name = "SendRefusedError";
+    this.messageId = messageId;
+    this.code = code;
+    this.detail = detail;
+  }
+}

@@ -3,7 +3,8 @@
  */
 
 export { Agent } from "./agent.js";
-export type { ReceivedMessage } from "./message.js";
+export type { ReceivedMessage, SendResult, SendStatus } from "./message.js";
+export { PENDING_NOTE, SEND_STATUSES, pendingNote, sendStatus, supports } from "./message.js";
 export { SDKConfig } from "./config.js";
 export { KeyManager } from "./key-manager.js";
 export { ContactBook } from "./contact-book.js";

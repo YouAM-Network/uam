@@ -42,11 +42,14 @@ function answer(frame: Record<string, unknown>): void {
   peer!.send(JSON.stringify(frame));
 }
 
-/** Send `count` envelopes and wait for them to reach the server. */
+/**
+ * Send `count` envelopes and wait for them to reach the server. Not for
+ * their answers: send() waits for those, and these tests give them later.
+ */
 async function sendEnvelopes(count: number): Promise<void> {
   const target = frames.length + count;
   for (let i = 0; i < count; i += 1) {
-    await transport.send({ message_id: `m${i}` });
+    void transport.send({ message_id: `m${i}` }).catch(() => undefined);
   }
   await until(() => frames.length === target);
 }

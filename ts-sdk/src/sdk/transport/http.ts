@@ -9,6 +9,23 @@
 
 import { TransportBase } from "./base.js";
 
+/**
+ * The relay's answer to a send, from a successful response's body.
+ *
+ * A relay before 1.1 may answer without a JSON object: that's an empty
+ * answer, which reads as "accepted".
+ */
+export async function readAnswer(resp: Response): Promise<Record<string, unknown>> {
+  try {
+    const body: unknown = await resp.json();
+    return body !== null && typeof body === "object" && !Array.isArray(body)
+      ? (body as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
 export class HTTPTransport extends TransportBase {
   private _relayUrl: string;
   private _token: string;
@@ -29,7 +46,9 @@ export class HTTPTransport extends TransportBase {
     // No-op
   }
 
-  async send(envelope: Record<string, unknown>): Promise<void> {
+  async send(
+    envelope: Record<string, unknown>
+  ): Promise<Record<string, unknown> | null> {
     const resp = await fetch(`${this._relayUrl}/api/v1/send`, {
       method: "POST",
       headers: {
@@ -43,6 +62,7 @@ export class HTTPTransport extends TransportBase {
         `HTTP send failed: ${resp.status} ${resp.statusText}`
       );
     }
+    return readAnswer(resp);
   }
 
   async receive(limit: number = 50): Promise<Record<string, unknown>[]> {

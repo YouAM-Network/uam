@@ -27,6 +27,7 @@ export {
   DecryptionError,
   InvalidContactCardError,
   KeyPinningError,
+  SendRefusedError,
 } from "./errors.js";
 
 // Address

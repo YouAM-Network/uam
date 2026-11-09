@@ -35,6 +35,10 @@ export class FakeRelay {
   readonly keys = new Map<string, string>();
   /** Every envelope any agent sent, in order. */
   readonly sent: Wire[] = [];
+  /** What the relay answers a send with (null: no answer in time). */
+  answer: (wire: Wire) => Wire | null = (wire) => ({
+    message_id: wire["message_id"], status: "stored", delivered: false,
+  });
 
   deliver(wire: Wire): void {
     this.sent.push(wire);
@@ -76,8 +80,9 @@ export class FakeTransport extends TransportBase {
   }
   async connect(): Promise<void> {}
   async disconnect(): Promise<void> {}
-  async send(envelope: Wire): Promise<void> {
+  async send(envelope: Wire): Promise<Wire | null> {
     this._relay.deliver(envelope);
+    return this._relay.answer(envelope);
   }
   async receive(limit: number = 50): Promise<Wire[]> {
     return this._relay.take(this._address, limit);

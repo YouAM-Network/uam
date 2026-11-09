@@ -40,7 +40,7 @@ interface AgentLike {
     readonly signingKey: Uint8Array;
   };
   readonly _transport: {
-    send(envelope: Record<string, unknown>): Promise<void>;
+    send(envelope: Record<string, unknown>): Promise<unknown>;
   } | null;
 }
 

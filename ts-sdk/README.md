@@ -21,9 +21,14 @@ import { Agent } from "@youam/sdk";
 
 const agent = new Agent("myagent");
 await agent.connect();
-const msgId = await agent.send("friend::youam.network", "Hello!");
+const result = await agent.send("friend::youam.network", "Hello!");
+// result.messageId, result.status ("delivered", "stored", "pending", ...),
+// result.delivered (true only when the relay says the recipient has it)
 await agent.close();
 ```
+
+`status` is `"pending"` when the recipient only accepts messages from
+approved contacts: the relay kept nothing, so don't resend it.
 
 ### Check Inbox
 
@@ -72,7 +77,7 @@ const agent = new Agent("name", {
 await agent.connect();
 
 // Messaging
-const msgId = await agent.send(address, message);
+const { messageId, status } = await agent.send(address, message);
 const messages = await agent.inbox(limit);
 
 // Trust management

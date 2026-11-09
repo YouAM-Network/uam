@@ -37,11 +37,12 @@ import { SDK_VERSION } from "../version.js";
 import { SDKConfig } from "./config.js";
 import { RELAY_META_FEATURE, relayVouches } from "./freshness.js";
 import { KeyManager } from "./key-manager.js";
-import type { ReceivedMessage } from "./message.js";
+import { type ReceivedMessage, type SendResult, sendStatus } from "./message.js";
 import { ContactBook } from "./contact-book.js";
 import { HandshakeManager, bindCardToEnvelope } from "./handshake.js";
 import { log } from "./log.js";
 import { type AddressResolver, SmartResolver } from "./resolver.js";
+import { readAnswer } from "./transport/http.js";
 import { createTransport, type TransportBase } from "./transport/index.js";
 import {
   PersistentReplayCache,
@@ -276,7 +277,12 @@ export class Agent {
   // -- Messaging -----------------------------------------------------------
 
   /**
-   * Send an encrypted, signed message. Returns the message_id.
+   * Send an encrypted, signed message.
+   *
+   * Returns the message id with what the relay did with it: `status`
+   * "pending" means the recipient only takes approved contacts, and the
+   * message was not kept (don't resend it). `delivered` is true only when
+   * the relay says the recipient has it.
    */
   async send(
     toAddress: string,
@@ -285,7 +291,7 @@ export class Agent {
       threadId?: string;
       attachments?: Array<Record<string, unknown>>;
     }
-  ): Promise<string> {
+  ): Promise<SendResult> {
     await this._ensureConnected();
 
     // TOFU-05: require_verify blocks unverified first sends
@@ -337,22 +343,28 @@ export class Agent {
     // Send via transport (with multi-relay failover -- CARD-06)
     const wire = toWireDict(envelope);
     const relayUrls = await this._getRelayUrls(toAddress);
+    let answer: Record<string, unknown> | null;
     if (
       relayUrls !== null &&
       relayUrls.length === 1 &&
       relayUrls[0] === this._config.relayUrl
     ) {
       // Same relay -- use existing transport (no failover overhead)
-      await this._transport!.send(wire);
+      answer = await this._transport!.send(wire);
     } else if (relayUrls !== null && relayUrls.length > 0) {
       // Multi-relay or cross-relay: try each in order
-      await this._trySendWithFailover(wire, relayUrls);
+      answer = await this._trySendWithFailover(wire, relayUrls);
     } else {
       // No relay info -- fall back to own transport
-      await this._transport!.send(wire);
+      answer = await this._transport!.send(wire);
     }
 
-    return envelope.messageId;
+    const status = sendStatus(answer);
+    return {
+      messageId: envelope.messageId,
+      status,
+      delivered: status === "delivered",
+    };
   }
 
   /**
@@ -561,7 +573,7 @@ export class Agent {
   private async _trySendWithFailover(
     wire: Record<string, unknown>,
     relayUrls: string[]
-  ): Promise<void> {
+  ): Promise<Record<string, unknown> | null> {
     let lastError: Error | null = null;
 
     for (const url of relayUrls) {
@@ -586,7 +598,7 @@ export class Agent {
         if (!resp.ok) {
           throw new Error(`HTTP ${resp.status}`);
         }
-        return; // Success
+        return await readAnswer(resp); // Success
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
       }
