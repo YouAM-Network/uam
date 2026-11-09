@@ -463,11 +463,21 @@ class FederationDeliverResponse(BaseModel):
     status_version: int | None = None
 
 
+class RelayKeyEntry(BaseModel):
+    key_id: Annotated[str, Field(max_length=64)]
+    public_key: Annotated[str, Field(max_length=64, pattern=_PUBKEY_B64_PATTERN)]
+    valid_from: Annotated[str, Field(max_length=64)] | None = None
+    retired_at: Annotated[str, Field(max_length=64)] | None = None
+
+
 class WellKnownRelayResponse(BaseModel):
     relay_domain: Annotated[str, Field(max_length=255, pattern=_DNS_LABEL_PATTERN)]
     federation_endpoint: Annotated[str, Field(max_length=2048)]
     public_key: Annotated[str, Field(max_length=64, pattern=_PUBKEY_B64_PATTERN)]
     version: Annotated[str, Field(max_length=32)] = "0.1"
+    # Id of ``public_key`` and the relay's key history, newest (current) first.
+    key_id: Annotated[str, Field(max_length=64)] | None = None
+    keys: list[RelayKeyEntry] = []
 
 
 # ---------------------------------------------------------------------------

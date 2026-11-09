@@ -38,7 +38,7 @@ from uam.relay.models import (
 from uam.relay.peer_key_cache import peer_key_cache
 from uam.relay.policy import DeliveryDenied, authorize_delivery
 from uam.relay.receipts import FEDERATION_STATUS_VERSION
-from uam.relay.relay_auth import verify_federation_signature
+from uam.relay.relay_auth import relay_key_id, verify_federation_signature
 from uam.relay.relay_meta import peer_received_at, stamp
 from uam.relay.ssrf import (
     SSRFBlockedError,
@@ -430,11 +430,22 @@ async def well_known_relay(request: Request) -> WellKnownRelayResponse:
     """Serve this relay's identity for federation discovery."""
     settings = request.app.state.settings
     relay_verify_key = request.app.state.relay_verify_key
+    public_key = serialize_verify_key(relay_verify_key)
+    key_id = relay_key_id(relay_verify_key)
+    current = {
+        "key_id": key_id,
+        "public_key": public_key,
+        "valid_from": settings.relay_key_valid_from,
+        "retired_at": None,
+    }
+    history = getattr(request.app.state, "relay_key_history", [])
     return WellKnownRelayResponse(
         relay_domain=settings.relay_domain,
         federation_endpoint=f"{settings.relay_http_url}/api/v1/federation/deliver",
-        public_key=serialize_verify_key(relay_verify_key),
+        public_key=public_key,
         version="0.1",
+        key_id=key_id,
+        keys=[current, *history],
     )
 
 

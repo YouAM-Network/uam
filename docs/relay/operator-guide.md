@@ -464,6 +464,23 @@ Federation allows your relay to exchange messages with other UAM relays. It is e
 - See the [Federation Setup Guide](federation-setup.md) for DNS SRV configuration, `.well-known` setup, and connecting with other relays.
 - See the [Configuration Reference](configuration.md) for all `UAM_FEDERATION_*` environment variables.
 
+### Relay key
+
+The relay signs federation requests with its Ed25519 key. In production, keep the key in your secret
+store and pass it as `UAM_RELAY_KEY`; the key file is then not used. `/.well-known/uam-relay.json`
+publishes the current key with a `key_id` (the first 16 hex characters of the key's SHA-256) and a
+`keys` list: the current key first, then any retired keys from `UAM_RELAY_KEY_HISTORY`.
+
+To rotate:
+
+1. Generate a new key and put it in the secret store.
+2. Add the old public key (from the `public_key` field of the well-known document) to
+   `UAM_RELAY_KEY_HISTORY` with `retired_at` set to now and its old `valid_from`.
+3. Set `UAM_RELAY_KEY` to the new key and `UAM_RELAY_KEY_VALID_FROM` to now, and restart.
+
+Peer relays fetch the new key from the well-known document the first time one of your signatures
+fails against the key they cached.
+
 ## Troubleshooting
 
 ### Relay won't start

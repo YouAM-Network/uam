@@ -379,16 +379,29 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.webhook_service = webhook_service
 
     # Federation: relay keypair, federation service, safety modules (FED-01 through FED-10)
-    from uam.relay.relay_auth import load_or_generate_relay_keypair
+    from uam.protocol.crypto import serialize_verify_key
+    from uam.relay.relay_auth import load_relay_keypair, parse_key_history
     from uam.relay.federation import FederationService
     from uam.relay.relay_blocklist import RelayAllowBlockList
     from uam.relay.relay_reputation import RelayReputationManager
 
     if settings.federation_enabled:
-        relay_sk, relay_vk = load_or_generate_relay_keypair(settings.relay_key_path)
+        relay_sk, relay_vk = load_relay_keypair(
+            settings.relay_key, settings.relay_key_path
+        )
         app.state.relay_signing_key = relay_sk
         app.state.relay_verify_key = relay_vk
-        logger.info("Relay keypair loaded from %s", settings.relay_key_path)
+        # Retired keys stay published so older signatures remain checkable.
+        app.state.relay_key_history = parse_key_history(
+            settings.relay_key_history,
+            current_public_key=serialize_verify_key(relay_vk),
+        )
+        if settings.relay_key is None and Settings._is_production():
+            logger.warning(
+                "Relay key read from %s; set UAM_RELAY_KEY from the secret "
+                "store so a rebuilt host keeps the same relay identity",
+                settings.relay_key_path,
+            )
 
         # Federation service (FED-01, FED-02)
         federation_service = FederationService(settings, relay_sk, relay_vk)
@@ -416,6 +429,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     else:
         app.state.relay_signing_key = None
         app.state.relay_verify_key = None
+        app.state.relay_key_history = []
         app.state.federation_service = None
         app.state.relay_blocklist = None
         app.state.relay_reputation = None

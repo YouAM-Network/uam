@@ -94,6 +94,17 @@ class Settings:
             )
         # Federation settings (FED-01 through FED-10)
         self.relay_key_path: str = os.getenv("UAM_RELAY_KEY_PATH", "relay_key.pem")
+        # The relay key itself (base64 Ed25519 seed), from the operator's
+        # secret store. Wins over UAM_RELAY_KEY_PATH when set.
+        self.relay_key: str | None = os.getenv("UAM_RELAY_KEY") or None
+        # When the current key came into use (ISO 8601), published with it.
+        self.relay_key_valid_from: str | None = (
+            os.getenv("UAM_RELAY_KEY_VALID_FROM") or None
+        )
+        # Retired relay public keys, JSON: [{public_key, valid_from?, retired_at}].
+        self.relay_key_history: str | None = (
+            os.getenv("UAM_RELAY_KEY_HISTORY") or None
+        )
         self.federation_enabled: bool = os.getenv(
             "UAM_FEDERATION_ENABLED", "true"
         ).lower() in ("1", "true", "yes")
