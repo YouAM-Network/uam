@@ -90,3 +90,11 @@ export {
   encodeDidKey,
   decodeDidKey,
 } from "./didkey.js";
+export {
+  type Credential as PasskeyCredential,
+  WebAuthnError,
+  verifyRegistration,
+  verifyAssertion,
+  approvalChallenge,
+  credentialDid,
+} from "./webauthn.js";

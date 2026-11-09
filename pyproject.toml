@@ -40,6 +40,7 @@ classifiers = [
 ]
 dependencies = [
     "pynacl>=1.6.2",
+    "cryptography>=44",
     "uuid6>=2025.0.1",
     "httpx>=0.28",
     "websockets>=14",
