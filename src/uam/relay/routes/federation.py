@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from uam.db.crud.agents import get_agent_by_address
@@ -442,7 +443,7 @@ async def federation_deliver(
     "/.well-known/uam-relay.json",
     response_model=WellKnownRelayResponse,
 )
-async def well_known_relay(request: Request) -> WellKnownRelayResponse:
+async def well_known_relay(request: Request) -> WellKnownRelayResponse | JSONResponse:
     """Serve this relay's identity for federation discovery."""
     settings = request.app.state.settings
     relay_verify_key = request.app.state.relay_verify_key
@@ -455,7 +456,7 @@ async def well_known_relay(request: Request) -> WellKnownRelayResponse:
         "retired_at": None,
     }
     history = getattr(request.app.state, "relay_key_history", [])
-    return WellKnownRelayResponse(
+    doc = WellKnownRelayResponse(
         relay_domain=settings.relay_domain,
         federation_endpoint=f"{settings.relay_http_url}/api/v1/federation/deliver",
         public_key=public_key,
@@ -463,6 +464,14 @@ async def well_known_relay(request: Request) -> WellKnownRelayResponse:
         key_id=key_id,
         keys=[current, *history],
     )
+    if not settings.owners_enabled:
+        return doc
+    # Owner accounts (P2c): where owners sign in, and their passkeys' RP ID.
+    return JSONResponse({
+        **doc.model_dump(mode="json"),
+        "owner_origin": settings.owner_origin,
+        "rp_id": settings.rp_id,
+    })
 
 
 # ------------------------------------------------------------------

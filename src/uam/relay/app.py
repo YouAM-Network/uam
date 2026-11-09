@@ -11,7 +11,6 @@ from typing import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.exceptions import HTTPException, RequestValidationError
-from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -660,8 +659,11 @@ def create_app() -> FastAPI:
         )
 
     # CORS (innermost — runs LAST on inbound, FIRST on outbound)
+    # The owner host (P2c) gets no CORS at all; see uam.relay.owners.app.
+    from uam.relay.owners.app import CORSExceptHost
     app.add_middleware(
-        CORSMiddleware,
+        CORSExceptHost,
+        skip_host=settings.owner_host,
         allow_origins=["*"],
         allow_methods=["*"],
         allow_headers=["*"],
@@ -732,6 +734,8 @@ def create_app() -> FastAPI:
     app.include_router(presence_router, prefix="/api/v1")
     app.include_router(handshakes_router, prefix="/api/v1")
     app.include_router(reserve_router, prefix="/api/v1")
+    from uam.relay.routes.admin_owners import router as admin_owners_router
+    app.include_router(admin_owners_router, prefix="/api/v1")
 
     # Health, WebSocket, and .well-known (no prefix)
     from uam.relay.routes.health import router as health_router
@@ -743,5 +747,10 @@ def create_app() -> FastAPI:
     app.include_router(well_known_router)
     # Viral onboarding (top-level /new, not /api/v1 -- used in curl domain/new | sh)
     app.include_router(viral_router)
+
+    # Owner app (P2c): only on the owner origin's host, ahead of every route.
+    if settings.owners_enabled:
+        from uam.relay.owners.app import mount_owner_app
+        mount_owner_app(app, settings)
 
     return app

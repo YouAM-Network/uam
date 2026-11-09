@@ -73,7 +73,9 @@ EXPECTED_TABLES = sorted([
     "federation_nonces",     # +1 from 0004 (Phase 45)
     "routed_messages",       # +1 from 0010
     "inbound_policies", "inbound_contacts",  # +2 from 0012
-])  # 22 tables
+    "owners", "owner_emails", "owner_login_codes",  # +5 from 0013
+    "owner_sessions", "owner_audit",
+])  # 27 tables
 
 
 class TestMigrationUpgrade:

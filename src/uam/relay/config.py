@@ -145,6 +145,84 @@ class Settings:
         self.website_url: str = os.getenv(
             "UAM_WEBSITE_URL", f"https://{self.relay_domain}"
         )
+        # Owner accounts (P2c-1). Off by default; when on, the owner app is
+        # served on UAM_OWNER_ORIGIN's host and these must all be valid.
+        self.owners_enabled: bool = os.getenv(
+            "UAM_OWNERS_ENABLED", ""
+        ).lower() in ("1", "true", "yes")
+        self.owner_origin: str = os.getenv("UAM_OWNER_ORIGIN", "").strip()
+        self.rp_id: str = os.getenv("UAM_RP_ID", "").strip().lower()
+        self.email_pepper: str = os.getenv("UAM_EMAIL_PEPPER", "")
+        self.email_key: str = os.getenv("UAM_EMAIL_KEY", "")
+        # Until owner email is wired (P2g), sign-in codes can go to the log,
+        # but never on a production RP ID.
+        self.owner_codes_to_log: bool = os.getenv(
+            "UAM_OWNER_CODES_TO_LOG", ""
+        ).lower() in ("1", "true", "yes")
+        if self.owners_enabled:
+            self._check_owner_settings()
+
+    #: RP IDs that mean the public network; codes never go to the log there.
+    PRODUCTION_RP_IDS = frozenset({"youam.network"})
+
+    @property
+    def owner_host(self) -> str:
+        """The owner origin's host name (no port), or "" when owners are off."""
+        if not self.owners_enabled:
+            return ""
+        from urllib.parse import urlsplit
+
+        return urlsplit(self.owner_origin).hostname or ""
+
+    def _check_owner_settings(self) -> None:
+        from urllib.parse import urlsplit
+
+        from uam.relay.owners.crypto import decode_email_key
+
+        def refuse(name: str, why: str) -> None:
+            raise RuntimeError(f"{name}: {why} (UAM_OWNERS_ENABLED is on)")
+
+        for name, value in (
+            ("UAM_OWNER_ORIGIN", self.owner_origin),
+            ("UAM_RP_ID", self.rp_id),
+            ("UAM_EMAIL_PEPPER", self.email_pepper),
+            ("UAM_EMAIL_KEY", self.email_key),
+        ):
+            if not value:
+                refuse(name, "must be set")
+        if len(self.email_pepper) < 32:
+            refuse("UAM_EMAIL_PEPPER", "must be at least 32 characters")
+        try:
+            decode_email_key(self.email_key)
+        except ValueError as exc:
+            refuse("UAM_EMAIL_KEY", f"must be base64url of 32 bytes ({exc})")
+
+        try:
+            parts = urlsplit(self.owner_origin)
+            host = parts.hostname or ""
+            parts.port  # noqa: B018  (raises on a bad port)
+        except ValueError:
+            refuse("UAM_OWNER_ORIGIN", "is not a URL")
+        local = host in ("localhost", "127.0.0.1")
+        if parts.scheme != "https" and not (parts.scheme == "http" and local):
+            refuse("UAM_OWNER_ORIGIN", "must be https (http only for localhost)")
+        if (
+            not host
+            or parts.username is not None
+            or parts.password is not None
+            or parts.path not in ("", "/")
+            or parts.query
+            or parts.fragment
+        ):
+            refuse("UAM_OWNER_ORIGIN", "must be scheme://host[:port] and nothing else")
+        self.owner_origin = f"{parts.scheme}://{parts.netloc}".lower()
+        if host == (urlsplit(self.relay_http_url).hostname or "").lower():
+            refuse("UAM_OWNER_ORIGIN", "must be its own host, not the relay API's")
+
+        if self.rp_id != host and not host.endswith("." + self.rp_id):
+            refuse("UAM_RP_ID", f"must be {host!r} or a parent domain of it")
+        if self.owner_codes_to_log and self.rp_id in self.PRODUCTION_RP_IDS:
+            refuse("UAM_OWNER_CODES_TO_LOG", "refused with a production RP ID")
 
     @staticmethod
     def _require(name: str) -> str:

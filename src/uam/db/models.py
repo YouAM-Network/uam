@@ -36,7 +36,17 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Column, DateTime, ForeignKey, Integer, String, UniqueConstraint, func
+from sqlalchemy import (
+    JSON,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlmodel import Field, SQLModel
 
 # ---------------------------------------------------------------------------
@@ -367,6 +377,116 @@ class InboundContact(SQLModel, table=True):
             nullable=False,
         ),
     )
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _created_at() -> Column:
+    return Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+def _owner_fk(table: str) -> Column:
+    return Column(
+        Integer,
+        ForeignKey("owners.id", ondelete="CASCADE", name=f"fk_{table}_owner"),
+        nullable=False,
+    )
+
+
+class Owner(SQLModel, table=True):
+    """A person who approves contacts for their agents (P2c-1, migration 0013).
+
+    ``owner_id`` is filled once the owner's key log has an entry 0 (P2c-2).
+    ``status`` is ``active`` or ``frozen``; ``created_via`` is ``admin`` or
+    ``invite``.
+    """
+
+    __tablename__ = "owners"
+    __table_args__ = (UniqueConstraint("owner_id", name="uq_owners_owner_id"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    owner_id: str | None = Field(default=None, sa_column=Column(String, nullable=True))
+    status: str = Field(
+        default="active", sa_column=Column(String, nullable=False, server_default="active")
+    )
+    created_via: str = Field(sa_column=Column(String, nullable=False))
+    created_at: datetime = Field(default_factory=_now, sa_column=_created_at())
+
+
+class OwnerEmail(SQLModel, table=True):
+    """An owner's email: ``email_hmac`` to look it up, ``email_enc`` to send to it."""
+
+    __tablename__ = "owner_emails"
+    __table_args__ = (UniqueConstraint("email_hmac", name="uq_owner_emails_hmac"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    owner_pk: int = Field(sa_column=_owner_fk("owner_emails"))
+    email_hmac: str = Field(sa_column=Column(String, nullable=False))
+    email_enc: str = Field(sa_column=Column(String, nullable=False))
+    verified_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    created_at: datetime = Field(default_factory=_now, sa_column=_created_at())
+
+
+class OwnerLoginCode(SQLModel, table=True):
+    """An emailed sign-in code, stored hashed. Keyed by email so asking for a
+    code says nothing about whether the address has an account."""
+
+    __tablename__ = "owner_login_codes"
+
+    id: int | None = Field(default=None, primary_key=True)
+    email_hmac: str = Field(
+        sa_column=Column(String, nullable=False, index=True)
+    )
+    code_hash: str = Field(sa_column=Column(String, nullable=False))
+    tries: int = Field(default=0, sa_column=Column(Integer, nullable=False, server_default="0"))
+    expires_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    used_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    created_at: datetime = Field(default_factory=_now, sa_column=_created_at())
+
+
+class OwnerSession(SQLModel, table=True):
+    """A signed-in session on the owner origin; the cookie's token, hashed."""
+
+    __tablename__ = "owner_sessions"
+    __table_args__ = (UniqueConstraint("token_hash", name="uq_owner_sessions_token_hash"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    owner_pk: int = Field(sa_column=_owner_fk("owner_sessions"))
+    token_hash: str = Field(sa_column=Column(String, nullable=False))
+    expires_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    last_seen: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    revoked_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    created_at: datetime = Field(default_factory=_now, sa_column=_created_at())
+
+
+class OwnerAudit(SQLModel, table=True):
+    """What happened to an owner account. ``details`` is JSON text and never
+    holds an email address or an IP."""
+
+    __tablename__ = "owner_audit"
+
+    id: int | None = Field(default=None, primary_key=True)
+    owner_pk: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("owners.id", ondelete="CASCADE", name="fk_owner_audit_owner"),
+            nullable=False,
+            index=True,
+        )
+    )
+    action: str = Field(sa_column=Column(String, nullable=False))
+    details: str = Field(
+        default="{}", sa_column=Column(Text, nullable=False, server_default="{}")
+    )
+    at: datetime = Field(default_factory=_now, sa_column=_created_at())
 
 
 class RoutedMessage(SQLModel, table=True):

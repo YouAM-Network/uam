@@ -68,6 +68,17 @@ DATETIME_COLUMNS = [
     ("inbound_contacts", "expires_at", True),
     ("inbound_contacts", "created_at", False),
     ("inbound_contacts", "updated_at", False),
+    ("owners", "created_at", False),
+    ("owner_emails", "verified_at", True),
+    ("owner_emails", "created_at", False),
+    ("owner_login_codes", "expires_at", False),
+    ("owner_login_codes", "used_at", True),
+    ("owner_login_codes", "created_at", False),
+    ("owner_sessions", "expires_at", False),
+    ("owner_sessions", "last_seen", False),
+    ("owner_sessions", "revoked_at", True),
+    ("owner_sessions", "created_at", False),
+    ("owner_audit", "at", False),
 ]
 # The census-drift test below allows ±2 to absorb minor additions.
 
