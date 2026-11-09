@@ -1,0 +1,1426 @@
+[
+ {
+  "name": "owner_keys_entry0",
+  "body": {
+   "type": "UamOwnerKeys",
+   "v": 1,
+   "owner": {
+    "relay": "youam.network"
+   },
+   "seq": 0,
+   "keys": [
+    {
+     "id": "did:key:zDnaebkrzg1EeBrHzATo8o3pBfQfyGXrPe4Zg5zjW65a3vBUH",
+     "rpId": "youam.network",
+     "backupEligible": true,
+     "label": "Alice iPhone"
+    }
+   ]
+  },
+  "ok": true,
+  "canonical": "{\"keys\":[{\"backupEligible\":true,\"id\":\"did:key:zDnaebkrzg1EeBrHzATo8o3pBfQfyGXrPe4Zg5zjW65a3vBUH\",\"label\":\"Alice iPhone\",\"rpId\":\"youam.network\"}],\"owner\":{\"relay\":\"youam.network\"},\"seq\":0,\"type\":\"UamOwnerKeys\",\"v\":1}",
+  "hash": "l_uUs_qUWUAvsigZQK3Kre9GhgeYaqJEUrM6TWYUEmI"
+ },
+ {
+  "name": "owner_keys_later",
+  "body": {
+   "type": "UamOwnerKeys",
+   "v": 1,
+   "owner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC"
+   },
+   "seq": 3,
+   "prev": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+   "keys": [
+    {
+     "id": "did:key:zDnaebkrzg1EeBrHzATo8o3pBfQfyGXrPe4Zg5zjW65a3vBUH",
+     "rpId": "youam.network",
+     "backupEligible": false,
+     "label": "Key"
+    }
+   ],
+   "removed": [
+    {
+     "id": "did:key:zDnaetGgKPodrrev9GFVRhczRBfFWZ9tXQqRR5ZxSarboHkif",
+     "reason": "compromised"
+    }
+   ]
+  },
+  "ok": true,
+  "canonical": "{\"keys\":[{\"backupEligible\":false,\"id\":\"did:key:zDnaebkrzg1EeBrHzATo8o3pBfQfyGXrPe4Zg5zjW65a3vBUH\",\"label\":\"Key\",\"rpId\":\"youam.network\"}],\"owner\":{\"ownerId\":\"CCCCCCCCCCCCCCCCCCCCCC\",\"relay\":\"youam.network\"},\"prev\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"removed\":[{\"id\":\"did:key:zDnaetGgKPodrrev9GFVRhczRBfFWZ9tXQqRR5ZxSarboHkif\",\"reason\":\"compromised\"}],\"seq\":3,\"type\":\"UamOwnerKeys\",\"v\":1}",
+  "hash": "gATV4Es2-1WQmMpz8Fr8gvJrpEUzY8cisDE7S76bQ1Q"
+ },
+ {
+  "name": "owner_link",
+  "body": {
+   "type": "UamOwnerLink",
+   "v": 1,
+   "owner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+    "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   },
+   "agent": "bob::youam.network",
+   "agentKey": "did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb",
+   "relay": "youam.network",
+   "via": "setup",
+   "shared": true,
+   "effectiveAt": "2026-11-12T10:00:00Z",
+   "validFrom": "2026-11-09T10:00:00Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": true,
+  "canonical": "{\"agent\":\"bob::youam.network\",\"agentKey\":\"did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb\",\"effectiveAt\":\"2026-11-12T10:00:00Z\",\"nonce\":\"nonce-0123456789ab\",\"owner\":{\"keysHash\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"ownerId\":\"CCCCCCCCCCCCCCCCCCCCCC\",\"relay\":\"youam.network\"},\"relay\":\"youam.network\",\"shared\":true,\"type\":\"UamOwnerLink\",\"v\":1,\"validFrom\":\"2026-11-09T10:00:00Z\",\"via\":\"setup\"}",
+  "hash": "1E2T0yp9XjWu5gOk12k1nDD24NT8tLDv11T9O4ykRz8"
+ },
+ {
+  "name": "owner_unlink",
+  "body": {
+   "type": "UamOwnerUnlink",
+   "v": 1,
+   "owner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+    "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   },
+   "agent": "bob::youam.network",
+   "agentKey": "did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb",
+   "reason": "owner",
+   "validFrom": "2026-11-09T10:00:00Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": true,
+  "canonical": "{\"agent\":\"bob::youam.network\",\"agentKey\":\"did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb\",\"nonce\":\"nonce-0123456789ab\",\"owner\":{\"keysHash\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"ownerId\":\"CCCCCCCCCCCCCCCCCCCCCC\",\"relay\":\"youam.network\"},\"reason\":\"owner\",\"type\":\"UamOwnerUnlink\",\"v\":1,\"validFrom\":\"2026-11-09T10:00:00Z\"}",
+  "hash": "YZGh-nccSEKok2SoGPy0C8R5S4UWvGkTQYFRFyNdzdk"
+ },
+ {
+  "name": "invite_preapproved",
+  "body": {
+   "type": "UamInvite",
+   "v": 1,
+   "inviter": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+    "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   },
+   "offer": {
+    "actions": [
+     "message"
+    ],
+    "locations": [
+     "shared"
+    ]
+   },
+   "ask": {
+    "actions": [
+     "message"
+    ],
+    "locations": [
+     "shared"
+    ]
+   },
+   "secretHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+   "emailHash": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+   "mode": "preapproved",
+   "maxUses": 1,
+   "validFrom": "2026-11-09T10:00:00Z",
+   "redeemBy": "2026-11-16T10:00:00Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": true,
+  "canonical": "{\"ask\":{\"actions\":[\"message\"],\"locations\":[\"shared\"]},\"emailHash\":\"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\",\"inviter\":{\"keysHash\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"ownerId\":\"CCCCCCCCCCCCCCCCCCCCCC\",\"relay\":\"youam.network\"},\"maxUses\":1,\"mode\":\"preapproved\",\"nonce\":\"nonce-0123456789ab\",\"offer\":{\"actions\":[\"message\"],\"locations\":[\"shared\"]},\"redeemBy\":\"2026-11-16T10:00:00Z\",\"secretHash\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"type\":\"UamInvite\",\"v\":1,\"validFrom\":\"2026-11-09T10:00:00Z\"}",
+  "hash": "6GWqM0nxti7t3N63kx9V0uDK5sLL_X1cyt6h6hGq2F4"
+ },
+ {
+  "name": "invite_confirm",
+  "body": {
+   "type": "UamInvite",
+   "v": 1,
+   "inviter": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+    "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   },
+   "offer": {
+    "actions": [
+     "message"
+    ],
+    "locations": [
+     "alice-research::youam.network"
+    ]
+   },
+   "ask": {
+    "actions": [
+     "message"
+    ],
+    "locations": [
+     "shared"
+    ]
+   },
+   "secretHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+   "mode": "confirm",
+   "maxUses": 1,
+   "validFrom": "2026-11-09T10:00:00Z",
+   "redeemBy": "2026-11-09T10:10:00Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": true,
+  "canonical": "{\"ask\":{\"actions\":[\"message\"],\"locations\":[\"shared\"]},\"inviter\":{\"keysHash\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"ownerId\":\"CCCCCCCCCCCCCCCCCCCCCC\",\"relay\":\"youam.network\"},\"maxUses\":1,\"mode\":\"confirm\",\"nonce\":\"nonce-0123456789ab\",\"offer\":{\"actions\":[\"message\"],\"locations\":[\"alice-research::youam.network\"]},\"redeemBy\":\"2026-11-09T10:10:00Z\",\"secretHash\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"type\":\"UamInvite\",\"v\":1,\"validFrom\":\"2026-11-09T10:00:00Z\"}",
+  "hash": "Lq14CJRWQaNDzeRD-KHcW9xulepEJmMBEM6J0jsa4Hc"
+ },
+ {
+  "name": "redemption",
+  "body": {
+   "type": "UamRedemption",
+   "v": 1,
+   "invite": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+   "secret": "ssssssssssssssssssssss",
+   "invitee": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+    "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   },
+   "issuer": "did:key:zDnaebkrzg1EeBrHzATo8o3pBfQfyGXrPe4Zg5zjW65a3vBUH",
+   "createdAt": "2026-11-09T10:05:00Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": true,
+  "canonical": "{\"createdAt\":\"2026-11-09T10:05:00Z\",\"invite\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"invitee\":{\"keysHash\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"ownerId\":\"CCCCCCCCCCCCCCCCCCCCCC\",\"relay\":\"youam.network\"},\"issuer\":\"did:key:zDnaebkrzg1EeBrHzATo8o3pBfQfyGXrPe4Zg5zjW65a3vBUH\",\"nonce\":\"nonce-0123456789ab\",\"secret\":\"ssssssssssssssssssssss\",\"type\":\"UamRedemption\",\"v\":1}",
+  "hash": "rR6PqTFyILEMTZqE_lKMwfkQuMRh9ZrAejwOOK65nhA"
+ },
+ {
+  "name": "grant_owner",
+  "body": {
+   "type": "UamContactGrant",
+   "v": 1,
+   "issuer": "did:key:zDnaebkrzg1EeBrHzATo8o3pBfQfyGXrPe4Zg5zjW65a3vBUH",
+   "issuerOwner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC"
+   },
+   "credentialSubject": {
+    "kind": "owner",
+    "owner": {
+     "relay": "youam.network",
+     "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+     "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    }
+   },
+   "authorization_details": [
+    {
+     "type": "uam_contact",
+     "actions": [
+      "message"
+     ],
+     "locations": [
+      "shared"
+     ]
+    }
+   ],
+   "via": "intro_email",
+   "enforcer": "youam.network",
+   "validFrom": "2026-11-09T10:00:00Z",
+   "validUntil": "2027-02-07T10:00:00Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": true,
+  "canonical": "{\"authorization_details\":[{\"actions\":[\"message\"],\"locations\":[\"shared\"],\"type\":\"uam_contact\"}],\"credentialSubject\":{\"kind\":\"owner\",\"owner\":{\"keysHash\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"ownerId\":\"CCCCCCCCCCCCCCCCCCCCCC\",\"relay\":\"youam.network\"}},\"enforcer\":\"youam.network\",\"issuer\":\"did:key:zDnaebkrzg1EeBrHzATo8o3pBfQfyGXrPe4Zg5zjW65a3vBUH\",\"issuerOwner\":{\"ownerId\":\"CCCCCCCCCCCCCCCCCCCCCC\",\"relay\":\"youam.network\"},\"nonce\":\"nonce-0123456789ab\",\"type\":\"UamContactGrant\",\"v\":1,\"validFrom\":\"2026-11-09T10:00:00Z\",\"validUntil\":\"2027-02-07T10:00:00Z\",\"via\":\"intro_email\"}",
+  "hash": "z2SPU2U1w_aq4EyGHeBGqJ-wv4QAO9G-tVOHj0J7gzI"
+ },
+ {
+  "name": "grant_invitee",
+  "body": {
+   "type": "UamContactGrant",
+   "v": 1,
+   "issuer": "did:key:zDnaebkrzg1EeBrHzATo8o3pBfQfyGXrPe4Zg5zjW65a3vBUH",
+   "issuerOwner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC"
+   },
+   "credentialSubject": {
+    "kind": "invitee",
+    "invite": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   },
+   "authorization_details": [
+    {
+     "type": "uam_contact",
+     "actions": [
+      "message"
+     ],
+     "locations": [
+      "shared"
+     ]
+    }
+   ],
+   "via": "intro_email",
+   "enforcer": "youam.network",
+   "validFrom": "2026-11-09T10:00:00Z",
+   "validUntil": "2026-12-09T10:00:00Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": true,
+  "canonical": "{\"authorization_details\":[{\"actions\":[\"message\"],\"locations\":[\"shared\"],\"type\":\"uam_contact\"}],\"credentialSubject\":{\"invite\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"kind\":\"invitee\"},\"enforcer\":\"youam.network\",\"issuer\":\"did:key:zDnaebkrzg1EeBrHzATo8o3pBfQfyGXrPe4Zg5zjW65a3vBUH\",\"issuerOwner\":{\"ownerId\":\"CCCCCCCCCCCCCCCCCCCCCC\",\"relay\":\"youam.network\"},\"nonce\":\"nonce-0123456789ab\",\"type\":\"UamContactGrant\",\"v\":1,\"validFrom\":\"2026-11-09T10:00:00Z\",\"validUntil\":\"2026-12-09T10:00:00Z\",\"via\":\"intro_email\"}",
+  "hash": "xaH5_Tx2-BEIgNA0VaZdy-Nm4YisYLTi3Jhtn98-i_A"
+ },
+ {
+  "name": "grant_agent_with_ext",
+  "body": {
+   "type": "UamContactGrant",
+   "v": 1,
+   "issuer": "did:key:zDnaebkrzg1EeBrHzATo8o3pBfQfyGXrPe4Zg5zjW65a3vBUH",
+   "issuerOwner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC"
+   },
+   "credentialSubject": {
+    "kind": "agent",
+    "id": "did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb",
+    "address": "carol::x.example"
+   },
+   "authorization_details": [
+    {
+     "type": "uam_contact",
+     "actions": [
+      "message"
+     ],
+     "locations": [
+      "bob-research::youam.network",
+      "bob::youam.network"
+     ]
+    }
+   ],
+   "via": "request",
+   "enforcer": "youam.network",
+   "validFrom": "2026-11-09T10:00:00Z",
+   "validUntil": "2026-11-10T10:00:00Z",
+   "nonce": "nonce-0123456789ab",
+   "ext": {
+    "note": "not critical"
+   },
+   "crit": []
+  },
+  "ok": true,
+  "canonical": "{\"authorization_details\":[{\"actions\":[\"message\"],\"locations\":[\"bob-research::youam.network\",\"bob::youam.network\"],\"type\":\"uam_contact\"}],\"credentialSubject\":{\"address\":\"carol::x.example\",\"id\":\"did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb\",\"kind\":\"agent\"},\"crit\":[],\"enforcer\":\"youam.network\",\"ext\":{\"note\":\"not critical\"},\"issuer\":\"did:key:zDnaebkrzg1EeBrHzATo8o3pBfQfyGXrPe4Zg5zjW65a3vBUH\",\"issuerOwner\":{\"ownerId\":\"CCCCCCCCCCCCCCCCCCCCCC\",\"relay\":\"youam.network\"},\"nonce\":\"nonce-0123456789ab\",\"type\":\"UamContactGrant\",\"v\":1,\"validFrom\":\"2026-11-09T10:00:00Z\",\"validUntil\":\"2026-11-10T10:00:00Z\",\"via\":\"request\"}",
+  "hash": "NNoCiihdPInOAO15g6X-E1H-2WSD8YiwWhjk-hJI9hg"
+ },
+ {
+  "name": "unknown_member",
+  "body": {
+   "type": "UamOwnerLink",
+   "v": 1,
+   "owner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+    "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   },
+   "agent": "bob::youam.network",
+   "agentKey": "did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb",
+   "relay": "youam.network",
+   "via": "setup",
+   "shared": true,
+   "effectiveAt": "2026-11-12T10:00:00Z",
+   "validFrom": "2026-11-09T10:00:00Z",
+   "nonce": "nonce-0123456789ab",
+   "color": "blue"
+  },
+  "ok": false
+ },
+ {
+  "name": "unknown_nested_member",
+  "body": {
+   "type": "UamOwnerLink",
+   "v": 1,
+   "owner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+    "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "extra": "x"
+   },
+   "agent": "bob::youam.network",
+   "agentKey": "did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb",
+   "relay": "youam.network",
+   "via": "setup",
+   "shared": true,
+   "effectiveAt": "2026-11-12T10:00:00Z",
+   "validFrom": "2026-11-09T10:00:00Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": false
+ },
+ {
+  "name": "missing_member",
+  "body": {
+   "type": "UamOwnerLink",
+   "v": 1,
+   "owner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+    "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   },
+   "agent": "bob::youam.network",
+   "agentKey": "did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb",
+   "relay": "youam.network",
+   "via": "setup",
+   "shared": true,
+   "effectiveAt": "2026-11-12T10:00:00Z",
+   "validFrom": "2026-11-09T10:00:00Z"
+  },
+  "ok": false
+ },
+ {
+  "name": "wrong_version",
+  "body": {
+   "type": "UamOwnerLink",
+   "v": 2,
+   "owner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+    "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   },
+   "agent": "bob::youam.network",
+   "agentKey": "did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb",
+   "relay": "youam.network",
+   "via": "setup",
+   "shared": true,
+   "effectiveAt": "2026-11-12T10:00:00Z",
+   "validFrom": "2026-11-09T10:00:00Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": false
+ },
+ {
+  "name": "unknown_type",
+  "body": {
+   "type": "UamSomethingElse",
+   "v": 1,
+   "owner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+    "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   },
+   "agent": "bob::youam.network",
+   "agentKey": "did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb",
+   "relay": "youam.network",
+   "via": "setup",
+   "shared": true,
+   "effectiveAt": "2026-11-12T10:00:00Z",
+   "validFrom": "2026-11-09T10:00:00Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": false
+ },
+ {
+  "name": "bool_as_int",
+  "body": {
+   "type": "UamOwnerLink",
+   "v": true,
+   "owner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+    "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   },
+   "agent": "bob::youam.network",
+   "agentKey": "did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb",
+   "relay": "youam.network",
+   "via": "setup",
+   "shared": true,
+   "effectiveAt": "2026-11-12T10:00:00Z",
+   "validFrom": "2026-11-09T10:00:00Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": false
+ },
+ {
+  "name": "int_as_bool",
+  "body": {
+   "type": "UamOwnerLink",
+   "v": 1,
+   "owner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+    "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   },
+   "agent": "bob::youam.network",
+   "agentKey": "did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb",
+   "relay": "youam.network",
+   "via": "setup",
+   "shared": 1,
+   "effectiveAt": "2026-11-12T10:00:00Z",
+   "validFrom": "2026-11-09T10:00:00Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": false
+ },
+ {
+  "name": "bad_time",
+  "body": {
+   "type": "UamOwnerLink",
+   "v": 1,
+   "owner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+    "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   },
+   "agent": "bob::youam.network",
+   "agentKey": "did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb",
+   "relay": "youam.network",
+   "via": "setup",
+   "shared": true,
+   "effectiveAt": "2026-11-12T10:00:00Z",
+   "validFrom": "2026-11-09T10:00:00.000Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": false
+ },
+ {
+  "name": "impossible_date",
+  "body": {
+   "type": "UamOwnerLink",
+   "v": 1,
+   "owner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+    "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   },
+   "agent": "bob::youam.network",
+   "agentKey": "did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb",
+   "relay": "youam.network",
+   "via": "setup",
+   "shared": true,
+   "effectiveAt": "2026-11-12T10:00:00Z",
+   "validFrom": "2026-02-30T10:00:00Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": false
+ },
+ {
+  "name": "bad_via",
+  "body": {
+   "type": "UamOwnerLink",
+   "v": 1,
+   "owner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+    "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   },
+   "agent": "bob::youam.network",
+   "agentKey": "did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb",
+   "relay": "youam.network",
+   "via": "magic",
+   "shared": true,
+   "effectiveAt": "2026-11-12T10:00:00Z",
+   "validFrom": "2026-11-09T10:00:00Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": false
+ },
+ {
+  "name": "bad_agent_key",
+  "body": {
+   "type": "UamOwnerLink",
+   "v": 1,
+   "owner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+    "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   },
+   "agent": "bob::youam.network",
+   "agentKey": "did:key:zDnaebkrzg1EeBrHzATo8o3pBfQfyGXrPe4Zg5zjW65a3vBUH",
+   "relay": "youam.network",
+   "via": "setup",
+   "shared": true,
+   "effectiveAt": "2026-11-12T10:00:00Z",
+   "validFrom": "2026-11-09T10:00:00Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": false
+ },
+ {
+  "name": "bad_address",
+  "body": {
+   "type": "UamOwnerLink",
+   "v": 1,
+   "owner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+    "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   },
+   "agent": "Bob::YouAM.network",
+   "agentKey": "did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb",
+   "relay": "youam.network",
+   "via": "setup",
+   "shared": true,
+   "effectiveAt": "2026-11-12T10:00:00Z",
+   "validFrom": "2026-11-09T10:00:00Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": false
+ },
+ {
+  "name": "bad_hash_length",
+  "body": {
+   "type": "UamOwnerLink",
+   "v": 1,
+   "owner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+    "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   },
+   "agent": "bob::youam.network",
+   "agentKey": "did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb",
+   "relay": "youam.network",
+   "via": "setup",
+   "shared": true,
+   "effectiveAt": "2026-11-12T10:00:00Z",
+   "validFrom": "2026-11-09T10:00:00Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": false
+ },
+ {
+  "name": "bad_hash_chars",
+  "body": {
+   "type": "UamOwnerLink",
+   "v": 1,
+   "owner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+    "keysHash": "+++++++++++++++++++++++++++++++++++++++++++"
+   },
+   "agent": "bob::youam.network",
+   "agentKey": "did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb",
+   "relay": "youam.network",
+   "via": "setup",
+   "shared": true,
+   "effectiveAt": "2026-11-12T10:00:00Z",
+   "validFrom": "2026-11-09T10:00:00Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": false
+ },
+ {
+  "name": "short_nonce",
+  "body": {
+   "type": "UamOwnerLink",
+   "v": 1,
+   "owner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+    "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   },
+   "agent": "bob::youam.network",
+   "agentKey": "did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb",
+   "relay": "youam.network",
+   "via": "setup",
+   "shared": true,
+   "effectiveAt": "2026-11-12T10:00:00Z",
+   "validFrom": "2026-11-09T10:00:00Z",
+   "nonce": "abc"
+  },
+  "ok": false
+ },
+ {
+  "name": "entry0_with_owner_id",
+  "body": {
+   "type": "UamOwnerKeys",
+   "v": 1,
+   "owner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC"
+   },
+   "seq": 0,
+   "keys": [
+    {
+     "id": "did:key:zDnaebkrzg1EeBrHzATo8o3pBfQfyGXrPe4Zg5zjW65a3vBUH",
+     "rpId": "youam.network",
+     "backupEligible": true,
+     "label": "Alice iPhone"
+    }
+   ]
+  },
+  "ok": false
+ },
+ {
+  "name": "entry0_with_prev",
+  "body": {
+   "type": "UamOwnerKeys",
+   "v": 1,
+   "owner": {
+    "relay": "youam.network"
+   },
+   "seq": 0,
+   "keys": [
+    {
+     "id": "did:key:zDnaebkrzg1EeBrHzATo8o3pBfQfyGXrPe4Zg5zjW65a3vBUH",
+     "rpId": "youam.network",
+     "backupEligible": true,
+     "label": "Alice iPhone"
+    }
+   ],
+   "prev": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  },
+  "ok": false
+ },
+ {
+  "name": "later_without_prev",
+  "body": {
+   "type": "UamOwnerKeys",
+   "v": 1,
+   "owner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC"
+   },
+   "seq": 3,
+   "keys": [
+    {
+     "id": "did:key:zDnaebkrzg1EeBrHzATo8o3pBfQfyGXrPe4Zg5zjW65a3vBUH",
+     "rpId": "youam.network",
+     "backupEligible": false,
+     "label": "Key"
+    }
+   ],
+   "removed": [
+    {
+     "id": "did:key:zDnaetGgKPodrrev9GFVRhczRBfFWZ9tXQqRR5ZxSarboHkif",
+     "reason": "compromised"
+    }
+   ]
+  },
+  "ok": false
+ },
+ {
+  "name": "later_without_owner_id",
+  "body": {
+   "type": "UamOwnerKeys",
+   "v": 1,
+   "owner": {
+    "relay": "youam.network"
+   },
+   "seq": 3,
+   "prev": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+   "keys": [
+    {
+     "id": "did:key:zDnaebkrzg1EeBrHzATo8o3pBfQfyGXrPe4Zg5zjW65a3vBUH",
+     "rpId": "youam.network",
+     "backupEligible": false,
+     "label": "Key"
+    }
+   ],
+   "removed": [
+    {
+     "id": "did:key:zDnaetGgKPodrrev9GFVRhczRBfFWZ9tXQqRR5ZxSarboHkif",
+     "reason": "compromised"
+    }
+   ]
+  },
+  "ok": false
+ },
+ {
+  "name": "no_keys",
+  "body": {
+   "type": "UamOwnerKeys",
+   "v": 1,
+   "owner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC"
+   },
+   "seq": 3,
+   "prev": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+   "keys": [],
+   "removed": [
+    {
+     "id": "did:key:zDnaetGgKPodrrev9GFVRhczRBfFWZ9tXQqRR5ZxSarboHkif",
+     "reason": "compromised"
+    }
+   ]
+  },
+  "ok": false
+ },
+ {
+  "name": "bad_removed_reason",
+  "body": {
+   "type": "UamOwnerKeys",
+   "v": 1,
+   "owner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC"
+   },
+   "seq": 3,
+   "prev": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+   "keys": [
+    {
+     "id": "did:key:zDnaebkrzg1EeBrHzATo8o3pBfQfyGXrPe4Zg5zjW65a3vBUH",
+     "rpId": "youam.network",
+     "backupEligible": false,
+     "label": "Key"
+    }
+   ],
+   "removed": [
+    {
+     "id": "did:key:zDnaetGgKPodrrev9GFVRhczRBfFWZ9tXQqRR5ZxSarboHkif",
+     "reason": "lost"
+    }
+   ]
+  },
+  "ok": false
+ },
+ {
+  "name": "preapproved_without_email",
+  "body": {
+   "type": "UamInvite",
+   "v": 1,
+   "inviter": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+    "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   },
+   "offer": {
+    "actions": [
+     "message"
+    ],
+    "locations": [
+     "shared"
+    ]
+   },
+   "ask": {
+    "actions": [
+     "message"
+    ],
+    "locations": [
+     "shared"
+    ]
+   },
+   "secretHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+   "mode": "preapproved",
+   "maxUses": 1,
+   "validFrom": "2026-11-09T10:00:00Z",
+   "redeemBy": "2026-11-16T10:00:00Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": false
+ },
+ {
+  "name": "two_uses",
+  "body": {
+   "type": "UamInvite",
+   "v": 1,
+   "inviter": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+    "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   },
+   "offer": {
+    "actions": [
+     "message"
+    ],
+    "locations": [
+     "shared"
+    ]
+   },
+   "ask": {
+    "actions": [
+     "message"
+    ],
+    "locations": [
+     "shared"
+    ]
+   },
+   "secretHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+   "emailHash": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+   "mode": "preapproved",
+   "maxUses": 2,
+   "validFrom": "2026-11-09T10:00:00Z",
+   "redeemBy": "2026-11-16T10:00:00Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": false
+ },
+ {
+  "name": "redeem_too_late",
+  "body": {
+   "type": "UamInvite",
+   "v": 1,
+   "inviter": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+    "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   },
+   "offer": {
+    "actions": [
+     "message"
+    ],
+    "locations": [
+     "shared"
+    ]
+   },
+   "ask": {
+    "actions": [
+     "message"
+    ],
+    "locations": [
+     "shared"
+    ]
+   },
+   "secretHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+   "emailHash": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+   "mode": "preapproved",
+   "maxUses": 1,
+   "validFrom": "2026-11-09T10:00:00Z",
+   "redeemBy": "2026-11-16T10:00:01Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": false
+ },
+ {
+  "name": "redeem_before_valid",
+  "body": {
+   "type": "UamInvite",
+   "v": 1,
+   "inviter": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+    "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   },
+   "offer": {
+    "actions": [
+     "message"
+    ],
+    "locations": [
+     "shared"
+    ]
+   },
+   "ask": {
+    "actions": [
+     "message"
+    ],
+    "locations": [
+     "shared"
+    ]
+   },
+   "secretHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+   "emailHash": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+   "mode": "preapproved",
+   "maxUses": 1,
+   "validFrom": "2026-11-09T10:00:00Z",
+   "redeemBy": "2026-11-09T09:59:59Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": false
+ },
+ {
+  "name": "unknown_action",
+  "body": {
+   "type": "UamInvite",
+   "v": 1,
+   "inviter": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+    "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   },
+   "offer": {
+    "actions": [
+     "approve"
+    ],
+    "locations": [
+     "shared"
+    ]
+   },
+   "ask": {
+    "actions": [
+     "message"
+    ],
+    "locations": [
+     "shared"
+    ]
+   },
+   "secretHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+   "emailHash": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+   "mode": "preapproved",
+   "maxUses": 1,
+   "validFrom": "2026-11-09T10:00:00Z",
+   "redeemBy": "2026-11-16T10:00:00Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": false
+ },
+ {
+  "name": "empty_locations",
+  "body": {
+   "type": "UamInvite",
+   "v": 1,
+   "inviter": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+    "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   },
+   "offer": {
+    "actions": [
+     "message"
+    ],
+    "locations": []
+   },
+   "ask": {
+    "actions": [
+     "message"
+    ],
+    "locations": [
+     "shared"
+    ]
+   },
+   "secretHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+   "emailHash": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+   "mode": "preapproved",
+   "maxUses": 1,
+   "validFrom": "2026-11-09T10:00:00Z",
+   "redeemBy": "2026-11-16T10:00:00Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": false
+ },
+ {
+  "name": "bad_location",
+  "body": {
+   "type": "UamInvite",
+   "v": 1,
+   "inviter": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+    "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   },
+   "offer": {
+    "actions": [
+     "message"
+    ],
+    "locations": [
+     "everywhere"
+    ]
+   },
+   "ask": {
+    "actions": [
+     "message"
+    ],
+    "locations": [
+     "shared"
+    ]
+   },
+   "secretHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+   "emailHash": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+   "mode": "preapproved",
+   "maxUses": 1,
+   "validFrom": "2026-11-09T10:00:00Z",
+   "redeemBy": "2026-11-16T10:00:00Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": false
+ },
+ {
+  "name": "grant_too_long",
+  "body": {
+   "type": "UamContactGrant",
+   "v": 1,
+   "issuer": "did:key:zDnaebkrzg1EeBrHzATo8o3pBfQfyGXrPe4Zg5zjW65a3vBUH",
+   "issuerOwner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC"
+   },
+   "credentialSubject": {
+    "kind": "owner",
+    "owner": {
+     "relay": "youam.network",
+     "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+     "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    }
+   },
+   "authorization_details": [
+    {
+     "type": "uam_contact",
+     "actions": [
+      "message"
+     ],
+     "locations": [
+      "shared"
+     ]
+    }
+   ],
+   "via": "intro_email",
+   "enforcer": "youam.network",
+   "validFrom": "2026-11-09T10:00:00Z",
+   "validUntil": "2027-02-07T10:00:01Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": false
+ },
+ {
+  "name": "grant_unknown_subject",
+  "body": {
+   "type": "UamContactGrant",
+   "v": 1,
+   "issuer": "did:key:zDnaebkrzg1EeBrHzATo8o3pBfQfyGXrPe4Zg5zjW65a3vBUH",
+   "issuerOwner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC"
+   },
+   "credentialSubject": {
+    "kind": "team",
+    "owner": {
+     "relay": "youam.network",
+     "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+     "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    }
+   },
+   "authorization_details": [
+    {
+     "type": "uam_contact",
+     "actions": [
+      "message"
+     ],
+     "locations": [
+      "shared"
+     ]
+    }
+   ],
+   "via": "intro_email",
+   "enforcer": "youam.network",
+   "validFrom": "2026-11-09T10:00:00Z",
+   "validUntil": "2027-02-07T10:00:00Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": false
+ },
+ {
+  "name": "grant_subject_mixed",
+  "body": {
+   "type": "UamContactGrant",
+   "v": 1,
+   "issuer": "did:key:zDnaebkrzg1EeBrHzATo8o3pBfQfyGXrPe4Zg5zjW65a3vBUH",
+   "issuerOwner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC"
+   },
+   "credentialSubject": {
+    "kind": "invitee",
+    "invite": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "owner": {
+     "relay": "youam.network",
+     "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+     "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    }
+   },
+   "authorization_details": [
+    {
+     "type": "uam_contact",
+     "actions": [
+      "message"
+     ],
+     "locations": [
+      "shared"
+     ]
+    }
+   ],
+   "via": "intro_email",
+   "enforcer": "youam.network",
+   "validFrom": "2026-11-09T10:00:00Z",
+   "validUntil": "2026-12-09T10:00:00Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": false
+ },
+ {
+  "name": "grant_agent_needs_ed25519",
+  "body": {
+   "type": "UamContactGrant",
+   "v": 1,
+   "issuer": "did:key:zDnaebkrzg1EeBrHzATo8o3pBfQfyGXrPe4Zg5zjW65a3vBUH",
+   "issuerOwner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC"
+   },
+   "credentialSubject": {
+    "kind": "agent",
+    "id": "did:key:zDnaebkrzg1EeBrHzATo8o3pBfQfyGXrPe4Zg5zjW65a3vBUH",
+    "address": "carol::x.example"
+   },
+   "authorization_details": [
+    {
+     "type": "uam_contact",
+     "actions": [
+      "message"
+     ],
+     "locations": [
+      "bob-research::youam.network",
+      "bob::youam.network"
+     ]
+    }
+   ],
+   "via": "request",
+   "enforcer": "youam.network",
+   "validFrom": "2026-11-09T10:00:00Z",
+   "validUntil": "2026-11-10T10:00:00Z",
+   "nonce": "nonce-0123456789ab",
+   "ext": {
+    "note": "not critical"
+   },
+   "crit": []
+  },
+  "ok": false
+ },
+ {
+  "name": "grant_issuer_not_passkey",
+  "body": {
+   "type": "UamContactGrant",
+   "v": 1,
+   "issuer": "did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb",
+   "issuerOwner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC"
+   },
+   "credentialSubject": {
+    "kind": "owner",
+    "owner": {
+     "relay": "youam.network",
+     "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+     "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    }
+   },
+   "authorization_details": [
+    {
+     "type": "uam_contact",
+     "actions": [
+      "message"
+     ],
+     "locations": [
+      "shared"
+     ]
+    }
+   ],
+   "via": "intro_email",
+   "enforcer": "youam.network",
+   "validFrom": "2026-11-09T10:00:00Z",
+   "validUntil": "2027-02-07T10:00:00Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": false
+ },
+ {
+  "name": "grant_bad_detail_type",
+  "body": {
+   "type": "UamContactGrant",
+   "v": 1,
+   "issuer": "did:key:zDnaebkrzg1EeBrHzATo8o3pBfQfyGXrPe4Zg5zjW65a3vBUH",
+   "issuerOwner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC"
+   },
+   "credentialSubject": {
+    "kind": "owner",
+    "owner": {
+     "relay": "youam.network",
+     "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+     "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    }
+   },
+   "authorization_details": [
+    {
+     "type": "other",
+     "actions": [
+      "message"
+     ],
+     "locations": [
+      "shared"
+     ]
+    }
+   ],
+   "via": "intro_email",
+   "enforcer": "youam.network",
+   "validFrom": "2026-11-09T10:00:00Z",
+   "validUntil": "2027-02-07T10:00:00Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": false
+ },
+ {
+  "name": "grant_no_details",
+  "body": {
+   "type": "UamContactGrant",
+   "v": 1,
+   "issuer": "did:key:zDnaebkrzg1EeBrHzATo8o3pBfQfyGXrPe4Zg5zjW65a3vBUH",
+   "issuerOwner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC"
+   },
+   "credentialSubject": {
+    "kind": "owner",
+    "owner": {
+     "relay": "youam.network",
+     "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+     "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    }
+   },
+   "authorization_details": [],
+   "via": "intro_email",
+   "enforcer": "youam.network",
+   "validFrom": "2026-11-09T10:00:00Z",
+   "validUntil": "2027-02-07T10:00:00Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": false
+ },
+ {
+  "name": "unknown_critical_ext",
+  "body": {
+   "type": "UamContactGrant",
+   "v": 1,
+   "issuer": "did:key:zDnaebkrzg1EeBrHzATo8o3pBfQfyGXrPe4Zg5zjW65a3vBUH",
+   "issuerOwner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC"
+   },
+   "credentialSubject": {
+    "kind": "agent",
+    "id": "did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb",
+    "address": "carol::x.example"
+   },
+   "authorization_details": [
+    {
+     "type": "uam_contact",
+     "actions": [
+      "message"
+     ],
+     "locations": [
+      "bob-research::youam.network",
+      "bob::youam.network"
+     ]
+    }
+   ],
+   "via": "request",
+   "enforcer": "youam.network",
+   "validFrom": "2026-11-09T10:00:00Z",
+   "validUntil": "2026-11-10T10:00:00Z",
+   "nonce": "nonce-0123456789ab",
+   "ext": {
+    "note": "not critical"
+   },
+   "crit": [
+    "note"
+   ]
+  },
+  "ok": false
+ },
+ {
+  "name": "crit_names_missing_ext",
+  "body": {
+   "type": "UamContactGrant",
+   "v": 1,
+   "issuer": "did:key:zDnaebkrzg1EeBrHzATo8o3pBfQfyGXrPe4Zg5zjW65a3vBUH",
+   "issuerOwner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC"
+   },
+   "credentialSubject": {
+    "kind": "agent",
+    "id": "did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb",
+    "address": "carol::x.example"
+   },
+   "authorization_details": [
+    {
+     "type": "uam_contact",
+     "actions": [
+      "message"
+     ],
+     "locations": [
+      "bob-research::youam.network",
+      "bob::youam.network"
+     ]
+    }
+   ],
+   "via": "request",
+   "enforcer": "youam.network",
+   "validFrom": "2026-11-09T10:00:00Z",
+   "validUntil": "2026-11-10T10:00:00Z",
+   "nonce": "nonce-0123456789ab",
+   "ext": {
+    "note": "not critical"
+   },
+   "crit": [
+    "absent"
+   ]
+  },
+  "ok": false
+ },
+ {
+  "name": "crit_without_ext",
+  "body": {
+   "type": "UamContactGrant",
+   "v": 1,
+   "issuer": "did:key:zDnaebkrzg1EeBrHzATo8o3pBfQfyGXrPe4Zg5zjW65a3vBUH",
+   "issuerOwner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC"
+   },
+   "credentialSubject": {
+    "kind": "owner",
+    "owner": {
+     "relay": "youam.network",
+     "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+     "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    }
+   },
+   "authorization_details": [
+    {
+     "type": "uam_contact",
+     "actions": [
+      "message"
+     ],
+     "locations": [
+      "shared"
+     ]
+    }
+   ],
+   "via": "intro_email",
+   "enforcer": "youam.network",
+   "validFrom": "2026-11-09T10:00:00Z",
+   "validUntil": "2027-02-07T10:00:00Z",
+   "nonce": "nonce-0123456789ab",
+   "crit": []
+  },
+  "ok": false
+ },
+ {
+  "name": "ext_not_object",
+  "body": {
+   "type": "UamContactGrant",
+   "v": 1,
+   "issuer": "did:key:zDnaebkrzg1EeBrHzATo8o3pBfQfyGXrPe4Zg5zjW65a3vBUH",
+   "issuerOwner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC"
+   },
+   "credentialSubject": {
+    "kind": "agent",
+    "id": "did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb",
+    "address": "carol::x.example"
+   },
+   "authorization_details": [
+    {
+     "type": "uam_contact",
+     "actions": [
+      "message"
+     ],
+     "locations": [
+      "bob-research::youam.network",
+      "bob::youam.network"
+     ]
+    }
+   ],
+   "via": "request",
+   "enforcer": "youam.network",
+   "validFrom": "2026-11-09T10:00:00Z",
+   "validUntil": "2026-11-10T10:00:00Z",
+   "nonce": "nonce-0123456789ab",
+   "ext": "x",
+   "crit": []
+  },
+  "ok": false
+ }
+]

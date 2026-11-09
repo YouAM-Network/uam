@@ -1,0 +1,56 @@
+[
+ {
+  "kind": "ed25519",
+  "key": "dc82d4415aa9e00b5dc8f10c5db172b95c1aca5cabbfe095999b58385073bd70",
+  "did": "did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb",
+  "ok": true
+ },
+ {
+  "kind": "p256",
+  "key": "02a847bfe9c8a8e70d598bebebe8e7d2407789a9f4cb293975cc0db8cc1e2c9a1e",
+  "did": "did:key:zDnaebkrzg1EeBrHzATo8o3pBfQfyGXrPe4Zg5zjW65a3vBUH",
+  "ok": true
+ },
+ {
+  "kind": "p256",
+  "key": "039da6178b8b59e53909c016fdea74df22d2fba7c9998b1bfd4d4cbd3f58ac74dc",
+  "did": "did:key:zDnaetGgKPodrrev9GFVRhczRBfFWZ9tXQqRR5ZxSarboHkif",
+  "ok": true
+ },
+ {
+  "kind": "ed25519",
+  "key": "0000000000000000000000000000000000000000000000000000000000000000",
+  "did": "did:key:z6MkeTG3bFFSLYVU7VqhgZxqr6YzpaGrQtFMh1uvqGy1vDnP",
+  "ok": true
+ },
+ {
+  "name": "short_ed25519",
+  "did": "did:key:z2DQYLGWQ78EoiMs6iDqoVjH4NUYEGwYJg9dEiXajjeusTa",
+  "ok": false
+ },
+ {
+  "name": "uncompressed_p256",
+  "did": "did:key:zDnaf3wz9Zr5vyZ9tyQBfkJnWFuuHTTGaKoBbAJfdv6Rv7sZz",
+  "ok": false
+ },
+ {
+  "name": "unknown_codec",
+  "did": "did:key:z6DtcdYAMMPWUgvk1YA5Uh8GiqmT12wJuMMr5K8VrjMR8eEs",
+  "ok": false
+ },
+ {
+  "name": "not_base58",
+  "did": "did:key:z0OIl",
+  "ok": false
+ },
+ {
+  "name": "not_multibase_z",
+  "did": "did:key:fdc82d4415aa9e00b5dc8f10c5db172b95c1aca5cabbfe095999b58385073bd70",
+  "ok": false
+ },
+ {
+  "name": "other_method",
+  "did": "did:web:example.com",
+  "ok": false
+ }
+]

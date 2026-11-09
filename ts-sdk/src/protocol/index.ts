@@ -74,3 +74,19 @@ export {
   contactCardToDict,
   contactCardFromDict,
 } from "./contact.js";
+
+// Signed owner objects
+export {
+  type Body as SignedBody,
+  SignedObjectError,
+  parseBody,
+  canonical,
+  objectHash,
+  validate as validateSignedObject,
+} from "./signed.js";
+export {
+  type DidKeyKind,
+  InvalidDidKeyError,
+  encodeDidKey,
+  decodeDidKey,
+} from "./didkey.js";

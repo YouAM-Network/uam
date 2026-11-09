@@ -1,0 +1,132 @@
+[
+ {
+  "name": "plain",
+  "text": "{\"a\":1,\"b\":\"x\"}",
+  "ok": true,
+  "canonical": "{\"a\":1,\"b\":\"x\"}"
+ },
+ {
+  "name": "sorted_and_compacted",
+  "text": "{ \"b\" : [true, false],\n \"a\" : {\"d\":1,\"c\":2} }",
+  "ok": true,
+  "canonical": "{\"a\":{\"c\":2,\"d\":1},\"b\":[true,false]}"
+ },
+ {
+  "name": "escapes_kept",
+  "text": "{\"a\":\"q\\\"b\\\\c\"}",
+  "ok": true,
+  "canonical": "{\"a\":\"q\\\"b\\\\c\"}"
+ },
+ {
+  "name": "unicode_escape_of_ascii",
+  "text": "{\"a\":\"\\u0041\"}",
+  "ok": true,
+  "canonical": "{\"a\":\"A\"}"
+ },
+ {
+  "name": "max_int",
+  "text": "{\"a\":9007199254740991,\"b\":-9007199254740991}",
+  "ok": true,
+  "canonical": "{\"a\":9007199254740991,\"b\":-9007199254740991}"
+ },
+ {
+  "name": "duplicate_key",
+  "text": "{\"a\":1,\"a\":2}",
+  "ok": false
+ },
+ {
+  "name": "nested_duplicate_key",
+  "text": "{\"a\":{\"b\":1,\"b\":1}}",
+  "ok": false
+ },
+ {
+  "name": "float",
+  "text": "{\"a\":1.5}",
+  "ok": false
+ },
+ {
+  "name": "float_whole",
+  "text": "{\"a\":1.0}",
+  "ok": false
+ },
+ {
+  "name": "exponent",
+  "text": "{\"a\":1e3}",
+  "ok": false
+ },
+ {
+  "name": "negative_zero",
+  "text": "{\"a\":-0}",
+  "ok": false
+ },
+ {
+  "name": "too_big",
+  "text": "{\"a\":9007199254740992}",
+  "ok": false
+ },
+ {
+  "name": "too_small",
+  "text": "{\"a\":-9007199254740992}",
+  "ok": false
+ },
+ {
+  "name": "null",
+  "text": "{\"a\":null}",
+  "ok": false
+ },
+ {
+  "name": "non_ascii",
+  "text": "{\"a\":\"café\"}",
+  "ok": false
+ },
+ {
+  "name": "non_ascii_escaped",
+  "text": "{\"a\":\"caf\\u00e9\"}",
+  "ok": false
+ },
+ {
+  "name": "control_char",
+  "text": "{\"a\":\"x\\ny\"}",
+  "ok": false
+ },
+ {
+  "name": "non_ascii_key",
+  "text": "{\"é\":1}",
+  "ok": false
+ },
+ {
+  "name": "top_level_array",
+  "text": "[1]",
+  "ok": false
+ },
+ {
+  "name": "nan",
+  "text": "{\"a\":NaN}",
+  "ok": false
+ },
+ {
+  "name": "trailing_garbage",
+  "text": "{\"a\":1} x",
+  "ok": false
+ },
+ {
+  "name": "trailing_comma",
+  "text": "{\"a\":1,}",
+  "ok": false
+ },
+ {
+  "name": "leading_zero",
+  "text": "{\"a\":01}",
+  "ok": false
+ },
+ {
+  "name": "rfc8785_sorting_example",
+  "text": "{\"\\u20ac\":\"Euro Sign\",\"\\r\":\"Carriage Return\",\"1\":\"One\"}",
+  "ok": false
+ },
+ {
+  "name": "rfc8785_numbers_example",
+  "text": "{\"numbers\":[333333333.33333329,1E30,4.50]}",
+  "ok": false
+ }
+]
