@@ -85,16 +85,53 @@ def test_xff_ignored_when_peer_outside_cidr():
     assert resp.json()["host"] == "127.0.0.1"
 
 
-def test_xff_leftmost_ip_chosen():
-    """Multi-hop XFF => leftmost IP wins (original client)."""
+def test_xff_client_is_the_hop_before_the_trusted_proxies():
+    """Multi-hop XFF through trusted proxies => the last untrusted hop is the client."""
+    app = _probe_app(["127.0.0.0/8", "10.0.0.0/8"])
+    with TestClient(app) as c:
+        resp = c.get(
+            "/whoami",
+            headers={"X-Forwarded-For": "203.0.113.7, 10.0.0.1"},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["host"] == "203.0.113.7"
+
+
+def test_client_cannot_choose_its_ip_with_its_own_xff():
+    """A proxy appends to the XFF the client sent, so the left-most entry is
+    the client's own claim.  The relay must use the entry the proxy added."""
     app = _probe_app(["127.0.0.0/8"])
     with TestClient(app) as c:
         resp = c.get(
             "/whoami",
-            headers={"X-Forwarded-For": "203.0.113.7, 10.0.0.1, 192.168.1.1"},
+            headers={"X-Forwarded-For": "6.6.6.6, 203.0.113.7"},
         )
-    assert resp.status_code == 200
     assert resp.json()["host"] == "203.0.113.7"
+
+
+def test_forged_entries_behind_a_chain_of_trusted_proxies_are_ignored():
+    app = _probe_app(["127.0.0.0/8", "10.0.0.0/8"])
+    with TestClient(app) as c:
+        resp = c.get(
+            "/whoami",
+            headers={"X-Forwarded-For": "6.6.6.6, 1.2.3.4, 203.0.113.7, 10.0.0.9"},
+        )
+    assert resp.json()["host"] == "203.0.113.7"
+
+
+def test_a_malformed_hop_stops_the_walk_at_the_peer():
+    """A garbage entry where the client should be => keep the proxy's IP."""
+    app = _probe_app(["127.0.0.0/8"])
+    with TestClient(app) as c:
+        resp = c.get("/whoami", headers={"X-Forwarded-For": "203.0.113.7, junk"})
+    assert resp.json()["host"] == "127.0.0.1"
+
+
+def test_only_trusted_hops_falls_back_to_the_first():
+    app = _probe_app(["127.0.0.0/8", "10.0.0.0/8"])
+    with TestClient(app) as c:
+        resp = c.get("/whoami", headers={"X-Forwarded-For": "10.0.0.5, 10.0.0.1"})
+    assert resp.json()["host"] == "10.0.0.5"
 
 
 def test_malformed_xff_falls_back_to_peer():

@@ -266,6 +266,15 @@ relay.example.com {
 
 Caddy handles TLS automatically with Let's Encrypt.
 
+### Client IP behind a proxy
+
+Set `UAM_TRUSTED_PROXIES` to the addresses (CIDRs, comma-separated) of every proxy in front of the
+relay, for example `127.0.0.1/32` for nginx or Caddy on the same host. The relay honours
+`X-Forwarded-For` only from those addresses, and takes the client IP as the right-most entry that
+is not one of them. Entries to the left of that are supplied by the client and are ignored. If you
+run more than one proxy hop (a CDN in front of nginx, say), list each hop, or have the outermost
+proxy you control replace the header with the client IP it saw.
+
 ### Platform deployment
 
 Platforms like Railway, Fly.io, and Render handle TLS termination automatically. Set:

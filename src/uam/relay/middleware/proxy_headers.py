@@ -11,9 +11,10 @@ IP for every attacker, collapsing per-client limits into one shared bucket.
 Fix
 ---
 When the peer IP is inside a configured trusted-proxy CIDR, take the
-left-most entry from the ``X-Forwarded-For`` header (the original client,
-per the de-facto convention used by Starlette/nginx/envoy) and rewrite the
-ASGI ``scope["client"]`` tuple.  Requests whose peer is NOT in a trusted
+right-most ``X-Forwarded-For`` entry that is not itself a trusted proxy and
+rewrite the ASGI ``scope["client"]`` tuple.  Proxies (Cloudflare, Caddy,
+nginx) append to whatever header the client sent, so the left-most entry is
+the client's own claim and must never be believed.  Requests whose peer is NOT in a trusted
 CIDR are passed through unchanged -- this is critical: honoring XFF from
 arbitrary peers would let any attacker spoof their source IP by setting the
 header themselves.
@@ -23,8 +24,10 @@ Safety properties
 * Default configuration (``UAM_TRUSTED_PROXIES`` empty) is a no-op: XFF is
   ignored for every request.  Dev / test environments behave as before.
 * Malformed XFF values fall back to the peer IP -- never crash the request.
-* Only the LEFT-MOST XFF entry is trusted; intermediate proxies cannot
-  masquerade as arbitrary clients.
+* Only entries added by trusted proxies are believed: the client is the
+  right-most hop that isn't one.  List EVERY proxy hop in
+  ``UAM_TRUSTED_PROXIES`` (e.g. Cloudflare's published ranges plus the local
+  reverse proxy), or the relay will see the outer proxy as the client.
 * Rewritten scope is applied BEFORE any downstream middleware or route
   sees it, so all ``request.client.host`` lookups benefit automatically.
 
@@ -89,30 +92,54 @@ def _peer_in_trusted(
     return False
 
 
-def _leftmost_xff(xff_value: str) -> str | None:
-    """Extract and validate the leftmost IP from an X-Forwarded-For value.
+def _normalize_ip(candidate: str) -> str | None:
+    """One X-Forwarded-For entry as a plain IP string, or None if it isn't one.
 
-    Returns ``None`` if the value is malformed or empty.  Strips whitespace.
-    Strips IPv4-mapped IPv6 prefix (``::ffff:1.2.3.4`` -> ``1.2.3.4``) so
-    CIDR membership tests behave sensibly for mixed-stack deployments.
+    Strips whitespace and brackets (``[::1]``) and turns IPv4-mapped IPv6
+    (``::ffff:1.2.3.4``) into ``1.2.3.4`` so CIDR tests and rate-limit keys
+    behave the same on mixed-stack deployments.
     """
-    if not xff_value:
-        return None
-    first, _, _ = xff_value.partition(",")
-    candidate = first.strip()
-    if not candidate:
-        return None
-    # Tolerate bracketed IPv6 literals: "[::1]"
+    candidate = candidate.strip()
     if candidate.startswith("[") and candidate.endswith("]"):
         candidate = candidate[1:-1]
+    if not candidate:
+        return None
     try:
         addr = ipaddress.ip_address(candidate)
     except ValueError:
         return None
-    # Normalize IPv4-mapped IPv6.
     if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
         return str(addr.ipv4_mapped)
     return str(addr)
+
+
+def _client_from_xff(
+    xff_value: str,
+    networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network],
+) -> str | None:
+    """The client IP in an X-Forwarded-For value: the right-most untrusted hop.
+
+    Proxies append the address they received the request from, so only the
+    entries our trusted proxies added are facts; everything to their left is
+    whatever the client chose to send.  Walk from the right past trusted
+    proxies and take the first hop that isn't one.
+
+    Returns ``None`` (keep the peer IP) when the header is empty or a hop on
+    that walk isn't an IP.  If every hop is a trusted proxy, the first entry
+    is the client (an internal caller).
+    """
+    hops = [h for h in (xff_value or "").split(",")]
+    if not any(h.strip() for h in hops):
+        return None
+    first: str | None = None
+    for raw in reversed(hops):
+        ip = _normalize_ip(raw)
+        if ip is None:
+            return None
+        if not _peer_in_trusted(ip, networks):
+            return ip
+        first = ip
+    return first
 
 
 class TrustedProxyMiddleware:
@@ -170,7 +197,7 @@ class TrustedProxyMiddleware:
                     xff_value = None
                 break
 
-        rewritten_ip = _leftmost_xff(xff_value or "")
+        rewritten_ip = _client_from_xff(xff_value or "", self._networks)
         if rewritten_ip is None:
             # Malformed / missing XFF: keep peer IP (safe fallback).
             await self.app(scope, receive, send)
