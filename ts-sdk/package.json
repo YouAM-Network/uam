@@ -1,6 +1,6 @@
 {
   "name": "@youam/sdk",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "type": "module",
   "description": "Universal Agent Messaging (UAM) TypeScript SDK -- end-to-end encrypted, trust-on-first-use agent messaging",
   "main": "./dist/index.cjs",
