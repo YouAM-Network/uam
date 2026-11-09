@@ -312,7 +312,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         from alembic.command import upgrade as alembic_upgrade
         from uam.cli.main import _get_alembic_config
 
-        alembic_cfg = _get_alembic_config(os.environ["DATABASE_URL"])
+        try:
+            alembic_cfg = _get_alembic_config(os.environ["DATABASE_URL"])
+        except SystemExit:
+            # The CLI helper exits when it finds no alembic.ini, as in an
+            # installed wheel, which ships no migrations. Make that an
+            # ordinary failure so SQLite takes the create_tables fallback
+            # below and other databases stop with this message.
+            raise RuntimeError(
+                "no alembic.ini found, so no migrations can run "
+                "(run the relay from a checkout or the image to migrate)"
+            ) from None
         # Run sync Alembic in a thread — env.py uses asyncio.run() which
         # cannot nest inside the already-running lifespan event loop.
         await _asyncio.to_thread(alembic_upgrade, alembic_cfg, "head")
