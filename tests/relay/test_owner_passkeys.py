@@ -110,6 +110,7 @@ def test_finishing_a_registration_asks_to_sign_entry_zero(ada):
     )
     assert approval["challenge"] == b64u(entry_challenge(approval["hash"], approval["screen"]))
     assert approval["allowCredentials"] == [phone.id]
+    assert approval["rpId"] == RP_ID
 
 
 def test_signing_entry_zero_makes_the_owner_id(ada):
@@ -139,6 +140,7 @@ def test_a_second_passkey_is_signed_for_by_the_first(ada, relay):
     approval = _finish(ada, laptop.create(options, OWNER_ORIGIN), "Ada laptop").json()
     assert parse_body(approval["body"])["seq"] == 1
     assert approval["allowCredentials"] == [phone.id]
+    assert approval["rpId"] == RP_ID
     assert approval["screen"] == 'Add the passkey "Ada laptop" to your UAM owner account.'
     assert _sign(ada, phone, approval).status_code == 200
     entries = _log(relay, signed["owner_id"]).json()["entries"]

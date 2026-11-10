@@ -77,8 +77,8 @@ Owner accounts are being built (the people who approve contacts for their agents
 | Variable | Default | Type | Description |
 |----------|---------|------|-------------|
 | `UAM_OWNERS_ENABLED` | `false` | boolean | Turn owner accounts on. |
-| `UAM_OWNER_ORIGIN` | *(unset)* | string | Where owners sign in, as `https://host[:port]` with nothing after it (e.g. `https://account.example.com`). Point that host's DNS at the relay. Plain `http` is allowed only for `localhost`. |
-| `UAM_RP_ID` | *(unset)* | string | The passkey relying-party ID: the owner origin's host or a parent domain of it (e.g. `example.com`). Changing it later invalidates every owner's passkeys. |
+| `UAM_OWNER_ORIGIN` | *(unset)* | string | Where owners sign in, as `https://host[:port]` with nothing after it (e.g. `https://account.example.com`). Point that host's DNS at the relay. Plain `http` is allowed only for `localhost` and names under it (e.g. `http://account.uam.localhost:3140` for local use). |
+| `UAM_RP_ID` | *(unset)* | string | The passkey relying-party ID: the owner origin's host or a parent domain of it (e.g. `example.com`). It must contain a dot, and so must `UAM_RELAY_DOMAIN`, because owners' key logs name both (locally, use something like `uam.localhost`). Changing it later invalidates every owner's passkeys. |
 | `UAM_EMAIL_PEPPER` | *(unset)* | string (secret) | At least 32 characters. Owners' emails are looked up by an HMAC keyed with this; changing it makes every stored email unfindable. |
 | `UAM_EMAIL_KEY` | *(unset)* | string (secret) | Base64url of 32 random bytes. Owners' emails are stored encrypted with it (AES-GCM). |
 | `UAM_OWNER_CODES_TO_LOG` | `false` | boolean | For test relays only, until owner email is wired: write sign-in codes to the relay log (the code and the owner's number, never the email). Refused with a production RP ID. |

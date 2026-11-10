@@ -177,6 +177,7 @@ class Settings:
     def _check_owner_settings(self) -> None:
         from urllib.parse import urlsplit
 
+        from uam.protocol.signed import _DOMAIN_RE
         from uam.relay.owners.crypto import decode_email_key
 
         def refuse(name: str, why: str) -> None:
@@ -203,7 +204,7 @@ class Settings:
             parts.port  # noqa: B018  (raises on a bad port)
         except ValueError:
             refuse("UAM_OWNER_ORIGIN", "is not a URL")
-        local = host in ("localhost", "127.0.0.1")
+        local = host in ("localhost", "127.0.0.1") or host.endswith(".localhost")
         if parts.scheme != "https" and not (parts.scheme == "http" and local):
             refuse("UAM_OWNER_ORIGIN", "must be https (http only for localhost)")
         if (
@@ -219,6 +220,10 @@ class Settings:
         if host == (urlsplit(self.relay_http_url).hostname or "").lower():
             refuse("UAM_OWNER_ORIGIN", "must be its own host, not the relay API's")
 
+        # Key log entries name both as domains (signed-object schema).
+        for name, value in (("UAM_RELAY_DOMAIN", self.relay_domain), ("UAM_RP_ID", self.rp_id)):
+            if not _DOMAIN_RE.match(value):
+                refuse(name, "must be a domain with a dot, like uam.localhost for local use")
         if self.rp_id != host and not host.endswith("." + self.rp_id):
             refuse("UAM_RP_ID", f"must be {host!r} or a parent domain of it")
         if self.owner_codes_to_log and self.rp_id in self.PRODUCTION_RP_IDS:

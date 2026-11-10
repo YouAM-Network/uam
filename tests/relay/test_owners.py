@@ -86,12 +86,36 @@ def test_the_owner_origin_cannot_be_the_relay_host(owner_env, monkeypatch):
         Settings()
 
 
-def test_a_localhost_owner_origin_may_use_http(owner_env, monkeypatch):
+@pytest.mark.parametrize("origin", ["http://account.uam.localhost:3011", "http://uam.localhost:3011"])
+def test_a_localhost_owner_origin_may_use_http(owner_env, monkeypatch, origin):
+    from uam.relay.config import Settings
+
+    monkeypatch.setenv("UAM_OWNER_ORIGIN", origin)
+    monkeypatch.setenv("UAM_RP_ID", "uam.localhost")
+    assert Settings().owner_origin == origin
+
+
+def test_only_localhost_names_may_use_http(owner_env, monkeypatch):
+    from uam.relay.config import Settings
+
+    monkeypatch.setenv("UAM_OWNER_ORIGIN", "http://account.localhost.test.local")
+    monkeypatch.setenv("UAM_RP_ID", "test.local")
+    with pytest.raises(RuntimeError, match="must be https"):
+        Settings()
+
+
+@pytest.mark.parametrize(("name", "value"), [("UAM_RP_ID", "localhost"),
+                                             ("UAM_RELAY_DOMAIN", "localhost")])
+def test_names_the_key_log_cannot_hold_refuse_to_start(owner_env, monkeypatch, name, value):
+    """Key log entries name the relay and each passkey's RP ID as dotted
+    domains, so with one of these no owner could ever add a passkey."""
     from uam.relay.config import Settings
 
     monkeypatch.setenv("UAM_OWNER_ORIGIN", "http://localhost:3011")
     monkeypatch.setenv("UAM_RP_ID", "localhost")
-    assert Settings().owner_origin == "http://localhost:3011"
+    monkeypatch.setenv(name, value)
+    with pytest.raises(RuntimeError, match=f"{name}: must be a domain with a dot"):
+        Settings()
 
 
 def test_codes_to_the_log_refuse_a_production_rp_id(owner_env, monkeypatch):
@@ -277,6 +301,25 @@ def test_sign_in_sets_a_host_only_strict_session_cookie(relay, owner, codes):
     me = owner.get("/api/owner/me")
     assert me.status_code == 200
     assert me.json() == {"email": "ada@example.com", "status": "active", "owner_id": None}
+
+
+@pytest.fixture()
+def on_localhost(owner_env, monkeypatch):
+    monkeypatch.setenv("UAM_OWNER_ORIGIN", "http://account.uam.localhost:3011")
+    monkeypatch.setenv("UAM_RP_ID", "uam.localhost")
+
+
+def test_the_session_cookie_is_secure_on_a_localhost_origin_too(on_localhost, app, codes):
+    # A __Host- cookie without Secure is thrown away by browsers, and they
+    # keep Secure cookies from http://localhost, so it's always Secure.
+    app.state.owner_code_sink = lambda owner_pk, email, code: codes.append((owner_pk, email, code))
+    with TestClient(app) as started:
+        local = TestClient(app, base_url="http://account.uam.localhost:3011",
+                           headers={"Origin": "http://account.uam.localhost:3011"})
+        local.portal = started.portal
+        resp = _sign_in(started, local, codes)
+    assert "secure" in resp.headers["set-cookie"].lower()
+    assert "strict-transport-security" not in resp.headers
 
 
 def test_signing_in_verifies_the_email(relay, owner, codes):

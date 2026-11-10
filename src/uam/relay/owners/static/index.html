@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<meta name="referrer" content="no-referrer">
+<title>UAM account</title>
+<link rel="stylesheet" href="{{tokens.css}}" integrity="{{tokens.css:integrity}}">
+<link rel="stylesheet" href="{{owner.css}}" integrity="{{owner.css:integrity}}">
+<script type="module" src="{{owner.js}}" integrity="{{owner.js:integrity}}"></script>
+</head>
+<body>
+<!-- Rules: docs/design/owner-page/DESIGN.md. The script only shows, hides
+     and fills these elements; it never writes markup. -->
+
+<div class="narrow" id="loading">
+  <div class="brand"><span class="mark" aria-hidden="true">U</span>UAM</div>
+  <noscript><p class="lede">This page needs JavaScript to sign you in and use your passkeys.</p></noscript>
+</div>
+
+<main class="narrow" id="signin" hidden>
+  <div class="brand"><span class="mark" aria-hidden="true">U</span>UAM</div>
+  <div class="stack">
+    <h1 id="signin-title" tabindex="-1">Sign in</h1>
+    <p class="lede">Your UAM owner account approves who your agents may talk to.</p>
+  </div>
+  <form class="stack" id="email-form" novalidate>
+    <div class="field">
+      <label for="email">Email</label>
+      <input id="email" type="email" autocomplete="email" maxlength="320" required>
+      <p class="problem" id="email-problem" hidden></p>
+    </div>
+    <button class="btn btn-primary" id="email-send" type="submit">Email me a code</button>
+  </form>
+  <p class="hint">No account? Ask whoever invited you for a new invite.</p>
+</main>
+
+<main class="narrow" id="code" hidden>
+  <div class="brand"><span class="mark" aria-hidden="true">U</span>UAM</div>
+  <div class="stack">
+    <h1 id="code-title" tabindex="-1">Check your email</h1>
+    <p class="lede">If <strong id="code-email"></strong> has an account, we've emailed it a 6-digit code. It works for 10 minutes.</p>
+  </div>
+  <form class="stack" id="code-form" novalidate>
+    <div class="field">
+      <label for="code-input">Code</label>
+      <input class="code" id="code-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required>
+      <p class="problem" id="code-problem" hidden></p>
+    </div>
+    <button class="btn btn-primary" id="code-send" type="submit">Sign in</button>
+  </form>
+  <div class="stack">
+    <p class="hint"><button class="link" id="resend" type="button">Send a new code</button> · <button class="link" id="other-email" type="button">Use a different email</button></p>
+    <p class="hint" id="code-status" role="status"></p>
+  </div>
+</main>
+
+<div id="account" hidden>
+  <header class="head">
+    <div class="head-in">
+      <div class="brand"><span class="mark" aria-hidden="true">U</span>UAM</div>
+      <div class="who"><span id="who-email"></span><button class="btn btn-quiet" id="sign-out" type="button">Sign out</button></div>
+    </div>
+  </header>
+  <main class="main">
+    <section class="callout" id="first" aria-labelledby="first-title" hidden>
+      <div class="stack">
+        <h1 id="first-title" tabindex="-1">Add your first passkey</h1>
+        <p class="lede">A passkey is how you approve things. There's no password: your device asks for Face ID, a fingerprint or your PIN. Until you add one, your account can't approve anything.</p>
+      </div>
+      <form class="stack" id="first-form" novalidate>
+        <div class="field">
+          <label for="first-name">Name this passkey</label>
+          <input id="first-name" maxlength="64" autocomplete="off" required>
+          <p class="problem" id="first-problem" hidden></p>
+        </div>
+        <button class="btn btn-primary" id="first-create" type="submit">Create passkey</button>
+      </form>
+    </section>
+
+    <section class="section" id="keys" aria-labelledby="keys-title" hidden>
+      <div class="section-head">
+        <div class="stack">
+          <h1 id="keys-title" tabindex="-1">Passkeys</h1>
+          <p class="hint">These approve for you. Add one on each device you use.</p>
+        </div>
+        <button class="btn btn-primary" id="add" type="button">Add a passkey</button>
+      </div>
+      <p class="hint" id="keys-status" role="status" hidden></p>
+      <ul class="passkeys" id="key-list" aria-labelledby="keys-title"></ul>
+    </section>
+
+    <section class="section" id="owner-section" aria-labelledby="owner-title" hidden>
+      <h2 id="owner-title">Owner id</h2>
+      <p class="owner-id" id="owner-id"></p>
+      <p class="hint">Agents use this to check approvals you sign.</p>
+    </section>
+  </main>
+</div>
+
+<div class="scrim" id="scrim" hidden>
+  <section class="sheet" id="sheet-name" role="dialog" aria-modal="true" aria-labelledby="name-title" hidden>
+    <h2 id="name-title" tabindex="-1">Add a passkey</h2>
+    <form class="stack" id="name-form" novalidate>
+      <div class="field">
+        <label for="name-input">Name it so you'll recognise it</label>
+        <input id="name-input" maxlength="64" autocomplete="off" required>
+        <p class="problem" id="name-problem" hidden></p>
+      </div>
+      <div class="row">
+        <button class="btn btn-primary" id="name-create" type="submit">Create passkey</button>
+        <button class="btn btn-quiet" id="name-cancel" type="button">Cancel</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="sheet" id="sheet-approve" role="dialog" aria-modal="true" aria-labelledby="approve-title" aria-describedby="approve-text" hidden>
+    <p class="kicker">Approval</p>
+    <h2 id="approve-title" tabindex="-1">Your passkey will sign exactly this</h2>
+    <blockquote class="quote" id="approve-text"></blockquote>
+    <p class="hint">Your device will then ask for Face ID, a fingerprint or your PIN.</p>
+    <p class="problem" id="approve-problem" role="alert" hidden></p>
+    <div class="row">
+      <button class="btn btn-primary" id="approve" type="button">Approve with passkey</button>
+      <button class="btn btn-quiet" id="approve-cancel" type="button">Cancel</button>
+    </div>
+  </section>
+
+  <section class="sheet" id="sheet-stopped" role="alertdialog" aria-modal="true" aria-labelledby="stopped-title" aria-describedby="stopped-text" hidden>
+    <h2 id="stopped-title" tabindex="-1">That took too long</h2>
+    <p class="lede" id="stopped-text">The request expired after 5 minutes, so nothing was changed.</p>
+    <div class="row">
+      <button class="btn btn-primary" id="restart" type="button">Start again</button>
+      <button class="btn btn-quiet" id="stopped-close" type="button">Close</button>
+    </div>
+  </section>
+</div>
+</body>
+</html>

@@ -1,0 +1,139 @@
+/* UAM owner page components. Tokens only (tokens.css): no colours, no px
+ * outside @media lines (tests/relay/test_owner_page_assets.py checks).
+ * Rules: docs/design/owner-page/DESIGN.md. */
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--ink);
+  font: var(--text-m) / 1.55 var(--font);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+button, input { font: inherit; color: inherit; }
+:focus-visible { outline: var(--focus-width) solid var(--focus); outline-offset: var(--focus-width); }
+[tabindex="-1"]:focus { outline: none; }
+[hidden] { display: none !important; }
+strong { font-weight: 600; color: var(--ink); }
+
+/* Brand */
+.brand { display: flex; gap: var(--space-2); align-items: center; font-weight: 600; font-size: var(--text-m); letter-spacing: 0.01em; }
+.mark {
+  width: var(--mark); height: var(--mark); border-radius: 50%;
+  background: var(--mark-fill); color: var(--mark-ink);
+  display: grid; place-items: center; font-weight: 700; font-size: var(--text-xs); flex: none;
+}
+
+/* Text */
+h1 { font-size: var(--text-xl); font-weight: 600; line-height: 1.25; letter-spacing: -0.022em; margin: 0; }
+h2 { font-size: var(--text-m); font-weight: 600; letter-spacing: -0.006em; margin: 0; }
+.lede { color: var(--ink-soft); margin: 0; }
+.hint { font-size: var(--text-s); color: var(--ink-faint); margin: 0; }
+.problem { font-size: var(--text-s); color: var(--problem); margin: 0; }
+.stack { display: grid; gap: var(--space-3); }
+.kicker { font-size: var(--text-xs); font-weight: 500; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-faint); margin: 0; }
+
+/* Field */
+.field { display: grid; gap: var(--space-2); }
+.field label { font-size: var(--text-s); font-weight: 500; color: var(--ink-soft); }
+.field input {
+  background: var(--field); color: var(--ink); font-size: var(--text-input);
+  border: var(--rule-width) solid var(--field-rule); border-radius: var(--radius-m);
+  padding: var(--space-2) var(--space-3); width: 100%; min-height: var(--touch);
+}
+.field input:focus-visible { outline-offset: 0; border-color: var(--focus); }
+.field input.code {
+  font: 500 var(--text-code) / 1 var(--mono); letter-spacing: 0.5em; text-indent: 0.5em;
+  text-align: center; padding: var(--space-3);
+}
+.field input[aria-invalid="true"] { border-color: var(--problem); }
+
+/* Buttons */
+.btn {
+  appearance: none; border: 0; border-radius: var(--radius-m);
+  padding: var(--space-2) var(--space-4); font-weight: 500; cursor: pointer;
+  width: 100%; min-height: var(--touch);
+}
+.btn-primary { background: var(--action); color: var(--action-ink); }
+.btn-primary:hover { background: var(--action-hover); }
+.btn-primary:disabled { opacity: 0.5; cursor: progress; }
+.btn-quiet {
+  background: none; color: var(--ink-soft); width: auto;
+  padding: var(--space-2) var(--space-3);
+}
+.btn-quiet:hover { color: var(--ink); }
+.link {
+  color: var(--ink-soft); text-decoration: underline; text-decoration-color: var(--field-rule);
+  text-underline-offset: var(--space-1);
+  background: none; border: 0; padding: 0; cursor: pointer; font-size: var(--text-s);
+}
+.link:hover { color: var(--ink); text-decoration-color: var(--ink); }
+
+/* The sentence being signed */
+.quote {
+  background: var(--quote); border: var(--rule-width) solid var(--rule);
+  border-radius: var(--radius-m); padding: var(--space-4) var(--space-5);
+  font-size: var(--text-l); line-height: 1.5; letter-spacing: -0.01em;
+  margin: 0; overflow-wrap: anywhere;
+}
+
+/* Passkey list */
+.passkeys { list-style: none; margin: 0; padding: 0; border-top: var(--rule-width) solid var(--rule); }
+.passkeys li {
+  display: block;
+  padding: var(--space-4) 0; border-bottom: var(--rule-width) solid var(--rule);
+}
+.passkeys .name { font-weight: 500; display: block; overflow-wrap: anywhere; }
+.passkeys .meta { font-size: var(--text-s); color: var(--ink-faint); display: block; }
+.passkeys .when { white-space: nowrap; }
+.passkeys .empty { color: var(--ink-faint); }
+
+/* Owner id */
+.owner-id { font: var(--text-s) var(--mono); color: var(--ink-soft); word-break: break-all; margin: 0; }
+
+/* Shells */
+.head { border-bottom: var(--rule-width) solid var(--rule); }
+.head-in {
+  max-width: var(--width-page); margin: 0 auto; padding: var(--space-3) var(--space-4);
+  display: flex; justify-content: space-between; align-items: center; gap: var(--space-4); flex-wrap: wrap;
+}
+.who { display: flex; gap: var(--space-1); align-items: center; font-size: var(--text-s); color: var(--ink-faint); }
+.main {
+  max-width: var(--width-page); margin: 0 auto;
+  padding: var(--space-12) var(--space-4) var(--space-16); display: grid; gap: var(--space-12);
+}
+.narrow {
+  max-width: var(--width-narrow); margin: 0 auto; width: 100%;
+  padding: var(--space-16) var(--space-4); display: grid; gap: var(--space-8);
+}
+.section { display: grid; gap: var(--space-4); }
+.section-head { display: flex; justify-content: space-between; align-items: end; gap: var(--space-4); }
+.section-head .btn { width: auto; white-space: nowrap; }
+@media (max-width: 479px) {
+  .section-head { flex-direction: column; align-items: stretch; }
+  .section-head .btn { width: 100%; }
+}
+.callout { display: grid; gap: var(--space-5); max-width: var(--width-narrow); }
+
+/* Sheet: every approval, and nothing else on screen with it */
+.scrim {
+  position: fixed; inset: 0; background: var(--scrim);
+  -webkit-backdrop-filter: blur(var(--blur)); backdrop-filter: blur(var(--blur));
+  display: grid; place-items: end center; z-index: 20;
+}
+.sheet {
+  width: 100%; max-width: var(--width-sheet); background: var(--surface-raised);
+  border: var(--rule-width) solid var(--rule); border-radius: var(--radius-l) var(--radius-l) 0 0;
+  padding: var(--space-6); display: grid; gap: var(--space-4);
+  max-height: 100%; overflow: auto;
+}
+@media (min-width: 640px) {
+  .scrim { place-items: center; }
+  .sheet { border-radius: var(--radius-l); padding: var(--space-8); }
+}
+.sheet h2 { font-size: var(--text-l); letter-spacing: -0.014em; }
+.sheet .row { margin-top: var(--space-2); }
+.row { display: flex; gap: var(--space-2); }
+.row .btn-quiet { flex: none; }

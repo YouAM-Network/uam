@@ -145,6 +145,7 @@ where = ["src"]
 "uam.data" = ["*.json"]
 "uam.cards.fonts" = ["*.ttf"]
 "uam.cards.avatars" = ["**/*.json", "**/*.svg"]
+"uam.relay.owners" = ["static/*.css", "static/*.json", "static/*.js", "static/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

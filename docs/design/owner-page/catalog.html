@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Owner page components</title>
+<!-- The catalogue loads the real stylesheets. Everything in <style> below
+     only lays out the catalogue itself; the page never uses it. -->
+<link rel="stylesheet" href="../../../src/uam/relay/owners/static/tokens.css">
+<link rel="stylesheet" href="../../../src/uam/relay/owners/static/owner.css">
+<style>
+  body { background: #3f3f46; margin: 0; }
+  .cat-top { padding: 16px; color: #fafafa; font: 14px/1.5 system-ui, sans-serif; }
+  .cat-top h1 { font-size: 20px; }
+  .cat-top a { color: inherit; }
+  .cat-cols { display: grid; gap: 16px; padding: 0 16px 16px; }
+  @media (min-width: 1100px) { .cat-cols { grid-template-columns: 1fr 1fr; } }
+  .cat-col { background: var(--page); color: var(--ink); border-radius: 12px; padding: 24px 16px; display: grid; gap: 32px; min-width: 0; }
+  .cat-col > h2 { font: 600 13px/1 system-ui, sans-serif; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-faint); }
+  .story { display: grid; gap: 12px; }
+  .story > h3 { font: 600 12px/1 ui-monospace, monospace; color: var(--ink-faint); margin: 0; }
+  .story-row { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); align-items: start; }
+  .frame { position: relative; min-height: 480px; border: 1px dashed var(--rule); border-radius: 12px; overflow: hidden; }
+  .frame .scrim { position: absolute; }
+  .frame-page { border: 1px dashed var(--rule); border-radius: 12px; overflow: hidden; }
+</style>
+</head>
+<body>
+<div class="cat-top">
+  <h1>UAM owner page: components</h1>
+  <p>Every component in every state, dark and light side by side. Rules: <a href="DESIGN.md">DESIGN.md</a>. Tab through a column to see focus rings; hover the buttons to see hover.</p>
+</div>
+<div class="cat-cols">
+<section class="cat-col" data-theme="dark" id="dark">
+  <h2>Dark</h2>
+
+  <div class="story"><h3>Screen: sign in</h3>
+    <div class="frame-page"><div class="narrow">
+      <div class="brand"><span class="mark">U</span>UAM</div>
+      <div class="stack"><h1>Sign in</h1><p class="lede">Your UAM owner account approves who your agents may talk to.</p></div>
+      <div class="stack">
+        <div class="field"><label for="p1-DK">Email</label><input id="p1-DK" type="email" autocomplete="email"></div>
+        <button class="btn btn-primary">Email me a code</button>
+      </div>
+      <p class="hint">No account? Ask whoever invited you for a new invite.</p>
+    </div></div>
+  </div>
+
+  <div class="story"><h3>Screen: account</h3>
+    <div class="frame-page">
+      <header class="head"><div class="head-in"><div class="brand"><span class="mark">U</span>UAM</div>
+        <div class="who">ada@example.com<button class="btn btn-quiet">Sign out</button></div></div></header>
+      <div class="main">
+        <section class="section">
+          <div class="section-head"><div class="stack"><h1>Passkeys</h1><p class="hint">These approve for you. Add one on each device you use.</p></div>
+            <button class="btn btn-primary">Add a passkey</button></div>
+          <ul class="passkeys" aria-label="Your passkeys">
+            <li><span><span class="name">Ada iPhone</span><span class="meta">Synced · <span class="when">added 9 Nov 2026</span></span></span></li>
+            <li><span><span class="name">Ada tablet</span><span class="meta">This device only · <span class="when">added 10 Nov 2026</span></span></span></li>
+          </ul>
+        </section>
+        <section class="section"><h2>Owner id</h2><p class="owner-id">Qm3xK8pLr2VtYw9aNc4dEf</p><p class="hint">Agents use this to check approvals you sign.</p></section>
+      </div>
+    </div>
+  </div>
+
+  <div class="story"><h3>Screen: approving a new passkey</h3>
+    <div class="frame">
+      <header class="head"><div class="head-in"><div class="brand"><span class="mark">U</span>UAM</div>
+        <div class="who">ada@example.com<button class="btn btn-quiet" tabindex="-1">Sign out</button></div></div></header>
+      <div class="main"><section class="section"><h1>Passkeys</h1><p class="hint">These approve for you.</p></section></div>
+      <div class="scrim"><div class="sheet" role="dialog" aria-modal="false" aria-labelledby="p2-DK">
+        <p class="kicker">Approval</p>
+        <h2 id="p2-DK">Your passkey will sign exactly this</h2>
+        <blockquote class="quote">Add the passkey "Ada laptop" to your UAM owner account.</blockquote>
+        <p class="hint">Your device will then ask for Face ID, a fingerprint or your PIN.</p>
+        <div class="row"><button class="btn btn-primary">Approve with passkey</button><button class="btn btn-quiet">Cancel</button></div>
+      </div></div>
+    </div>
+  </div>
+
+  <div class="story"><h3>Brand</h3>
+    <div class="brand"><span class="mark">U</span>UAM</div>
+  </div>
+
+  <div class="story"><h3>Text</h3>
+    <div class="stack">
+      <h1>Check your email</h1>
+      <p class="lede">We sent a 6-digit code to <strong>ada@example.com</strong>. It works for 10 minutes.</p>
+      <p class="hint">No account? Ask whoever invited you for a new invite.</p>
+      <p class="problem">That code didn't work. Check it, or ask for a new one.</p>
+    </div>
+  </div>
+
+  <div class="story"><h3>Field: empty · filled · invalid</h3>
+    <div class="story-row">
+      <div class="field"><label for="f1-DK">Email</label><input id="f1-DK" type="email"></div>
+      <div class="field"><label for="f2-DK">Email</label><input id="f2-DK" type="email" value="ada@example.com"></div>
+      <div class="field"><label for="f3-DK">Email</label><input id="f3-DK" type="email" value="ada@example" aria-invalid="true" aria-describedby="f3m-DK"><p class="problem" id="f3m-DK">Enter an email address.</p></div>
+    </div>
+  </div>
+
+  <div class="story"><h3>Code field: empty · filled · invalid</h3>
+    <div class="story-row">
+      <div class="field"><label for="c1-DK">Code</label><input id="c1-DK" class="code" inputmode="numeric" maxlength="6"></div>
+      <div class="field"><label for="c2-DK">Code</label><input id="c2-DK" class="code" inputmode="numeric" maxlength="6" value="418203"></div>
+      <div class="field"><label for="c3-DK">Code</label><input id="c3-DK" class="code" inputmode="numeric" maxlength="6" value="418208" aria-invalid="true" aria-describedby="c3m-DK"><p class="problem" id="c3m-DK">That code didn't work. Check it, or ask for a new one.</p></div>
+    </div>
+  </div>
+
+  <div class="story"><h3>Buttons: main · busy · quiet · link</h3>
+    <div class="story-row">
+      <button class="btn btn-primary">Email me a code</button>
+      <button class="btn btn-primary" disabled>Sending…</button>
+      <button class="btn btn-quiet">Cancel</button>
+      <p class="hint"><button class="link">Send a new code</button> · <button class="link">Use a different email</button></p>
+    </div>
+  </div>
+
+  <div class="story"><h3>Quote: first passkey · added passkey · long</h3>
+    <blockquote class="quote">Make "Ada iPhone" the first passkey of your UAM owner account on youam.network.</blockquote>
+    <blockquote class="quote">Add the passkey "Ada laptop" to your UAM owner account.</blockquote>
+    <blockquote class="quote">Make "Ada's work MacBook Pro (the one with the cracked corner)", "Ada iPhone" the first passkeys of your UAM owner account on relay.a-very-long-relay-hostname.example.</blockquote>
+  </div>
+
+  <div class="story"><h3>Passkey list: empty · one · several</h3>
+    <ul class="passkeys" aria-label="Your passkeys"><li><span class="empty">No passkeys yet.</span></li></ul>
+    <ul class="passkeys" aria-label="Your passkeys">
+      <li><span><span class="name">Ada iPhone</span><span class="meta">Synced · <span class="when">added 9 Nov 2026</span></span></span></li>
+    </ul>
+    <ul class="passkeys" aria-label="Your passkeys">
+      <li><span><span class="name">Ada iPhone</span><span class="meta">Synced · <span class="when">added 9 Nov 2026</span></span></span></li>
+      <li><span><span class="name">Ada tablet</span><span class="meta">This device only · <span class="when">added 10 Nov 2026</span></span></span></li>
+      <li><span><span class="name">A_very_long_passkey_name_with_no_spaces_at_all_to_test_wrapping__</span><span class="meta">Synced · <span class="when">added 10 Nov 2026</span></span></span></li>
+    </ul>
+  </div>
+
+  <div class="story"><h3>Owner id</h3>
+    <section class="section"><h2>Owner id</h2><p class="owner-id">Qm3xK8pLr2VtYw9aNc4dEf</p><p class="hint">Agents use this to check approvals you sign.</p></section>
+  </div>
+
+  <div class="story"><h3>Header</h3>
+    <div class="frame-page">
+      <header class="head"><div class="head-in"><div class="brand"><span class="mark">U</span>UAM</div>
+        <div class="who">ada@example.com<button class="btn btn-quiet">Sign out</button></div></div></header>
+    </div>
+  </div>
+
+  <div class="story"><h3>Section head with its main button</h3>
+    <section class="section">
+      <div class="section-head"><div><h1>Passkeys</h1><p class="hint">These approve for you. Add one on each device you use.</p></div>
+        <button class="btn btn-primary">Add a passkey</button></div>
+    </section>
+  </div>
+
+  <div class="story"><h3>Callout: first passkey</h3>
+    <section class="callout">
+      <h1>Add your first passkey</h1>
+      <p class="lede">A passkey is how you approve things. There's no password: your device asks for Face ID, a fingerprint or your PIN. Until you add one, your account can't approve anything.</p>
+      <div class="field"><label for="n1-DK">Name this passkey</label><input id="n1-DK" value="Ada iPhone" maxlength="64"></div>
+      <button class="btn btn-primary">Create passkey</button>
+    </section>
+  </div>
+
+  <div class="story"><h3>Sheet: approve</h3>
+    <div class="frame"><div class="scrim"><div class="sheet" role="dialog" aria-modal="false" aria-labelledby="s1-DK">
+      <p class="kicker">Approval</p>
+      <h2 id="s1-DK">Your passkey will sign exactly this</h2>
+      <blockquote class="quote">Make "Ada iPhone" the first passkey of your UAM owner account on youam.network.</blockquote>
+      <p class="hint">Your device will then ask for Face ID, a fingerprint or your PIN.</p>
+      <div class="row"><button class="btn btn-primary">Approve with passkey</button><button class="btn btn-quiet">Cancel</button></div>
+    </div></div></div>
+  </div>
+
+  <div class="story"><h3>Sheet: name a passkey</h3>
+    <div class="frame"><div class="scrim"><div class="sheet" role="dialog" aria-modal="false" aria-labelledby="s2-DK">
+      <h2 id="s2-DK">Add a passkey</h2>
+      <div class="field"><label for="n2-DK">Name it so you'll recognise it</label><input id="n2-DK" value="Ada laptop" maxlength="64"></div>
+      <div class="row"><button class="btn btn-primary">Create passkey</button><button class="btn btn-quiet">Cancel</button></div>
+    </div></div></div>
+  </div>
+
+  <div class="story"><h3>Sheet: expired</h3>
+    <div class="frame"><div class="scrim"><div class="sheet" role="alertdialog" aria-modal="false" aria-labelledby="s3-DK">
+      <h2 id="s3-DK">That took too long</h2><p class="lede">The request expired after 5 minutes, so nothing was changed.</p>
+      <div class="row"><button class="btn btn-primary">Start again</button><button class="btn btn-quiet">Close</button></div>
+    </div></div></div>
+  </div>
+</section>
+</div>
+<script>
+  // The light column is the dark one, re-themed, with ids kept unique.
+  const dark = document.getElementById("dark");
+  const light = dark.cloneNode(true);
+  light.id = "light";
+  light.dataset.theme = "light";
+  light.querySelector("h2").textContent = "Light";
+  light.innerHTML = light.innerHTML.replaceAll("-DK", "-LT");
+  dark.after(light);
+</script>
+</body>
+</html>

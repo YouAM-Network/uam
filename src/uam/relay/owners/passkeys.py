@@ -109,7 +109,7 @@ async def register_options(
 
 async def _approval(
     session: AsyncSession, owner: Owner, body: dict[str, Any], previous: dict[str, Any] | None,
-    *, passkey: OwnerPasskey, allow: list[str],
+    *, passkey: OwnerPasskey, allow: list[str], rp_id: str,
 ) -> dict[str, Any]:
     """Store an approve challenge for *body* and say what to sign."""
     now = service.utcnow()
@@ -123,7 +123,7 @@ async def _approval(
     )
     return {
         "body": text, "hash": entry_hash, "screen": screen, "challenge": challenge,
-        "allowCredentials": allow,
+        "allowCredentials": allow, "rpId": rp_id,
     }
 
 
@@ -175,7 +175,9 @@ async def register_finish(
         await session.rollback()
         raise PasskeyError(409, "passkey_exists", "That passkey is already registered.") from None
     allow = [passkey.credential_id] if previous is None else [p.credential_id for p in active]
-    answer = await _approval(session, owner, body, previous, passkey=passkey, allow=allow)
+    answer = await _approval(
+        session, owner, body, previous, passkey=passkey, allow=allow, rp_id=settings.rp_id
+    )
     await session.commit()
     return answer
 

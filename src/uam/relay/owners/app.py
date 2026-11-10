@@ -1,4 +1,4 @@
-"""The owner app: owners' API (and, from P2c-2, their page) on its own origin.
+"""The owner app: owners' API and their page, on its own origin.
 
 The relay serves it only when a request's Host is the owner origin's host,
 so the session cookie and the page never share an origin with the relay
@@ -24,6 +24,7 @@ from uam.db.crud import owners as crud
 from uam.db.session import get_session
 from uam.relay.owners import passkeys, service
 from uam.relay.owners.crypto import EmailVault, normalise_email
+from uam.relay.owners.page import page_router
 
 COOKIE = "__Host-uam_owner"
 
@@ -167,7 +168,9 @@ def build_owner_app(settings, parent: FastAPI) -> FastAPI:
     app = FastAPI(title="UAM owners", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.settings = settings
     vault = EmailVault(settings.email_pepper, settings.email_key)
-    secure = settings.owner_origin.startswith("https://")
+    # HSTS only over https; the cookie is always Secure: its __Host- prefix
+    # demands it, and browsers keep Secure cookies from http://localhost.
+    https = settings.owner_origin.startswith("https://")
 
     def code_sink() -> service.CodeSink:
         sink = getattr(parent.state, "owner_code_sink", None)
@@ -224,7 +227,7 @@ def build_owner_app(settings, parent: FastAPI) -> FastAPI:
         response = JSONResponse({"status": "signed_in"})
         response.set_cookie(
             COOKIE, token, max_age=int(service.SESSION_MAX.total_seconds()), path="/",
-            secure=secure, httponly=True, samesite="strict",
+            secure=True, httponly=True, samesite="strict",
         )
         return response
 
@@ -289,6 +292,7 @@ def build_owner_app(settings, parent: FastAPI) -> FastAPI:
         return {"passkeys": await passkeys.list_passkeys(session, who.owner)}
 
     app.include_router(key_log_router())
+    app.include_router(page_router())
 
     @app.post("/api/owner/sign-out", status_code=204)
     async def sign_out(request: Request, session: AsyncSession = Depends(get_session)) -> Response:
@@ -296,10 +300,10 @@ def build_owner_app(settings, parent: FastAPI) -> FastAPI:
         if found is not None:
             await service.sign_out(session, found)
         response = Response(status_code=204)
-        response.delete_cookie(COOKIE, path="/", secure=secure, httponly=True, samesite="strict")
+        response.delete_cookie(COOKIE, path="/", secure=True, httponly=True, samesite="strict")
         return response
 
-    app.add_middleware(OwnerGuard, origin=settings.owner_origin, hsts=secure)
+    app.add_middleware(OwnerGuard, origin=settings.owner_origin, hsts=https)
     return app
 
 
