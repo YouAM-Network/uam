@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -21,6 +22,8 @@ from uam.sdk.config import SDKConfig
 from uam.sdk.contact_book import ContactBook
 from uam.sdk.key_manager import KeyManager
 from uam.sdk.message import PENDING_NOTE
+from uam.protocol.links import _when
+from uam.sdk.owner_link import OwnerLinkRefused, banner
 
 
 # ---------------------------------------------------------------------------
@@ -51,6 +54,37 @@ def _error(msg: str) -> None:
     """Print an error message to stderr and exit 1."""
     click.echo(msg, err=True)
     raise SystemExit(1)
+
+
+def _stdin_is_terminal() -> bool:
+    return sys.stdin.isatty()
+
+
+def _ask_code(prompt: str) -> str:
+    """Read a setup or link code from the keyboard, never from a pipe.
+
+    A speed bump, not a lock: it stops an agent being told to type a code
+    it was sent, which is how a code is stolen."""
+    if not _stdin_is_terminal():
+        _error(
+            "Type the code yourself in a terminal: this command won't read it "
+            "from a pipe or a script. Never enter a code someone sent you."
+        )
+    return click.prompt(prompt).strip()
+
+
+class _BannerHandler(logging.Handler):
+    """Shows the SDK's owner-link banner on stderr, once per command."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        click.echo(record.getMessage(), err=True)
+
+
+def _show_owner_banners() -> None:
+    sdk_log = logging.getLogger("uam.sdk.owner_link")
+    if not any(isinstance(h, _BannerHandler) for h in sdk_log.handlers):
+        sdk_log.addHandler(_BannerHandler(level=logging.WARNING))
+        sdk_log.propagate = False
 
 
 def _trust_indicator(trust_state: str) -> str:
@@ -109,6 +143,7 @@ def cli(
     ctx.obj["debug"] = debug
     ctx.obj["json"] = json_output
     ctx.obj["quiet"] = quiet
+    _show_owner_banners()
 
 
 # ---------------------------------------------------------------------------
@@ -255,14 +290,27 @@ def _handle_card_vcf(agent_name: str, output_path: str | None) -> None:
     default=None,
     help="Claim a reserved address from a reservation vCard file.",
 )
+@click.option(
+    "--setup",
+    is_flag=True,
+    default=False,
+    help="Set up a new agent for your UAM owner account, with a setup code from your account page.",
+)
 @click.pass_context
-def init(ctx: click.Context, name: str | None, relay: str | None, claim: str | None) -> None:
+def init(
+    ctx: click.Context, name: str | None, relay: str | None, claim: str | None, setup: bool
+) -> None:
     """Initialize a new agent: generate keys and register with relay."""
     if claim:
         _handle_claim(claim, relay)
         return
+    if setup:
+        _handle_setup(name or ctx.obj.get("name"), relay)
+        return
 
     agent_name = name or ctx.obj.get("name")
+    if not agent_name and _stdin_is_terminal():
+        agent_name = click.prompt("Name for this agent").strip().lower()
     if not agent_name:
         import socket
 
@@ -294,6 +342,168 @@ def init(ctx: click.Context, name: str | None, relay: str | None, claim: str | N
         _error(f"Error: {exc}")
     except Exception as exc:
         _error(f"Error: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# Linking to an owner (P2d): uam init --setup, uam owner link / status
+# ---------------------------------------------------------------------------
+
+#: How long `uam init --setup` waits for the owner: ticks of _OWNER_WAIT_SECONDS.
+_OWNER_WAIT_TICKS = 300
+_OWNER_WAIT_SECONDS = 2.0
+_CODE_TRIES = 3
+_sleep = asyncio.sleep
+
+
+def _linking_agent(agent_name: str, relay: str | None = None) -> Agent:
+    agent = Agent(agent_name, relay=relay, transport="http")
+    agent._announce_owner_link = False  # these commands say it themselves
+    return agent
+
+
+async def _redeem(agent: Agent, code: str, via: str, prompt: str):
+    """Redeem *code*, asking again after a mistyped one."""
+    for attempt in range(_CODE_TRIES):
+        try:
+            return await agent.start_owner_link(code, via=via)
+        except OwnerLinkRefused as exc:
+            if exc.code != "bad_code" or attempt == _CODE_TRIES - 1:
+                raise
+            click.echo(str(exc), err=True)
+            code = click.prompt(prompt).strip()
+
+
+async def _sign_and_say(agent: Agent, offer) -> None:
+    click.echo(f"Joining {offer.account}")
+    click.echo(f"Words: {' '.join(offer.words)}")
+    await agent.sign_owner_link(offer)
+    click.echo("On your account page, check the words match, then approve with your passkey.")
+
+
+async def _wait_for_owner(agent: Agent, account: str) -> None:
+    for _ in range(_OWNER_WAIT_TICKS):
+        await _sleep(_OWNER_WAIT_SECONDS)
+        state = (await agent.owner_link_status())["state"]
+        if state in ("linked", "starts"):
+            click.echo(f"Linked to {account}.")
+            return
+        if state in ("cancelled", "unlinked"):
+            click.echo("The owner cancelled this link.")
+            return
+    click.echo("Still waiting for the owner. Run `uam owner status` to check later.")
+
+
+_SETUP_PROMPT = "Setup code from your UAM account page"
+_LINK_PROMPT = "Link code from your UAM account page"
+
+
+def _handle_setup(name: str | None, relay: str | None) -> None:
+    """`uam init --setup`: a new agent, linked at once once the owner approves."""
+    code = _ask_code(_SETUP_PROMPT)
+    agent_name = name or click.prompt("Name for this agent").strip().lower()
+    cfg = SDKConfig(name=agent_name, relay_url=relay)
+    if (Path(cfg.key_dir) / f"{agent_name}.key").exists():
+        _error(
+            f"An agent called '{agent_name}' is already set up here. "
+            "To link it to your account, run `uam owner link` with a link code."
+        )
+
+    async def run() -> None:
+        agent = _linking_agent(agent_name, relay)
+        await agent.connect()
+        try:
+            click.echo(f"Initialized agent: {agent.address}")
+            click.echo(f"Fingerprint: {public_key_fingerprint(agent._key_manager.verify_key)}")
+            offer = await _redeem(agent, code, "setup", _SETUP_PROMPT)
+            await _sign_and_say(agent, offer)
+            await _wait_for_owner(agent, offer.account)
+        finally:
+            await agent.close()
+
+    try:
+        asyncio.run(run())
+    except UAMError as exc:
+        _error(
+            f"Error: {exc}\nThe agent is set up but not linked. Make a link code on your "
+            "account page and run `uam owner link`."
+        )
+
+
+def _owner_agent_name(ctx: click.Context) -> str:
+    agent_name = ctx.obj.get("name") or _find_agent_name()
+    if not agent_name or not (Path(SDKConfig(name=agent_name).key_dir) / f"{agent_name}.key").exists():
+        _error("No agent initialized. Run `uam init --setup` first.")
+    return agent_name
+
+
+@cli.group()
+def owner() -> None:
+    """Link this agent to its owner's UAM account."""
+
+
+@owner.command("link")
+@click.pass_context
+def owner_link(ctx: click.Context) -> None:
+    """Link an existing agent, with a link code from your account page (starts after 72 hours)."""
+    agent_name = _owner_agent_name(ctx)
+    code = _ask_code(_LINK_PROMPT)
+
+    async def run() -> None:
+        agent = _linking_agent(agent_name)
+        await agent.connect()
+        try:
+            offer = await _redeem(agent, code, "link", _LINK_PROMPT)
+            await _sign_and_say(agent, offer)
+            click.echo(
+                f"If the owner approves, the link starts on {_when(offer.body['effectiveAt'])} "
+                "(72 hours from now). Until then the owner can cancel it on their page."
+            )
+        finally:
+            await agent.close()
+
+    try:
+        asyncio.run(run())
+    except UAMError as exc:
+        _error(f"Error: {exc}")
+
+
+_STATUS_LINES = {
+    "none": "This agent is not linked to an owner.",
+    "unavailable": "This relay doesn't link agents to owners yet.",
+    "waiting_for_agent": "This agent redeemed a code but didn't sign the link. Run `uam owner link` again.",
+    "linked": "Linked to {account}.",
+    "cancelled": "The link to {account} was cancelled.",
+    "unlinked": "Unlinked from {account}.",
+}
+
+
+@owner.command("status")
+@click.pass_context
+def owner_status(ctx: click.Context) -> None:
+    """Show where this agent's link to an owner stands."""
+    agent_name = _owner_agent_name(ctx)
+
+    async def run() -> dict:
+        agent = _linking_agent(agent_name)
+        await agent.connect()
+        try:
+            return await agent.owner_link_status()
+        finally:
+            await agent.close()
+
+    try:
+        status = asyncio.run(run())
+    except UAMError as exc:
+        _error(f"Error: {exc}")
+    if ctx.obj.get("json"):
+        click.echo(json.dumps(status))
+        return
+    line = banner(status)
+    if line is None:
+        line = _STATUS_LINES.get(status["state"], status["state"]).format(
+            account=status.get("account", "")
+        )
+    click.echo(line)
 
 
 # ---------------------------------------------------------------------------

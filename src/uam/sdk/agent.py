@@ -39,12 +39,16 @@ from uam.protocol import (
     contact_card_from_dict,
     verify_contact_card,
 )
+from uam.protocol.didkey import ED25519, encode_did_key
+from uam.protocol.links import sign_as_agent
 from uam.protocol.register_proof import create_register_proof
+from uam.protocol.signed import SignedObjectError, object_hash, parse_body
 from uam.protocol.types import MAX_ENVELOPE_AGE
 from uam.sdk.freshness import RELAY_META_FEATURE, relay_vouches
 from uam.sdk.config import SDKConfig
 from uam.sdk.key_manager import KeyManager
 from uam.sdk.message import ReceivedMessage, SendResult, send_status
+from uam.sdk import owner_link as _owner_link
 from uam.sdk.transport.http import relay_answer
 from uam.sdk.contact_book import ContactBook
 from uam.sdk.handshake import HandshakeManager
@@ -111,6 +115,9 @@ class Agent:
         self._token: str | None = None
         self._connected: bool = False
         self._auto_register = auto_register
+        #: Where this agent's link to an owner stands, read on connect (P2d).
+        self.owner_link: dict | None = None
+        self._announce_owner_link = True
 
         # Contact management
         self._contact_book = ContactBook(self._config.data_dir)
@@ -215,6 +222,9 @@ class Agent:
         await self._contact_book.open()
 
         self._connected = True
+
+        # Say so if a link to an owner is waiting or hasn't started yet.
+        await self._read_owner_link()
 
         # 5. Sweep expired handshakes (HAND-03)
         await self._sweep_expired_handshakes()
@@ -462,6 +472,60 @@ class Agent:
         """Remove a block pattern (HAND-04)."""
         await self._ensure_connected()
         await self._contact_book.remove_block(pattern)
+
+    # -- Owner link (P2d) ----------------------------------------------------
+
+    async def owner_link_status(self) -> dict:
+        """Where this agent's link to an owner stands: ``state`` is ``none``,
+        ``waiting_for_agent``, ``waiting_for_owner``, ``starts``, ``linked``,
+        ``cancelled``, ``unlinked`` or ``unavailable`` (the relay doesn't
+        link agents to owners)."""
+        await self._ensure_connected()
+        self.owner_link = await _owner_link.fetch_status(self._config.relay_url, self._token)
+        return self.owner_link
+
+    async def start_owner_link(self, code: str, *, via: str) -> _owner_link.LinkOffer:
+        """Redeem an owner's code (``via`` is ``setup`` for a new agent,
+        ``link`` for an existing one) and check the link the relay built.
+
+        Raises :class:`UAMError` if the code doesn't work or the link isn't
+        one this agent should sign. Nothing is signed yet.
+        """
+        if via not in ("setup", "link"):
+            raise ValueError("via is 'setup' or 'link'")
+        await self._ensure_connected()
+        data = await _owner_link.redeem(self._config.relay_url, self._token, code)
+        try:
+            body = parse_body(data["body"])
+        except (KeyError, TypeError, SignedObjectError) as exc:
+            raise UAMError(f"The relay sent a link that isn't valid: {exc}") from None
+        agent_key = encode_did_key(ED25519, bytes(self._key_manager.verify_key))
+        words = _owner_link.check_offer(
+            body, address=self.address, agent_key=agent_key, via=via,
+            words=data.get("words", []), now=datetime.now(timezone.utc),
+        )
+        return _owner_link.LinkOffer(
+            link=data.get("link", 0), body=body, hash=object_hash(body),
+            account=str(data.get("account", "")), words=words,
+        )
+
+    async def sign_owner_link(self, offer: _owner_link.LinkOffer) -> None:
+        """Sign a checked link; the owner then approves it on their page."""
+        await self._ensure_connected()
+        signature = sign_as_agent(offer.body, self._key_manager.signing_key)
+        await _owner_link.send_signature(self._config.relay_url, self._token, offer.hash, signature)
+
+    async def _read_owner_link(self) -> None:
+        try:
+            self.owner_link = await _owner_link.fetch_status(
+                self._config.relay_url, self._token, timeout=5.0
+            )
+        except Exception as exc:  # never stop a connect over this
+            logger.debug("Couldn't read the owner link: %s", exc)
+            return
+        line = _owner_link.banner(self.owner_link) if self._announce_owner_link else None
+        if line:
+            _owner_link.log.warning("%s", line)
 
     # -- Domain verification (DNS-02) ----------------------------------------
 
