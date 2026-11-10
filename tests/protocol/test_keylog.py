@@ -108,11 +108,20 @@ def test_a_later_entry_chains_to_the_one_before(alice):
 
 def test_the_screen_says_what_is_being_signed(alice):
     assert screen_for(alice["bodies"][0], None) == (
-        'Create your UAM owner account on test.local with the passkey "Alice iPhone".'
+        'Make "Alice iPhone" the first passkey of your UAM owner account on test.local.'
     )
     _add_laptop(alice)
     assert screen_for(alice["bodies"][1], alice["bodies"][0]) == (
         'Add the passkey "Alice laptop" to your UAM owner account.'
+    )
+
+
+def test_entry_zero_with_two_passkeys_names_both(alice):
+    tablet_key = _key(SoftPasskey(), "Alice tablet")
+    body0 = next_entry(None, relay=RELAY, add=[alice["phone_key"], tablet_key])
+    assert screen_for(body0, None) == (
+        'Make "Alice iPhone", "Alice tablet" the first passkeys of your UAM owner account'
+        " on test.local."
     )
 
 

@@ -110,8 +110,8 @@ def screen_for(body: dict[str, Any], previous: dict[str, Any] | None) -> str:
     if previous is None:
         noun = "passkey" if len(body["keys"]) == 1 else "passkeys"
         return (
-            f"Create your UAM owner account on {body['owner']['relay']} "
-            f"with the {noun} {_labels(body['keys'])}."
+            f"Make {_labels(body['keys'])} the first {noun} of your UAM owner account "
+            f"on {body['owner']['relay']}."
         )
     before = {k["id"]: k for k in previous["keys"]}
     lines = []

@@ -106,7 +106,7 @@ def test_finishing_a_registration_asks_to_sign_entry_zero(ada):
     assert key["label"] == "Ada phone" and key["rpId"] == RP_ID
     assert approval["hash"] == object_hash(body)
     assert approval["screen"] == (
-        'Create your UAM owner account on test.local with the passkey "Ada phone".'
+        'Make "Ada phone" the first passkey of your UAM owner account on test.local.'
     )
     assert approval["challenge"] == b64u(entry_challenge(approval["hash"], approval["screen"]))
     assert approval["allowCredentials"] == [phone.id]
