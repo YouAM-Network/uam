@@ -85,6 +85,15 @@ DATETIME_COLUMNS = [
     ("webauthn_challenges", "expires_at", False),
     ("webauthn_challenges", "used_at", True),
     ("webauthn_challenges", "created_at", False),
+    ("owner_codes", "expires_at", False),
+    ("owner_codes", "used_at", True),
+    ("owner_codes", "created_at", False),
+    ("owner_code_tries", "at", False),
+    ("owner_links", "effective_at", False),
+    ("owner_links", "created_at", False),
+    ("owner_links", "approved_at", True),
+    ("owner_links", "ended_at", True),
+    ("owner_unlinks", "created_at", False),
 ]
 # The census-drift test below allows ±2 to absorb minor additions.
 

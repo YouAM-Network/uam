@@ -82,6 +82,28 @@ class EmailVault:
         msg = f"code\n{email_hmac}\n{code}".encode()
         return hmac.new(self._pepper, msg, hashlib.sha256).hexdigest()
 
+    def link_code_hash(self, code: str) -> str:
+        """A setup or link code's hash (the code normalised: 8 characters)."""
+        return hmac.new(self._pepper, f"link-code\n{code}".encode(), hashlib.sha256).hexdigest()
+
+
+#: Link codes: no 0/O, 1/I/L or U, so a code read aloud or retyped survives.
+LINK_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTVWXYZ23456789"
+LINK_CODE_LENGTH = 8
+
+
+def new_link_code() -> str:
+    """Eight characters (about 39 bits); shown as ``ABCD-EFGH``."""
+    return "".join(secrets.choice(LINK_CODE_ALPHABET) for _ in range(LINK_CODE_LENGTH))
+
+
+def normalise_link_code(text: str) -> str | None:
+    """A typed code without case, spaces or dashes, or None if it can't be one."""
+    cleaned = re.sub(r"[\s-]", "", text).upper()
+    if len(cleaned) != LINK_CODE_LENGTH or any(c not in LINK_CODE_ALPHABET for c in cleaned):
+        return None
+    return cleaned
+
 
 def new_code() -> str:
     return f"{secrets.randbelow(1_000_000):06d}"

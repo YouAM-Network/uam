@@ -85,6 +85,14 @@ Owner accounts are being built (the people who approve contacts for their agents
 
 Create an owner with `POST /api/v1/admin/owners {"email": "..."}` (`X-Admin-Key`). The owner then signs in on the owner origin with a 6-digit code (10 minutes, 5 tries, at most 3 codes an hour) and gets a session cookie that lasts 12 idle hours and at most 7 days. Signed in, they register passkeys (ES256, user-verified, discoverable). Each passkey is added by a signed entry in the owner's key log: the first entry is signed by the passkey it adds and fixes the owner's id; later ones by a passkey already in the log. Anyone can fetch and verify an owner's key log at `GET /api/owner/keys/{owner_id}` on either origin.
 
+With a passkey, an owner links agents to their account:
+
+1. They make a code on their page (`POST /api/owner/codes`): 8 characters shown as `ABCD-EFGH`, valid 10 minutes, single use, and only the newest of each kind works. A `setup` code is for an agent set up after the code was made. A `link` code is for an existing agent.
+2. The agent redeems it with its token (`POST /api/v1/owner/link/start`; 5 tries per 10 minutes) and signs the link the relay built (`POST /api/v1/owner/link/sign`).
+3. The owner sees the agent with four words worked out from its key, and approves with a passkey.
+
+A link made with a `link` code starts 72 hours after it is redeemed, and the owner can cancel it until then. Unlinking needs the owner's passkey, or the admin (`POST /api/v1/admin/links/{id}/unlink`), and closes the agent's inbound policy. An agent reads where its link stands with `GET /api/v1/owner/link`.
+
 ## Debug Settings
 
 | Variable | Default | Type | Description |

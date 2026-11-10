@@ -9,12 +9,12 @@ SameSite=Strict cookie keeps other sites from acting for a signed-in owner.
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, HTTPException, Path, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictBool
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.cors import CORSMiddleware
 from starlette.routing import Host
@@ -22,7 +22,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from uam.db.crud import owners as crud
 from uam.db.session import get_session
-from uam.relay.owners import passkeys, service
+from uam.relay.owners import links, passkeys, service
 from uam.relay.owners.crypto import EmailVault, normalise_email
 from uam.relay.owners.page import page_router
 
@@ -122,6 +122,17 @@ class SignEntry(BaseModel):
     authenticatorData: Annotated[str, Field(max_length=4096)]
     clientDataJSON: Annotated[str, Field(max_length=4096)]
     signature: Annotated[str, Field(max_length=512)]
+
+
+class CodeRequest(BaseModel):
+    kind: Literal["setup", "link"]
+
+
+class PrivateRequest(BaseModel):
+    private: StrictBool
+
+
+LinkId = Annotated[int, Path(ge=1)]
 
 
 def _refused(exc: passkeys.PasskeyError) -> JSONResponse:
@@ -290,6 +301,96 @@ def build_owner_app(settings, parent: FastAPI) -> FastAPI:
         who: service.SignedIn = Depends(signed_in), session: AsyncSession = Depends(get_session)
     ) -> dict:
         return {"passkeys": await passkeys.list_passkeys(session, who.owner)}
+
+    @app.post("/api/owner/codes")
+    async def make_code(
+        body: CodeRequest,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(await links.make_code(session, vault, who.owner, body.kind))
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.get("/api/owner/links")
+    async def list_links(
+        who: service.SignedIn = Depends(signed_in), session: AsyncSession = Depends(get_session)
+    ) -> dict:
+        return {"links": await links.list_links(session, who.owner)}
+
+    @app.post("/api/owner/links/{link_id}/approve/start")
+    async def approve_start(
+        link_id: LinkId,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(await links.approve_start(session, settings, who.owner, link_id))
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.post("/api/owner/links/{link_id}/approve")
+    async def approve(
+        link_id: LinkId,
+        body: SignEntry,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(
+                await links.approve(session, settings, who.owner, link_id, body.model_dump())
+            )
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.post("/api/owner/links/{link_id}/cancel")
+    async def cancel(
+        link_id: LinkId,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(await links.cancel(session, who.owner, link_id))
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.post("/api/owner/links/{link_id}/unlink/start")
+    async def unlink_start(
+        link_id: LinkId,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(await links.unlink_start(session, settings, who.owner, link_id))
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.post("/api/owner/links/{link_id}/unlink")
+    async def unlink(
+        link_id: LinkId,
+        body: SignEntry,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(
+                await links.unlink(session, settings, who.owner, link_id, body.model_dump())
+            )
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.post("/api/owner/links/{link_id}/private")
+    async def make_private(
+        link_id: LinkId,
+        body: PrivateRequest,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(await links.make_private(session, who.owner, link_id, body.private))
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
 
     app.include_router(key_log_router())
     app.include_router(page_router())

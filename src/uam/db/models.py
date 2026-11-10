@@ -46,6 +46,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    false,
     func,
 )
 from sqlmodel import Field, SQLModel
@@ -587,6 +588,133 @@ class WebAuthnChallenge(SQLModel, table=True):
     used_at: datetime | None = Field(
         default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
     )
+    created_at: datetime = Field(default_factory=_now, sa_column=_created_at())
+
+
+def _maybe_time() -> Column:
+    return Column(DateTime(timezone=True), nullable=True)
+
+
+def _agent_fk(table: str, *, index: bool = True) -> Column:
+    return Column(
+        String,
+        ForeignKey("agents.address", ondelete="CASCADE", name=f"fk_{table}_agent"),
+        nullable=False,
+        index=index,
+    )
+
+
+class OwnerCode(SQLModel, table=True):
+    """A setup or link code an owner made (P2d, migration 0015).
+
+    Stored as an HMAC; 10 minutes, single use. Only the newest code of each
+    kind counts. ``setup`` is for an agent registered after the code was
+    made; ``link`` is for an existing agent."""
+
+    __tablename__ = "owner_codes"
+    __table_args__ = (UniqueConstraint("code_hash", name="uq_owner_codes_code_hash"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    owner_pk: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("owners.id", ondelete="CASCADE", name="fk_owner_codes_owner"),
+            nullable=False,
+            index=True,
+        )
+    )
+    kind: str = Field(sa_column=Column(String, nullable=False))
+    code_hash: str = Field(sa_column=Column(String, nullable=False))
+    expires_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    used_at: datetime | None = Field(default=None, sa_column=_maybe_time())
+    used_by: str | None = Field(default=None, sa_column=Column(String, nullable=True))
+    created_at: datetime = Field(default_factory=_now, sa_column=_created_at())
+
+
+class OwnerCodeTry(SQLModel, table=True):
+    """One attempt by an agent to redeem a code: 5 per 10 minutes."""
+
+    __tablename__ = "owner_code_tries"
+
+    id: int | None = Field(default=None, primary_key=True)
+    agent_address: str = Field(sa_column=_agent_fk("owner_code_tries"))
+    at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+
+
+class OwnerLink(SQLModel, table=True):
+    """An agent linked to an owner: the signed UamOwnerLink.
+
+    ``state`` is ``started`` (the relay built the body), ``agent_signed``,
+    ``active`` (the owner signed; in effect from ``effective_at``),
+    ``cancelled`` or ``unlinked``. ``live_for`` is the agent's address while
+    the link is started, agent_signed or active, and NULL after; it is
+    unique, so an agent has at most one live link."""
+
+    __tablename__ = "owner_links"
+    __table_args__ = (
+        UniqueConstraint("hash", name="uq_owner_links_hash"),
+        UniqueConstraint("live_for", name="uq_owner_links_live_for"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    owner_pk: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("owners.id", ondelete="CASCADE", name="fk_owner_links_owner"),
+            nullable=False,
+            index=True,
+        )
+    )
+    agent_address: str = Field(sa_column=_agent_fk("owner_links"))
+    agent_key: str = Field(sa_column=Column(String, nullable=False))
+    body: str = Field(sa_column=Column(Text, nullable=False))
+    hash: str = Field(sa_column=Column(String, nullable=False))
+    via: str = Field(sa_column=Column(String, nullable=False))
+    effective_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    state: str = Field(
+        default="started", sa_column=Column(String, nullable=False, server_default="started")
+    )
+    live_for: str | None = Field(default=None, sa_column=Column(String, nullable=True))
+    agent_signature: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    owner_signer: str | None = Field(default=None, sa_column=Column(String, nullable=True))
+    authenticator_data: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    client_data_json: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    signature: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    screen: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    private: bool = Field(
+        default=False, sa_column=Column(Boolean, nullable=False, server_default=false())
+    )
+    created_at: datetime = Field(default_factory=_now, sa_column=_created_at())
+    approved_at: datetime | None = Field(default=None, sa_column=_maybe_time())
+    ended_at: datetime | None = Field(default=None, sa_column=_maybe_time())
+
+
+class OwnerUnlink(SQLModel, table=True):
+    """The signed UamOwnerUnlink that ended a link: by the owner's passkey
+    (``signer`` its did) or by the relay (``signer`` ``relay``)."""
+
+    __tablename__ = "owner_unlinks"
+    __table_args__ = (
+        UniqueConstraint("link_pk", name="uq_owner_unlinks_link_pk"),
+        UniqueConstraint("hash", name="uq_owner_unlinks_hash"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    link_pk: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("owner_links.id", ondelete="CASCADE", name="fk_owner_unlinks_link"),
+            nullable=False,
+        )
+    )
+    body: str = Field(sa_column=Column(Text, nullable=False))
+    hash: str = Field(sa_column=Column(String, nullable=False))
+    reason: str = Field(sa_column=Column(String, nullable=False))
+    signer: str = Field(sa_column=Column(String, nullable=False))
+    authenticator_data: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    client_data_json: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    signature: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    screen: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     created_at: datetime = Field(default_factory=_now, sa_column=_created_at())
 
 

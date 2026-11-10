@@ -142,7 +142,7 @@ dev = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-"uam.data" = ["*.json"]
+"uam.data" = ["*.json", "*.txt"]
 "uam.cards.fonts" = ["*.ttf"]
 "uam.cards.avatars" = ["**/*.json", "**/*.svg"]
 "uam.relay.owners" = ["static/*.css", "static/*.json", "static/*.js", "static/*.html"]
