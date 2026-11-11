@@ -86,6 +86,10 @@ class EmailVault:
         """A setup or link code's hash (the code normalised: 8 characters)."""
         return hmac.new(self._pepper, f"link-code\n{code}".encode(), hashlib.sha256).hexdigest()
 
+    def invite_code_hash(self, code: str) -> str:
+        """An invite code's hash (the code normalised: 8 characters)."""
+        return hmac.new(self._pepper, f"invite-code\n{code}".encode(), hashlib.sha256).hexdigest()
+
 
 #: Link codes: no 0/O, 1/I/L or U, so a code read aloud or retyped survives.
 LINK_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTVWXYZ23456789"

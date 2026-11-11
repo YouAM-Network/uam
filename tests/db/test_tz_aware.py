@@ -98,6 +98,18 @@ DATETIME_COLUMNS = [
     ("owner_requests", "expires_at", False),
     ("owner_requests", "ended_at", True),
     ("owner_request_optouts", "created_at", False),
+    ("owner_invites", "redeem_by", False),
+    ("owner_invites", "send_at", True),
+    ("owner_invites", "sent_at", True),
+    ("owner_invites", "created_at", False),
+    ("owner_invites", "ended_at", True),
+    ("invite_redemptions", "created_at", False),
+    ("owner_grants", "valid_until", False),
+    ("owner_grants", "revoked_at", True),
+    ("owner_grants", "created_at", False),
+    ("agent_policy_approvals", "created_at", False),
+    ("owner_revocations", "at", False),
+    ("owner_invite_tries", "at", False),
 ]
 # The census-drift test below allows ±2 to absorb minor additions.
 

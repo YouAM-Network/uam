@@ -78,6 +78,8 @@ EXPECTED_TABLES = sorted([
     "owner_passkeys", "owner_key_log", "webauthn_challenges",  # +3 from 0014
     "owner_codes", "owner_code_tries", "owner_links", "owner_unlinks",  # +4 from 0015
     "owner_requests", "owner_request_optouts",  # +2 from 0017
+    "owner_invites", "invite_redemptions", "owner_grants",  # +6 from 0019
+    "agent_policy_approvals", "owner_revocations", "owner_invite_tries",
 ])  # 36 tables
 
 

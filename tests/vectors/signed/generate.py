@@ -145,6 +145,16 @@ VALID = {
         "validFrom": "2026-11-09T10:00:00Z", "validUntil": "2026-11-10T10:00:00Z", "nonce": NONCE,
         "ext": {"note": "not critical"}, "crit": [],
     },
+    "agent_policy_open": {
+        "type": "UamAgentPolicy", "v": 1, "owner": owner_ref, "agent": "bob::youam.network",
+        "agentKey": ED_DID, "policy": "open", "sameOwner": True,
+        "validFrom": "2026-11-09T10:00:00Z", "nonce": NONCE,
+    },
+    "agent_policy_contacts": {
+        "type": "UamAgentPolicy", "v": 1, "owner": owner_ref, "agent": "bob::youam.network",
+        "agentKey": ED_DID, "policy": "contacts", "sameOwner": False,
+        "validFrom": "2026-11-09T10:00:00Z", "nonce": NONCE,
+    },
 }
 
 
@@ -214,6 +224,12 @@ INVALID_OBJECTS = {
     "crit_names_missing_ext": broken("grant_agent_with_ext", _set(["crit"], ["absent"])),
     "crit_without_ext": broken("grant_owner", _set(["crit"], [])),
     "ext_not_object": broken("grant_agent_with_ext", _set(["ext"], "x")),
+    "policy_closed": broken("agent_policy_open", _set(["policy"], "closed")),
+    "policy_same_owner_not_bool": broken("agent_policy_open", _set(["sameOwner"], 1)),
+    "policy_agent_key_not_ed25519": broken("agent_policy_open", _set(["agentKey"], P256_DID)),
+    "policy_without_owner_keys": broken("agent_policy_open",
+                                        _set(["owner"], {"relay": "youam.network",
+                                                         "ownerId": OWNER_ID})),
 }
 
 # Raw texts: what the parser itself must refuse (or accept), before any schema.

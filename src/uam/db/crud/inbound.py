@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from uam.db.models import InboundContact, InboundPolicy
@@ -105,3 +105,27 @@ async def delete_contact(session: AsyncSession, agent: str, contact: str) -> int
     policy = await _bump(session, agent, "admin")
     await session.commit()
     return policy.revision
+
+
+async def set_owner_policy(
+    session: AsyncSession, agent: str, policy: str, same_owner: bool
+) -> InboundPolicy:
+    """The owner's choice for *agent* (P2e). Flushes; the caller commits it
+    with whatever approves it."""
+    row = await _bump(session, agent, "owner")
+    row.policy = policy
+    row.same_owner = same_owner
+    row.set_by = "owner"
+    await session.flush()
+    return row
+
+
+async def set_aside(session: AsyncSession, agent: str) -> None:
+    """Contacts *agent* had before its owner chose Only my contacts stop
+    counting; the owner keeps any with a passkey (P2e). Flushes."""
+    await session.execute(
+        update(InboundContact)
+        .where(InboundContact.agent_address == agent, InboundContact.state == "allowed")
+        .values(state="set_aside", updated_at=datetime.now(timezone.utc))
+    )
+    await session.flush()

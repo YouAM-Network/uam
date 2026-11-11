@@ -430,6 +430,16 @@ def _grant(body: dict[str, Any]) -> None:
         _fail("$.validUntil", f"must be after validFrom, within {GRANT_MAX_DAYS} days")
 
 
+def _agent_policy(body: dict[str, Any]) -> None:
+    """Who may message an agent, as its owner approved it (P2e). Only a
+    change that widens it is signed; narrowing needs no passkey."""
+    _object({
+        "type": _const("UamAgentPolicy"), "v": _const(1), "owner": _owner_ref,
+        "agent": _address, "agentKey": _agent_key, "policy": _one_of("open", "contacts"),
+        "sameOwner": _bool, "validFrom": _time, "nonce": _nonce,
+    }, dict(_EXT))(body, "$")
+
+
 SCHEMAS: dict[str, Callable[[dict[str, Any]], None]] = {
     "UamOwnerKeys": _owner_keys,
     "UamOwnerLink": _owner_link,
@@ -437,6 +447,7 @@ SCHEMAS: dict[str, Callable[[dict[str, Any]], None]] = {
     "UamInvite": _invite,
     "UamRedemption": _redemption,
     "UamContactGrant": _grant,
+    "UamAgentPolicy": _agent_policy,
 }
 
 

@@ -14,7 +14,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, HTTPException, Path, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, Field, StrictBool, StrictInt, field_validator
+from pydantic import BaseModel, Field, StrictBool, StrictInt, field_validator, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.cors import CORSMiddleware
 from starlette.routing import Host
@@ -22,7 +22,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from uam.db.crud import owners as crud
 from uam.db.session import get_session
-from uam.relay.owners import links, names, passkeys, requests, service
+from uam.relay.owners import contacts, links, names, passkeys, policy, requests, service
 from uam.relay.rate_limit import SlidingWindowCounter
 from uam.relay.owners.crypto import EmailVault, normalise_email
 from uam.relay.owners.page import page_router
@@ -155,7 +155,58 @@ class DeclineRequest(BaseModel):
     block: StrictBool = False
 
 
+class InviteRequest(BaseModel):
+    how: Literal["code", "link"]
+
+
+_CREDENTIAL = Annotated[str | None, Field(default=None, max_length=1400)]
+
+
+class EmailInviteRequest(BaseModel):
+    email: Annotated[str, Field(max_length=320)]
+    credentialId: _CREDENTIAL = None
+
+
+class InviteKey(BaseModel):
+    """What opens an invite: its code, or its link's id and secret."""
+
+    code: Annotated[str | None, Field(default=None, max_length=32)] = None
+    link: Annotated[str | None, Field(default=None, pattern=r"^[A-Za-z0-9_-]{16}$")] = None
+    secret: Annotated[str | None, Field(default=None, pattern=r"^[A-Za-z0-9_-]{22}$")] = None
+    credentialId: _CREDENTIAL = None
+
+    @model_validator(mode="after")
+    def _one_way_in(self) -> "InviteKey":
+        if (self.code is None) == (self.link is None) or (self.link is None) != (self.secret is None):
+            raise ValueError("a code, or a link and its secret")
+        return self
+
+    def key(self) -> dict[str, str]:
+        return {"code": self.code} if self.code is not None else {
+            "link": self.link, "secret": self.secret,
+        }
+
+
+class CredentialChoice(BaseModel):
+    credentialId: _CREDENTIAL = None
+
+
+class PolicyRequest(BaseModel):
+    policy: Literal["open", "contacts"]
+    sameOwner: StrictBool
+    credentialId: _CREDENTIAL = None
+
+
+class KeepRequest(BaseModel):
+    contacts: Annotated[
+        list[Annotated[str, Field(min_length=3, max_length=320)]],
+        Field(min_length=1, max_length=policy.MAX_KEEP),
+    ]
+    credentialId: _CREDENTIAL = None
+
+
 LinkId = Annotated[int, Path(ge=1)]
+OwnerIdPath = Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]{22}$")]
 
 
 def _refused(exc: passkeys.PasskeyError) -> JSONResponse:
@@ -219,6 +270,9 @@ def build_owner_app(settings, parent: FastAPI) -> FastAPI:
         if sink is not None:
             return sink
         return service.log_sink if settings.owner_codes_to_log else service.drop_sink
+
+    def contact_sink() -> contacts.ContactNotice:
+        return getattr(parent.state, "owner_contact_sink", None) or contacts.log_notice
 
     @app.exception_handler(HTTPException)
     async def _http_error(request: Request, exc: HTTPException) -> JSONResponse:
@@ -642,6 +696,231 @@ def build_owner_app(settings, parent: FastAPI) -> FastAPI:
     ) -> Response:
         try:
             return JSONResponse(await links.make_private(session, who.owner, link_id, body.private))
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    # --- owners connect (P2e) ----------------------------------------------------
+
+    @app.post("/api/owner/invites")
+    async def make_invite(
+        body: InviteRequest,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(
+                await contacts.make_invite(session, settings, vault, who.owner, body.how)
+            )
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.get("/api/owner/invites")
+    async def list_invites(
+        who: service.SignedIn = Depends(signed_in), session: AsyncSession = Depends(get_session)
+    ) -> dict:
+        return {"invites": await contacts.list_invites(session, vault, who.owner)}
+
+    @app.post("/api/owner/invites/email/start")
+    async def email_invite_start(
+        body: EmailInviteRequest,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(await contacts.email_start(
+                session, settings, vault, who.owner, _email(body.email), body.credentialId
+            ))
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.post("/api/owner/invites/email")
+    async def email_invite(
+        body: SignEntry,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(
+                await contacts.email_finish(session, settings, vault, who.owner, body.model_dump())
+            )
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.post("/api/owner/invites/find")
+    async def find_invite(
+        body: InviteKey,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(
+                await contacts.find(session, vault, who.owner, body.key(), contact_sink())
+            )
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.post("/api/owner/invites/redeem/start")
+    async def redeem_start(
+        body: InviteKey,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(await contacts.redeem_start(
+                session, settings, vault, who.owner, body.key(), body.credentialId, contact_sink()
+            ))
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.post("/api/owner/invites/redeem")
+    async def redeem(
+        body: SignEntry,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(await contacts.redeem(
+                session, settings, vault, who.owner, body.model_dump(), contact_sink()
+            ))
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.post("/api/owner/invites/{invite_id}/cancel")
+    async def cancel_invite(
+        invite_id: LinkId,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(await contacts.cancel(session, vault, who.owner, invite_id))
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.post("/api/owner/invites/{invite_id}/confirm/start")
+    async def confirm_start(
+        invite_id: LinkId,
+        body: CredentialChoice | None = None,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(await contacts.confirm_start(
+                session, settings, vault, who.owner, invite_id,
+                body.credentialId if body else None,
+            ))
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.post("/api/owner/invites/{invite_id}/confirm")
+    async def confirm(
+        invite_id: LinkId,
+        body: SignEntry,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(await contacts.confirm(
+                session, settings, vault, who.owner, invite_id, body.model_dump(), contact_sink()
+            ))
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.get("/api/owner/links/{link_id}/policy")
+    async def read_policy(
+        link_id: LinkId,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(await policy.read(session, who.owner, link_id))
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.post("/api/owner/links/{link_id}/policy")
+    async def narrow_policy(
+        link_id: LinkId,
+        body: PolicyRequest,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(
+                await policy.narrow(session, who.owner, link_id, body.policy, body.sameOwner)
+            )
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.post("/api/owner/links/{link_id}/policy/approve/start")
+    async def widen_policy_start(
+        link_id: LinkId,
+        body: PolicyRequest,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(await policy.widen_start(
+                session, settings, who.owner, link_id, body.policy, body.sameOwner,
+                body.credentialId,
+            ))
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.post("/api/owner/links/{link_id}/policy/approve")
+    async def widen_policy(
+        link_id: LinkId,
+        body: SignEntry,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(
+                await policy.widen(session, settings, who.owner, link_id, body.model_dump())
+            )
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.post("/api/owner/links/{link_id}/keep/start")
+    async def keep_start(
+        link_id: LinkId,
+        body: KeepRequest,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(await policy.keep_start(
+                session, settings, who.owner, link_id, body.contacts, body.credentialId
+            ))
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.post("/api/owner/links/{link_id}/keep")
+    async def keep(
+        link_id: LinkId,
+        body: SignEntry,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(
+                await policy.keep(session, settings, who.owner, link_id, body.model_dump())
+            )
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.get("/api/owner/contacts")
+    async def list_contacts(
+        who: service.SignedIn = Depends(signed_in), session: AsyncSession = Depends(get_session)
+    ) -> dict:
+        return {"contacts": await contacts.list_contacts(session, vault, who.owner)}
+
+    @app.post("/api/owner/contacts/{owner_id}/remove")
+    async def remove_contact(
+        owner_id: OwnerIdPath,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(await contacts.remove(session, vault, who.owner, owner_id))
         except passkeys.PasskeyError as exc:
             return _refused(exc)
 

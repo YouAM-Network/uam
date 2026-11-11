@@ -42,11 +42,13 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
     false,
+    true,
     func,
 )
 from sqlmodel import Field, SQLModel
@@ -306,8 +308,10 @@ class InboundPolicy(SQLModel, table=True):
     """Who may deliver to an agent (P1, migration 0012).
 
     No row means ``open`` (everyone, as before P1). ``contacts`` and
-    ``closed`` deliver only from ``allowed`` rows in ``inbound_contacts``.
-    ``set_by`` is ``admin`` in P1; owners set it from P2.
+    ``closed`` deliver only from ``allowed`` rows in ``inbound_contacts``;
+    ``contacts`` also takes the senders the agent's owner approved, and,
+    while ``same_owner`` is on, the owner's other agents (P2e).
+    ``set_by`` is ``admin`` or ``owner``.
     """
 
     __tablename__ = "inbound_policies"
@@ -324,6 +328,9 @@ class InboundPolicy(SQLModel, table=True):
         default=0, sa_column=Column(Integer, nullable=False, server_default="0")
     )
     set_by: str = Field(sa_column=Column(String, nullable=False))
+    same_owner: bool = Field(
+        default=True, sa_column=Column(Boolean, nullable=False, server_default=true())
+    )
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(
@@ -338,8 +345,10 @@ class InboundContact(SQLModel, table=True):
     """A sender an agent with a policy accepts or refuses (P1, migration 0012).
 
     ``contact_key`` is the key the sender must sign with; a different key
-    is held back, never auto-updated. ``grant_ref`` and ``expires_at`` are
-    filled from P2 (owner grants, reply windows).
+    is held back, never auto-updated. ``state`` is ``allowed``, ``blocked``
+    or ``set_aside`` (an ``allowed`` row from before its owner chose Only my
+    contacts; it no longer counts). ``grant_ref`` and ``expires_at`` are
+    for reply windows (later in P2).
     """
 
     __tablename__ = "inbound_contacts"
@@ -758,6 +767,173 @@ class OwnerUnlink(SQLModel, table=True):
     signature: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     screen: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     created_at: datetime = Field(default_factory=_now, sa_column=_created_at())
+
+
+def _fk(table: str, column: str, target: str, ondelete: str, *, nullable: bool) -> Column:
+    return Column(
+        Integer,
+        ForeignKey(target, ondelete=ondelete, name=f"fk_{table}_{column}"),
+        nullable=nullable,
+    )
+
+
+class OwnerInvite(SQLModel, table=True):
+    """An owner's invite to connect (P2e): the ``UamInvite`` body.
+
+    ``how`` is ``code`` (read out on a call, 10 minutes), ``link`` or
+    ``email`` (pre-approved: the inviter signed it with their grant, and
+    the email goes out after ``send_at``, so it can be undone). The relay
+    keeps ``secret`` for a code or an email; a link's secret is only in
+    the link. ``state``: ``open``, ``redeemed`` (waiting for the inviter
+    to confirm), ``connected`` or ``cancelled``.
+    """
+
+    __tablename__ = "owner_invites"
+    __table_args__ = (
+        UniqueConstraint("hash", name="uq_owner_invites_hash"),
+        UniqueConstraint("link_id", name="uq_owner_invites_link_id"),
+        UniqueConstraint("code_hash", name="uq_owner_invites_code_hash"),
+        Index("ix_owner_invites_owner_pk", "owner_pk"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    owner_pk: int = Field(sa_column=_owner_fk("owner_invites"))
+    body: str = Field(sa_column=Column(Text, nullable=False))
+    hash: str = Field(sa_column=Column(String, nullable=False))
+    link_id: str = Field(sa_column=Column(String, nullable=False))
+    mode: str = Field(sa_column=Column(String, nullable=False))
+    how: str = Field(sa_column=Column(String, nullable=False))
+    secret: str | None = Field(default=None, sa_column=Column(String, nullable=True))
+    code_hash: str | None = Field(default=None, sa_column=Column(String, nullable=True))
+    email_hmac: str | None = Field(default=None, sa_column=Column(String, nullable=True))
+    email_enc: str | None = Field(default=None, sa_column=Column(String, nullable=True))
+    state: str = Field(
+        default="open", sa_column=Column(String, nullable=False, server_default="open")
+    )
+    redeem_by: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    send_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    sent_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    created_at: datetime = Field(default_factory=_now, sa_column=_created_at())
+    ended_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+
+
+class InviteRedemption(SQLModel, table=True):
+    """The ``UamRedemption`` that used an invite. Keyed by the invite's
+    hash, so an invite is redeemed once whatever races."""
+
+    __tablename__ = "invite_redemptions"
+    __table_args__ = (UniqueConstraint("hash", name="uq_invite_redemptions_hash"),)
+
+    invite_hash: str = Field(sa_column=Column(String, primary_key=True))
+    invite_pk: int = Field(
+        sa_column=_fk("invite_redemptions", "invite", "owner_invites.id", "CASCADE",
+                      nullable=False)
+    )
+    owner_pk: int = Field(sa_column=_owner_fk("invite_redemptions"))
+    body: str = Field(sa_column=Column(Text, nullable=False))
+    hash: str = Field(sa_column=Column(String, nullable=False))
+    signer: str = Field(sa_column=Column(String, nullable=False))
+    authenticator_data: str = Field(sa_column=Column(Text, nullable=False))
+    client_data_json: str = Field(sa_column=Column(Text, nullable=False))
+    signature: str = Field(sa_column=Column(Text, nullable=False))
+    screen: str = Field(sa_column=Column(Text, nullable=False))
+    created_at: datetime = Field(default_factory=_now, sa_column=_created_at())
+
+
+class OwnerGrant(SQLModel, table=True):
+    """A ``UamContactGrant``: an owner lets someone message their agents.
+
+    ``owner_pk`` issued it. The subject is another owner
+    (``subject_owner_pk``; for a pre-approved invite, filled in when the
+    invite is redeemed) or one agent (``subject_address`` and
+    ``subject_key``). ``location_keys`` maps each address the grant names
+    to the key that agent had then (DEC-006); a grant naming ``shared``
+    has none. ``revoked_at`` ends it.
+    """
+
+    __tablename__ = "owner_grants"
+    __table_args__ = (
+        UniqueConstraint("hash", name="uq_owner_grants_hash"),
+        Index("ix_owner_grants_owner_pk", "owner_pk"),
+        Index("ix_owner_grants_subject_owner_pk", "subject_owner_pk"),
+        Index("ix_owner_grants_subject_address", "subject_address"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    owner_pk: int = Field(sa_column=_owner_fk("owner_grants"))
+    body: str = Field(sa_column=Column(Text, nullable=False))
+    hash: str = Field(sa_column=Column(String, nullable=False))
+    subject_kind: str = Field(sa_column=Column(String, nullable=False))
+    subject_owner_pk: int | None = Field(
+        default=None,
+        sa_column=_fk("owner_grants", "subject_owner", "owners.id", "CASCADE", nullable=True),
+    )
+    subject_address: str | None = Field(default=None, sa_column=Column(String, nullable=True))
+    subject_key: str | None = Field(default=None, sa_column=Column(String, nullable=True))
+    invite_pk: int | None = Field(
+        default=None,
+        sa_column=_fk("owner_grants", "invite", "owner_invites.id", "SET NULL", nullable=True),
+    )
+    location_keys: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    via: str = Field(sa_column=Column(String, nullable=False))
+    valid_until: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    revoked_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    signer: str = Field(sa_column=Column(String, nullable=False))
+    authenticator_data: str = Field(sa_column=Column(Text, nullable=False))
+    client_data_json: str = Field(sa_column=Column(Text, nullable=False))
+    signature: str = Field(sa_column=Column(Text, nullable=False))
+    screen: str = Field(sa_column=Column(Text, nullable=False))
+    created_at: datetime = Field(default_factory=_now, sa_column=_created_at())
+
+
+class AgentPolicyApproval(SQLModel, table=True):
+    """A signed ``UamAgentPolicy``: an owner widened who may message an agent."""
+
+    __tablename__ = "agent_policy_approvals"
+    __table_args__ = (UniqueConstraint("hash", name="uq_agent_policy_approvals_hash"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    owner_pk: int = Field(sa_column=_owner_fk("agent_policy_approvals"))
+    agent_address: str = Field(sa_column=Column(String, nullable=False))
+    body: str = Field(sa_column=Column(Text, nullable=False))
+    hash: str = Field(sa_column=Column(String, nullable=False))
+    signer: str = Field(sa_column=Column(String, nullable=False))
+    authenticator_data: str = Field(sa_column=Column(Text, nullable=False))
+    client_data_json: str = Field(sa_column=Column(Text, nullable=False))
+    signature: str = Field(sa_column=Column(Text, nullable=False))
+    screen: str = Field(sa_column=Column(Text, nullable=False))
+    created_at: datetime = Field(default_factory=_now, sa_column=_created_at())
+
+
+class OwnerRevocation(SQLModel, table=True):
+    """One entry in the relay's revocation list: ``{"t", "h", "at"}``.
+    ``seq`` orders it, so a reader asks for entries after the last it saw."""
+
+    __tablename__ = "owner_revocations"
+    __table_args__ = (UniqueConstraint("t", "h", name="uq_owner_revocations_t_h"),)
+
+    seq: int | None = Field(default=None, primary_key=True)
+    t: str = Field(sa_column=Column(String, nullable=False))
+    h: str = Field(sa_column=Column(String, nullable=False))
+    at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+
+
+class OwnerInviteTry(SQLModel, table=True):
+    """A wrong invite code or secret from an owner: 5 per 10 minutes."""
+
+    __tablename__ = "owner_invite_tries"
+
+    id: int | None = Field(default=None, primary_key=True)
+    owner_pk: int = Field(sa_column=_owner_fk("owner_invite_tries"))
+    at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
 
 
 class RoutedMessage(SQLModel, table=True):

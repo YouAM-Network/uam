@@ -367,6 +367,48 @@
   "hash": "NNoCiihdPInOAO15g6X-E1H-2WSD8YiwWhjk-hJI9hg"
  },
  {
+  "name": "agent_policy_open",
+  "body": {
+   "type": "UamAgentPolicy",
+   "v": 1,
+   "owner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+    "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   },
+   "agent": "bob::youam.network",
+   "agentKey": "did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb",
+   "policy": "open",
+   "sameOwner": true,
+   "validFrom": "2026-11-09T10:00:00Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": true,
+  "canonical": "{\"agent\":\"bob::youam.network\",\"agentKey\":\"did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb\",\"nonce\":\"nonce-0123456789ab\",\"owner\":{\"keysHash\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"ownerId\":\"CCCCCCCCCCCCCCCCCCCCCC\",\"relay\":\"youam.network\"},\"policy\":\"open\",\"sameOwner\":true,\"type\":\"UamAgentPolicy\",\"v\":1,\"validFrom\":\"2026-11-09T10:00:00Z\"}",
+  "hash": "6-La04RJu4K4AsB5Og0-d3ECV4CMXbjgI2ZqABm4RPw"
+ },
+ {
+  "name": "agent_policy_contacts",
+  "body": {
+   "type": "UamAgentPolicy",
+   "v": 1,
+   "owner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+    "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   },
+   "agent": "bob::youam.network",
+   "agentKey": "did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb",
+   "policy": "contacts",
+   "sameOwner": false,
+   "validFrom": "2026-11-09T10:00:00Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": true,
+  "canonical": "{\"agent\":\"bob::youam.network\",\"agentKey\":\"did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb\",\"nonce\":\"nonce-0123456789ab\",\"owner\":{\"keysHash\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"ownerId\":\"CCCCCCCCCCCCCCCCCCCCCC\",\"relay\":\"youam.network\"},\"policy\":\"contacts\",\"sameOwner\":false,\"type\":\"UamAgentPolicy\",\"v\":1,\"validFrom\":\"2026-11-09T10:00:00Z\"}",
+  "hash": "idaYIldfplswvqHSWCuQEDsevwRtY71wokO8bKAn36I"
+ },
+ {
   "name": "unknown_member",
   "body": {
    "type": "UamOwnerLink",
@@ -1540,6 +1582,81 @@
    "nonce": "nonce-0123456789ab",
    "ext": "x",
    "crit": []
+  },
+  "ok": false
+ },
+ {
+  "name": "policy_closed",
+  "body": {
+   "type": "UamAgentPolicy",
+   "v": 1,
+   "owner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+    "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   },
+   "agent": "bob::youam.network",
+   "agentKey": "did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb",
+   "policy": "closed",
+   "sameOwner": true,
+   "validFrom": "2026-11-09T10:00:00Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": false
+ },
+ {
+  "name": "policy_same_owner_not_bool",
+  "body": {
+   "type": "UamAgentPolicy",
+   "v": 1,
+   "owner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+    "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   },
+   "agent": "bob::youam.network",
+   "agentKey": "did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb",
+   "policy": "open",
+   "sameOwner": 1,
+   "validFrom": "2026-11-09T10:00:00Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": false
+ },
+ {
+  "name": "policy_agent_key_not_ed25519",
+  "body": {
+   "type": "UamAgentPolicy",
+   "v": 1,
+   "owner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+    "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   },
+   "agent": "bob::youam.network",
+   "agentKey": "did:key:zDnaebkrzg1EeBrHzATo8o3pBfQfyGXrPe4Zg5zjW65a3vBUH",
+   "policy": "open",
+   "sameOwner": true,
+   "validFrom": "2026-11-09T10:00:00Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": false
+ },
+ {
+  "name": "policy_without_owner_keys",
+  "body": {
+   "type": "UamAgentPolicy",
+   "v": 1,
+   "owner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC"
+   },
+   "agent": "bob::youam.network",
+   "agentKey": "did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb",
+   "policy": "open",
+   "sameOwner": true,
+   "validFrom": "2026-11-09T10:00:00Z",
+   "nonce": "nonce-0123456789ab"
   },
   "ok": false
  }

@@ -489,6 +489,15 @@ const SCHEMAS: Record<string, (body: Body) => void> = {
       fail("$.validUntil", `must be after validFrom, within ${GRANT_MAX_DAYS} days`);
     }
   },
+
+  // Who may message an agent, as its owner approved it (P2e). Only a change
+  // that widens it is signed; narrowing needs no passkey.
+  UamAgentPolicy(body) {
+    object({
+      type: constant("UamAgentPolicy"), v: constant(1), owner: ownerRef, agent: address,
+      agentKey, policy: oneOf("open", "contacts"), sameOwner: bool, validFrom: time, nonce,
+    }, { ...EXT })(body, "$");
+  },
 };
 
 const SUBJECTS: Record<string, Check> = {

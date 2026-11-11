@@ -224,6 +224,7 @@ async def _retention_worker_loop(app: FastAPI) -> None:
 
 # How often to sweep expired reservations (seconds)
 _RESERVATION_EXPIRY_INTERVAL: float = 300.0  # 5 minutes
+_OWNER_INVITE_EMAIL_INTERVAL: float = 60.0  # pre-approved invites go out within a minute of their undo
 
 
 async def _reservation_expiry_loop(app: FastAPI) -> None:
@@ -246,6 +247,26 @@ async def _reservation_expiry_loop(app: FastAPI) -> None:
                 logger.warning("Transient DB error in reservation expiry sweep, will retry next cycle: %s", exc)
             else:
                 logger.exception("Error in reservation expiry sweep")
+
+
+async def _owner_invite_email_loop(app: FastAPI) -> None:
+    """Send pre-approved invites once their 10-minute undo has passed (P2e)."""
+    from uam.db.engine import get_engine
+    from uam.db.retry import is_transient_error
+    from uam.db.session import async_session_factory
+    from uam.relay.owners.contacts import send_due
+
+    while True:
+        await asyncio.sleep(_OWNER_INVITE_EMAIL_INTERVAL)
+        try:
+            factory = async_session_factory(get_engine())
+            async with factory() as session:
+                await send_due(session, app)
+        except Exception as exc:
+            if is_transient_error(exc):
+                logger.warning("Transient DB error sending invites, will retry next cycle: %s", exc)
+            else:
+                logger.exception("Error sending invites")
 
 
 async def _federation_retry_loop(app: FastAPI) -> None:
@@ -477,6 +498,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Background sweep for expired reservations (RES-05)
     reservation_expiry_task = asyncio.create_task(_reservation_expiry_loop(app))
+    invite_email_task = (
+        asyncio.create_task(_owner_invite_email_loop(app)) if settings.owners_enabled else None
+    )
 
     # Record startup time for uptime calculation (RES-03)
     app.state.startup_time = time.monotonic()
@@ -518,6 +542,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await reservation_expiry_task
     except asyncio.CancelledError:
         pass
+
+    if invite_email_task:
+        invite_email_task.cancel()
+        try:
+            await invite_email_task
+        except asyncio.CancelledError:
+            pass
 
     # Cancel retention worker (RES-04)
     retention_task.cancel()
