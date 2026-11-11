@@ -11,9 +11,10 @@ nothing here needs a passkey. A fleet's *setting* is set through
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from uam.db.crud import owner_links as link_crud
@@ -83,18 +84,36 @@ async def list_fleets(session: AsyncSession, owner: Owner) -> dict[str, Any]:
     return {"fleets": [await view(session, fleet) for fleet in fleets]}
 
 
+async def _claim(session: AsyncSession, write: Callable[[], None]) -> None:
+    """Write a name in a savepoint. Another request can take the name between
+    the look and the write; the unique key catches that, and it's name_taken."""
+    try:
+        async with session.begin_nested():
+            write()
+    except IntegrityError:
+        raise _taken() from None
+
+
 async def _new(session: AsyncSession, owner: Owner, name: str) -> OwnerFleet:
     if await _by_name(session, owner, name) is not None:
         raise _taken()
     fleet = OwnerFleet(owner_pk=owner.id, name=tidy(name), name_key=name_key(name))
-    session.add(fleet)
-    await session.flush()
+    await _claim(session, lambda: session.add(fleet))
     return fleet
 
 
 async def find_or_make(session: AsyncSession, owner: Owner, name: str) -> OwnerFleet:
     """The owner's fleet with this name, made if it isn't there (for a code)."""
-    return await _by_name(session, owner, name) or await _new(session, owner, name)
+    try:
+        return await _by_name(session, owner, name) or await _new(session, owner, name)
+    except PasskeyError as err:
+        if err.code != "name_taken":
+            raise
+        # Made by another request just now: use it.
+        found = await _by_name(session, owner, name)
+        if found is None:
+            raise
+        return found
 
 
 async def _live_links(session: AsyncSession, owner: Owner, ids: list[int]) -> list[OwnerLink]:
@@ -142,7 +161,10 @@ async def rename(session: AsyncSession, owner: Owner, fleet_id: int, name: str) 
     other = await _by_name(session, owner, name)
     if other is not None and other.id != fleet.id:
         raise _taken()
-    fleet.name, fleet.name_key = tidy(name), name_key(name)
+    def write() -> None:
+        fleet.name, fleet.name_key = tidy(name), name_key(name)
+
+    await _claim(session, write)
     await owner_crud.audit(session, owner.id, "fleet_renamed", {"fleet": fleet.id})
     await session.commit()
     return await view(session, fleet)

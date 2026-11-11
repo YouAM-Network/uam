@@ -357,3 +357,35 @@ def test_a_link_that_starts_later_keeps_its_own_setting(relay, ada):
     assert row["fleet_id"] == fleet["id"]
     assert _rows(ada, "SELECT policy FROM inbound_policies WHERE agent_address = :a",
                  a=agent["address"]) == []
+
+
+@pytest.mark.parametrize("how", ["new", "code", "rename"])
+def test_a_name_taken_at_the_same_moment_is_still_name_taken(ada, monkeypatch, how):
+    """Two requests can both find the name free; the second to write gets
+    409 name_taken (or, for a code, the fleet the first one made)."""
+    from uam.relay.owners import fleets
+
+    first = _code(ada, 1, "support")["fleet"]
+    other = _code(ada, 1, "crawlers")["fleet"]
+
+    real, calls = fleets._by_name, []
+
+    async def free_once(*args, **kwargs):
+        # The first look finds the name free: the other request writes after it.
+        calls.append(1)
+        return None if len(calls) == 1 else await real(*args, **kwargs)
+
+    monkeypatch.setattr(fleets, "_by_name", free_once)
+    if how == "new":
+        resp = ada.post("/api/owner/fleets", json={"name": "Support", "links": []})
+    elif how == "rename":
+        resp = ada.post(f"/api/owner/fleets/{other['id']}/rename", json={"name": "support"})
+    else:
+        resp = ada.post("/api/owner/codes", json={"kind": "setup", "count": 2, "fleet": "Support"})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["fleet"]["id"] == first["id"]
+        return
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["error"] == "name_taken"
+    monkeypatch.undo()
+    assert sorted(_fleets(ada)) == ["crawlers", "support"]
