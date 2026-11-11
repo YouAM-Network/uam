@@ -19,12 +19,10 @@ button, input { font: inherit; color: inherit; }
 strong { font-weight: 600; color: var(--ink); }
 
 /* Brand */
-.brand { display: flex; gap: var(--space-2); align-items: center; font-weight: 600; font-size: var(--text-m); letter-spacing: 0.01em; }
-.mark {
-  width: var(--mark); height: var(--mark); border-radius: 50%;
-  background: var(--mark-fill); color: var(--mark-ink);
-  display: grid; place-items: center; font-weight: 700; font-size: var(--text-xs); flex: none;
-}
+/* The YouAM lockup (mark and wordmark, one shape from youam.network's logo). Never set the name in type beside it. */
+.brand { display: flex; align-items: center; }
+.logo { height: var(--mark); width: auto; color: var(--mark-fill); display: block; flex: none; }
+.sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
 
 /* Text */
 h1 { font-size: var(--text-xl); font-weight: 600; line-height: 1.25; letter-spacing: -0.022em; margin: 0; }
@@ -90,6 +88,33 @@ h2 { font-size: var(--text-m); font-weight: 600; letter-spacing: -0.006em; margi
 .passkeys .when { white-space: nowrap; }
 .passkeys .empty { color: var(--ink-faint); }
 
+/* Agent list: a row per agent, its words, and quiet actions */
+.items { list-style: none; margin: 0; padding: 0; border-top: var(--rule-width) solid var(--rule); }
+.items li {
+  display: grid; gap: var(--space-2);
+  padding: var(--space-4) 0; border-bottom: var(--rule-width) solid var(--rule);
+}
+.items .name { font-weight: 500; overflow-wrap: anywhere; }
+.items .meta { font-size: var(--text-s); color: var(--ink-faint); }
+.items .words { font: var(--text-s) var(--mono); color: var(--ink-soft); }
+.actions { display: flex; flex-wrap: wrap; gap: var(--space-1); margin-left: calc(-1 * var(--space-3)); }
+/* A row's last line: what it is or the include box, then its actions at the right */
+.foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.foot .actions { margin-left: auto; margin-right: calc(-1 * var(--space-3)); }
+.check { display: flex; gap: var(--space-2); align-items: center; font-size: var(--text-s); color: var(--ink-soft); min-height: var(--touch); cursor: pointer; }
+.check input, .option input { accent-color: var(--action); width: var(--space-4); height: var(--space-4); margin: 0; flex: none; }
+
+/* A choice of one, as plain rows */
+.choice { border: 0; margin: 0; padding: 0; display: grid; gap: var(--space-1); }
+.choice legend { font-size: var(--text-s); font-weight: 500; color: var(--ink-soft); padding: 0; margin-bottom: var(--space-2); }
+.option { display: flex; gap: var(--space-3); align-items: start; padding: var(--space-2) 0; min-height: var(--touch); cursor: pointer; }
+.option input { margin-top: var(--space-1); }
+.option > span { display: grid; gap: var(--space-1); }
+
+/* A code to type elsewhere, and the command that takes it */
+.shown-code { font: 500 var(--text-code) / 1.2 var(--mono); letter-spacing: 0.12em; margin: 0; }
+.command { font: var(--text-s) var(--mono); color: var(--ink-soft); margin: 0; overflow-wrap: anywhere; }
+
 /* Owner id */
 .owner-id { font: var(--text-s) var(--mono); color: var(--ink-soft); word-break: break-all; margin: 0; }
 
@@ -97,9 +122,12 @@ h2 { font-size: var(--text-m); font-weight: 600; letter-spacing: -0.006em; margi
 .head { border-bottom: var(--rule-width) solid var(--rule); }
 .head-in {
   max-width: var(--width-page); margin: 0 auto; padding: var(--space-3) var(--space-4);
-  display: flex; justify-content: space-between; align-items: center; gap: var(--space-4); flex-wrap: wrap;
+  display: flex; justify-content: space-between; align-items: center; gap: var(--space-4);
 }
-.who { display: flex; gap: var(--space-1); align-items: center; font-size: var(--text-s); color: var(--ink-faint); }
+.who { display: flex; gap: var(--space-1); align-items: center; font-size: var(--text-s); color: var(--ink-faint); min-width: 0; }
+/* A long email shortens with an ellipsis so the logo and Sign out stay on one line; its title has it whole. */
+.who span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.who .btn { flex: none; }
 .main {
   max-width: var(--width-page); margin: 0 auto;
   padding: var(--space-12) var(--space-4) var(--space-16); display: grid; gap: var(--space-12);
@@ -130,6 +158,7 @@ h2 { font-size: var(--text-m); font-weight: 600; letter-spacing: -0.006em; margi
   max-height: 100%; overflow: auto;
 }
 @media (min-width: 640px) {
+  .logo { height: var(--mark-wide); }
   .scrim { place-items: center; }
   .sheet { border-radius: var(--radius-l); padding: var(--space-8); }
 }

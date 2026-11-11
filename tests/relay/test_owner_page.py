@@ -55,7 +55,7 @@ def test_the_page_is_served_at_the_root_of_the_owner_origin(owner):
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/html")
     assert "default-src 'self'" in resp.headers["content-security-policy"]
-    assert "<title>UAM account</title>" in resp.text
+    assert "<title>YouAM account</title>" in resp.text
 
 
 def test_every_asset_is_pinned_by_its_hash(owner):
@@ -96,7 +96,7 @@ def test_only_the_pinned_assets_are_served(owner, path):
 
 def test_the_relay_origin_does_not_serve_the_page(relay):
     resp = relay.get("/")
-    assert "UAM account" not in resp.text
+    assert "YouAM account" not in resp.text
     assert relay.get("/static/owner.css").status_code == 404 or "--page" not in relay.get(
         "/static/owner.css").text
 
@@ -249,7 +249,7 @@ def test_the_page_signs_what_the_relay_would(checked, name):
 
 def test_the_page_words_entry_zero_like_the_relay(checked):
     assert checked["approvals"]["first"]["screen"] == (
-        'Make "Ada iPhone" the first passkey of your UAM owner account on test.local.'
+        'Make "Ada iPhone" the first passkey of your YouAM account on test.local.'
     )
 
 

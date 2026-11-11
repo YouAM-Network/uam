@@ -23,6 +23,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from uam.db.crud import owners as crud
 from uam.db.session import get_session
 from uam.relay.owners import links, passkeys, service
+from uam.relay.rate_limit import SlidingWindowCounter
 from uam.relay.owners.crypto import EmailVault, normalise_email
 from uam.relay.owners.page import page_router
 
@@ -181,6 +182,10 @@ class MeResponse(BaseModel):
     owner_id: str | None
 
 
+#: Sign-ups one client address can start in an hour.
+SIGNUPS_PER_HOUR = 10
+
+
 def _email(raw: str) -> str:
     email = normalise_email(raw)
     if email is None:
@@ -238,6 +243,36 @@ def build_owner_app(settings, parent: FastAPI) -> FastAPI:
         # answer nor its timing says whether the email has an account.
         background.add_task(start_after_answering, _email(body.email))
         return {"detail": "If that email has an account, a code is on its way."}
+
+    # Sign-ups per client address, checked before answering: a count says
+    # nothing about any email.
+    signup_limiter = SlidingWindowCounter(limit=SIGNUPS_PER_HOUR, window_seconds=3600.0)
+
+    async def sign_up_after_answering(email: str) -> None:
+        import uam.db.session as sessions
+
+        try:
+            async with sessions._session_factory() as session:
+                await service.sign_up(session, vault, email, code_sink())
+        except Exception:
+            service.log.exception("owner sign-up failed")
+
+    @app.post("/api/owner/sign-up", status_code=202)
+    async def sign_up(
+        body: EmailRequest, request: Request, background: BackgroundTasks
+    ) -> Response:
+        email = _email(body.email)
+        if not await signup_limiter.check(request.client.host if request.client else "unknown"):
+            return JSONResponse(
+                {"error": "too_many", "detail": "Too many sign-ups from here. Try again later."},
+                status_code=429,
+            )
+        # Like sign-in: the work runs after the 202, so neither the answer
+        # nor its timing says whether the email already had an account.
+        background.add_task(sign_up_after_answering, email)
+        return JSONResponse(
+            {"detail": "Check your email for a code."}, status_code=202
+        )
 
     @app.post("/api/owner/sign-in/finish")
     async def sign_in_finish(

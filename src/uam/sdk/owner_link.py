@@ -1,4 +1,4 @@
-"""Linking this agent to its owner's UAM account (P2d).
+"""Linking this agent to its owner's YouAM account (P2d).
 
 The relay builds the ``UamOwnerLink`` body when the agent redeems its
 owner's code; the agent signs it first. Before signing, the agent checks
@@ -87,14 +87,14 @@ def banner(status: dict[str, Any]) -> str | None:
     account = status.get("account", "")
     if state == "starts":
         return (
-            f"This agent is being linked to the UAM owner account {account}. "
+            f"This agent is being linked to the YouAM account {account}. "
             f"It starts on {_when(status['effectiveAt'])}. If you didn't do this, "
             "run `uam owner cancel` before then."
         )
     if state == "waiting_for_owner":
         words = " ".join(status.get("words", []))
         return (
-            f"This agent asked to be linked to the UAM owner account {account} and is "
+            f"This agent asked to be linked to the YouAM account {account} and is "
             f"waiting for the owner to approve it. Its words are {words}. "
             "To stop it, run `uam owner cancel`."
         )

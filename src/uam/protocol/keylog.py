@@ -110,7 +110,7 @@ def screen_for(body: dict[str, Any], previous: dict[str, Any] | None) -> str:
     if previous is None:
         noun = "passkey" if len(body["keys"]) == 1 else "passkeys"
         return (
-            f"Make {_labels(body['keys'])} the first {noun} of your UAM owner account "
+            f"Make {_labels(body['keys'])} the first {noun} of your YouAM account "
             f"on {body['owner']['relay']}."
         )
     before = {k["id"]: k for k in previous["keys"]}
@@ -118,13 +118,13 @@ def screen_for(body: dict[str, Any], previous: dict[str, Any] | None) -> str:
     added = [k for k in body["keys"] if k["id"] not in before]
     if added:
         noun = "passkey" if len(added) == 1 else "passkeys"
-        lines.append(f"Add the {noun} {_labels(added)} to your UAM owner account.")
+        lines.append(f"Add the {noun} {_labels(added)} to your YouAM account.")
     for item in body.get("removed", []):
         label = _labels([before[item["id"]]]) if item["id"] in before else item["id"]
         if item["reason"] == "compromised":
-            lines.append(f"Remove the passkey {label} from your UAM owner account as compromised.")
+            lines.append(f"Remove the passkey {label} from your YouAM account as compromised.")
         else:
-            lines.append(f"Remove the passkey {label} from your UAM owner account.")
+            lines.append(f"Remove the passkey {label} from your YouAM account.")
     return " ".join(lines)
 
 

@@ -1,4 +1,4 @@
-// UAM owner page. Spec P2 §3.2; rules: docs/design/owner-page/DESIGN.md.
+// YouAM account page (the owner page). Spec P2 §3.2; rules: docs/design/owner-page/DESIGN.md.
 //
 // Before a passkey signs anything, the page works out the sentence itself
 // from the key log entry and recomputes the challenge (the same as
@@ -36,20 +36,20 @@ const quoted = (keys) => keys.map((k) => `"${k.label}"`).join(", ");
 export function screenFor(body, previous) {
   if (previous === null) {
     const noun = body.keys.length === 1 ? "passkey" : "passkeys";
-    return `Make ${quoted(body.keys)} the first ${noun} of your UAM owner account on ${body.owner.relay}.`;
+    return `Make ${quoted(body.keys)} the first ${noun} of your YouAM account on ${body.owner.relay}.`;
   }
   const before = new Map(previous.keys.map((k) => [k.id, k]));
   const lines = [];
   const added = body.keys.filter((k) => !before.has(k.id));
   if (added.length) {
     const noun = added.length === 1 ? "passkey" : "passkeys";
-    lines.push(`Add the ${noun} ${quoted(added)} to your UAM owner account.`);
+    lines.push(`Add the ${noun} ${quoted(added)} to your YouAM account.`);
   }
   for (const item of body.removed ?? []) {
     const label = before.has(item.id) ? quoted([before.get(item.id)]) : item.id;
     lines.push(item.reason === "compromised"
-      ? `Remove the passkey ${label} from your UAM owner account as compromised.`
-      : `Remove the passkey ${label} from your UAM owner account.`);
+      ? `Remove the passkey ${label} from your YouAM account as compromised.`
+      : `Remove the passkey ${label} from your YouAM account.`);
   }
   return lines.join(" ");
 }
@@ -96,6 +96,104 @@ export async function checkApproval(answer, previous) {
 
 export const validLabel = (label) => LABEL.test(label);
 
+// ---------------------------------------------------------------- links (P2d)
+//
+// The same rules as uam.protocol.links: the four words, the sentences an
+// owner signs for a link, a set of links and an unlink, and their challenge.
+
+const LINK = "UamOwnerLink";
+const UNLINK = "UamOwnerUnlink";
+// An address as the relay's schema allows it: nothing that could close the
+// quotes around it in a sentence.
+const ADDRESS = /^[a-z0-9_-]{1,64}::[a-z0-9.-]{1,253}$/;
+const STAMP = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):\d{2}Z$/;
+
+/** An object's hash from its canonical text (signed.object_hash). */
+export async function objectHash(type, text) {
+  return b64u(await sha256(`UAM-${type}-v1\n${text}`));
+}
+
+/** The challenge one passkey signs to approve *items* ({t, h}) as *screen* shows them. */
+export async function challengeFor(items, screen) {
+  for (const { h } of items) if (!HASH.test(h)) throw new Error("refused: not a hash");
+  const set = items.map(({ t, h }) => `{"h":"${h}","t":"${t}"}`).join(",");
+  return b64u(await sha256(`UAM-APPROVAL-v1\n{"screen":"${hex(await sha256(screen))}","set":[${set}]}`));
+}
+
+/** The four words a person checks for an agent key (links.words_for). */
+export async function wordsFor(agentKey) {
+  const d = await sha256(`UAM-WORDS-v1\n${agentKey}`);
+  let head = 0n;
+  for (const b of d.slice(0, 6)) head = (head << 8n) | BigInt(b);
+  head >>= 4n; // the first 44 bits: four words of 11
+  return [3, 2, 1, 0].map((i) => WORDS[Number((head >> BigInt(11 * i)) & 2047n)]);
+}
+
+/** "13 Nov 2026 at 15:04 UTC". */
+export function startsOn(iso) {
+  const m = STAMP.exec(iso);
+  if (!m) throw new Error("refused: not a time");
+  return `${Number(m[3])} ${MONTHS[Number(m[2]) - 1]} ${m[1]} at ${m[4]}:${m[5]} UTC`;
+}
+
+function linkScreen(body, words) {
+  let text = `Link the agent "${body.agent}" to your YouAM account. Its words are ${words.join(" ")}.`;
+  if (body.via === "link") text += ` It starts on ${startsOn(body.effectiveAt)}.`;
+  return text;
+}
+
+const byAgent = (a, b) => (a.body.agent < b.body.agent ? -1 : a.body.agent > b.body.agent ? 1 : 0);
+
+function linksScreen(items) {
+  if (items.length === 1) return linkScreen(items[0].body, items[0].words);
+  const parts = items.map(({ body, words }) => {
+    const starts = body.via === "link" ? `, starts ${startsOn(body.effectiveAt)}` : "";
+    return `"${body.agent}" (${words.join(" ")}${starts})`;
+  });
+  return `Link ${items.length} agents to your YouAM account: ${parts.join(", ")}.`;
+}
+
+/**
+ * Checks what the relay asks a passkey to sign for linking. *kind* is
+ * "link" ({body, hash, screen, challenge}), "unlink" (the same) or "links"
+ * ({bodies, hashes, screen, challenge}, in screen order). Returns the
+ * sentence to show, worked out here; throws if anything differs.
+ */
+export async function checkLinkApproval(kind, answer, ownerId) {
+  const refuse = (why) => { throw new Error(`refused: ${why}`); };
+  const type = kind === "unlink" ? UNLINK : LINK;
+  const texts = kind === "links" ? answer.bodies : [answer.body];
+  const hashes = kind === "links" ? answer.hashes : [answer.hash];
+  if (!Array.isArray(texts) || !texts.length || !Array.isArray(hashes) || hashes.length !== texts.length) {
+    refuse("no bodies");
+  }
+  const items = [];
+  for (const [i, text] of texts.entries()) {
+    let body;
+    try { body = JSON.parse(text); } catch { refuse("a body isn't JSON"); }
+    if (!body || body.type !== type) refuse(`not a ${type}`);
+    if (typeof body.agent !== "string" || !ADDRESS.test(body.agent)) refuse("not an agent address");
+    if (typeof body.agentKey !== "string") refuse("no agent key");
+    if (!body.owner || body.owner.ownerId !== ownerId) refuse("not for this account");
+    if (await objectHash(type, text) !== hashes[i]) refuse("a hash isn't its body's");
+    items.push({ body, hash: hashes[i], words: await wordsFor(body.agentKey) });
+  }
+  if (kind === "links") {
+    const sorted = [...items].sort(byAgent);
+    if (sorted.some((item, i) => item !== items[i])) refuse("the set isn't in order");
+    if (new Set(items.map((x) => x.body.agent)).size !== items.length) refuse("an agent is there twice");
+  } else if (items.length !== 1) {
+    refuse("one body");
+  }
+  const screen = kind === "unlink"
+    ? `Unlink the agent "${items[0].body.agent}" from your YouAM account.`
+    : kind === "links" ? linksScreen(items) : linkScreen(items[0].body, items[0].words);
+  if (screen !== answer.screen) refuse("the relay's words aren't the bodies'");
+  const challenge = await challengeFor(items.map((x) => ({ t: type, h: x.hash })), screen);
+  if (challenge !== answer.challenge) refuse("the challenge isn't these words");
+  return screen;
+}
+
 /** "9 Nov 2026" from the relay's UTC timestamp. */
 export function addedOn(iso) {
   const m = /^(\d{4})-(\d{2})-(\d{2})T/.exec(iso);
@@ -109,7 +207,10 @@ const AGAIN = "Something went wrong. Check your connection and try again.";
 
 class Stop extends Error {} // already handled (signed out); nothing more to say
 
-const state = { me: null, email: "", pending: null, opener: null, busy: false, timer: 0 };
+const state = {
+  me: null, email: "", pending: null, opener: null, busy: false, timer: 0,
+  links: [], skipped: new Set(), poll: 0,
+};
 
 async function api(path, body) {
   const init = body === undefined
@@ -185,9 +286,10 @@ async function sendCode() {
   problem(input, $("email-problem"), "");
   const done = busy($("email-send"), "Sending…");
   let r;
-  try { r = await api("/api/owner/sign-in/start", { email }); } finally { done(); }
+  try { r = await api("/api/owner/sign-up", { email }); } finally { done(); }
   if (r.status === 422) return problem(input, $("email-problem"), "That doesn't look like an email address.");
-  if (!r.ok) throw new Error(`sign-in start: ${r.status}`);
+  if (r.status === 429) return problem(input, $("email-problem"), "Too many tries from here. Wait a while, then try again.");
+  if (!r.ok) throw new Error(`sign-up: ${r.status}`);
   state.email = email;
   $("code-email").textContent = email;
   $("code-input").value = "";
@@ -210,12 +312,13 @@ async function checkCode() {
   if (!r.ok) throw new Error(`sign-in finish: ${r.status}`);
   problem(input, $("code-problem"), "");
   await loadAccount();
-  ($("first").hidden ? $("keys-title") : $("first-title")).focus();
+  ($("first").hidden ? $("agents-title") : $("first-title")).focus();
 }
 
 async function resend() {
-  const r = await api("/api/owner/sign-in/start", { email: state.email });
-  if (!r.ok) throw new Error(`sign-in start: ${r.status}`);
+  const r = await api("/api/owner/sign-up", { email: state.email });
+  if (r.status === 429) return say($("code-status"), "Too many tries from here. Wait a while, then try again.");
+  if (!r.ok) throw new Error(`sign-up: ${r.status}`);
   say($("code-status"), "We sent a new code. Only the newest one works.");
 }
 
@@ -254,15 +357,205 @@ async function loadAccount() {
   if (!me.ok) return showSignIn();
   state.me = me.data;
   $("who-email").textContent = me.data.email;
+  $("who-email").title = me.data.email; // the header may shorten a long one
   const first = !me.data.owner_id;
   let keys = [];
   if (!first) keys = (await api("/api/owner/passkeys")).data.passkeys ?? [];
   $("first").hidden = !first;
   $("keys").hidden = first;
+  $("agents").hidden = first;
   $("owner-section").hidden = first;
   $("owner-id").textContent = me.data.owner_id ?? "";
   $("key-list").replaceChildren(...keys.map(passkeyItem));
+  if (!first) await loadAgents();
   show("account");
+}
+
+// ---- agents (P2d-3)
+
+function text(tag, className, value) {
+  const el = document.createElement(tag);
+  if (className) el.className = className;
+  el.textContent = value;
+  return el;
+}
+
+function quiet(label, handler) {
+  const b = text("button", "btn btn-quiet", label);
+  b.type = "button";
+  on(b, "click", $("agents-status"), handler);
+  return b;
+}
+
+function foot(...parts) {
+  const el = document.createElement("div");
+  el.className = "foot";
+  el.append(...parts);
+  return el;
+}
+
+async function waitingItem(link) {
+  const li = document.createElement("li");
+  const words = await wordsFor(link.agentKey);
+  const kind = link.via === "link"
+    ? `An agent you already run · if you approve, it starts ${startsOn(link.effectiveAt)}`
+    : "A new agent · linked as soon as you approve";
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.checked = !state.skipped.has(link.id);
+  box.addEventListener("change", () => {
+    if (box.checked) state.skipped.delete(link.id); else state.skipped.add(link.id);
+    approveLabel();
+  });
+  const check = document.createElement("label");
+  check.className = "check";
+  check.append(box, text("span", "", "Include in this approval"));
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  actions.append(quiet("Cancel", () => cancelLink(link)));
+  li.append(text("span", "name", link.agent), text("span", "words", words.join(" ")),
+    text("span", "meta", kind), foot(check, actions));
+  return li;
+}
+
+async function agentItem(link) {
+  const li = document.createElement("li");
+  const words = await wordsFor(link.agentKey);
+  let meta = link.effective ? "Linked" : `Starts ${startsOn(link.effectiveAt)}`;
+  if (link.private) meta += " · Private";
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  if (link.effective) {
+    actions.append(quiet("Unlink", () => startUnlink(link)));
+  } else {
+    actions.append(quiet("Cancel", () => cancelLink(link)));
+  }
+  if (!link.private) actions.append(quiet("Make private", () => makePrivate(link)));
+  li.append(text("span", "name", link.agent), text("span", "words", words.join(" ")),
+    foot(text("span", "meta", meta), actions));
+  return li;
+}
+
+function chosen() {
+  return state.links.filter((l) => l.state === "waiting" && !state.skipped.has(l.id));
+}
+
+function approveLabel() {
+  const n = chosen().length;
+  const button = $("approve-waiting");
+  button.disabled = n === 0;
+  button.textContent = n === 1 ? "Approve 1 agent" : `Approve ${n} agents`;
+}
+
+async function loadAgents() {
+  const r = await api("/api/owner/links");
+  if (!r.ok) throw new Error(`links: ${r.status}`);
+  state.links = r.data.links ?? [];
+  const waiting = state.links.filter((l) => l.state === "waiting");
+  const live = state.links.filter((l) => l.state === "active");
+  for (const id of [...state.skipped]) if (!waiting.some((l) => l.id === id)) state.skipped.delete(id);
+  $("waiting-list").replaceChildren(...await Promise.all(waiting.map(waitingItem)));
+  $("agent-list").replaceChildren(...await Promise.all(live.map(agentItem)));
+  $("waiting").hidden = !waiting.length;
+  $("agent-list").hidden = !live.length;
+  $("agents-empty").hidden = Boolean(waiting.length || live.length);
+  // One main button: approving when something waits, else adding an agent.
+  $("add-agent").classList.toggle("btn-primary", !waiting.length);
+  $("add-agent").classList.toggle("btn-quiet", Boolean(waiting.length));
+  approveLabel();
+}
+
+async function refreshAgents() {
+  if ($("account").hidden || !$("scrim").hidden || $("agents").hidden || state.busy) return;
+  try { await loadAgents(); } catch (err) { if (!(err instanceof Stop)) console.error(err); }
+}
+
+async function afterChange(message) {
+  await loadAgents();
+  say($("agents-status"), message);
+  $("agents-title").focus();
+}
+
+async function cancelLink(link) {
+  const r = await api(`/api/owner/links/${link.id}/cancel`, {});
+  if (!r.ok) return afterChange(r.data.detail ?? AGAIN);
+  await afterChange(`Cancelled the link to ${link.agent}.`);
+}
+
+async function makePrivate(link) {
+  const r = await api(`/api/owner/links/${link.id}/private`, { private: true });
+  if (!r.ok) return afterChange(r.data.detail ?? AGAIN);
+  await afterChange(`${link.agent} is private: it isn't offered in introductions.`);
+}
+
+async function startApproval(kind, path, body, opener, extra) {
+  const r = await api(path, body);
+  if (!r.ok) return afterChange(r.data.detail ?? AGAIN);
+  let screen;
+  try {
+    screen = await checkLinkApproval(kind, r.data, state.me.owner_id);
+  } catch (err) {
+    console.error(err);
+    return afterChange(
+      "This page stopped: what your passkey would sign didn't match what it would show. Nothing was signed.");
+  }
+  state.pending = { kind, answer: r.data, ...extra };
+  openApprove(screen, opener);
+}
+
+function approveWaiting() {
+  const ids = chosen().map((l) => l.id);
+  if (!ids.length) return;
+  return startApproval("links", "/api/owner/link-sets/approve/start", { ids }, $("approve-waiting"),
+    { count: ids.length });
+}
+
+function startUnlink(link) {
+  return startApproval("unlink", `/api/owner/links/${link.id}/unlink/start`, {}, $("agents-title"),
+    { id: link.id, agent: link.agent });
+}
+
+// ---- codes for agents
+
+function openCodeSheet() {
+  $("code-count").value = "1";
+  problem($("code-count"), $("code-count-problem"), "");
+  openSheet($("sheet-code"), $("add-agent"), $("code-sheet-title"));
+}
+
+const COMMANDS = {
+  setup: ["On the new agent's computer, run this and type the code when it asks:", "uam init --setup"],
+  setupMany: ["On each new agent's computer, run this and type the code when it asks:", "uam init --setup"],
+  link: ["On the agent's computer, run this and type the code when it asks:", "uam owner link"],
+  linkMany: ["Where the agents run, run this once and type the code. On each other computer, run uam owner link.",
+    "uam owner link --all"],
+};
+
+async function makeCode() {
+  const input = $("code-count");
+  const count = Number(input.value);
+  if (!Number.isInteger(count) || count < 1 || count > 25) {
+    return problem(input, $("code-count-problem"), "Choose from 1 to 25 agents.");
+  }
+  problem(input, $("code-count-problem"), "");
+  const kind = $("kind-link").checked ? "link" : "setup";
+  const done = busy($("code-make"), "Making a code…");
+  let r;
+  try { r = await api("/api/owner/codes", { kind, count }); } finally { done(); }
+  if (!r.ok) return problem(input, $("code-count-problem"), r.data.detail ?? AGAIN);
+  const [how, command] = COMMANDS[count > 1 ? `${kind}Many` : kind];
+  $("made-code").textContent = r.data.code;
+  $("made-how").textContent = how;
+  $("made-command").textContent = command;
+  $("made-when").textContent = count > 1
+    ? `Works for ${count} agents until ${startsOn(r.data.expiresAt)}. Then approve them here together.`
+    : `Works once, until ${startsOn(r.data.expiresAt)}. Then approve the agent here.`;
+  openSheet($("sheet-code-made"), null, $("made-title"));
+}
+
+async function codeDone() {
+  closeSheet(false);
+  await afterChange("");
 }
 
 // ---- adding a passkey: create, then approve the entry that adds it
@@ -335,6 +628,7 @@ async function createPasskey(input, problemEl, button) {
 
 function forget(pending) {
   // The passkey was made on the device but never added: ask the device to drop it.
+  if (pending?.kind) return; // a link approval made no passkey
   const signal = window.PublicKeyCredential?.signalUnknownCredential;
   if (!pending?.created || !signal) return;
   signal.call(PublicKeyCredential, {
@@ -369,19 +663,31 @@ async function approve() {
       if (err.name === "NotAllowedError" || err.name === "AbortError") return; // they can try again
       throw err;
     }
-    const r = await api("/api/owner/keys/sign", {
+    const path = {
+      keys: "/api/owner/keys/sign",
+      links: "/api/owner/link-sets/approve",
+      unlink: `/api/owner/links/${p.id}/unlink`,
+    }[p.kind ?? "keys"];
+    const r = await api(path, {
       credentialId: b64u(got.rawId),
       authenticatorData: b64u(got.response.authenticatorData),
       clientDataJSON: b64u(got.response.clientDataJSON),
       signature: b64u(got.response.signature),
     });
-    if (r.ok) return added(p);
+    if (r.ok) return p.kind ? approvedLinks(p) : added(p);
     stopped(r.data.error === "bad_challenge" ? "slow" : r.data.error === "log_moved" ? "moved" : "refused",
       r.data.detail);
   } finally {
     state.busy = false;
     done();
   }
+}
+
+async function approvedLinks(p) {
+  state.pending = null;
+  closeSheet(false);
+  await afterChange(p.kind === "unlink" ? `Unlinked ${p.agent}.`
+    : p.count === 1 ? "Approved 1 agent." : `Approved ${p.count} agents.`);
 }
 
 async function added(p) {
@@ -406,10 +712,13 @@ function stopped(why, detail) {
 }
 
 function restart() {
+  const linking = Boolean(state.pending?.kind);
   const first = state.pending?.first ?? !state.me?.owner_id;
   state.pending = null;
   closeSheet(false);
-  if (first) {
+  if (linking) {
+    afterChange("").catch((err) => console.error(err));
+  } else if (first) {
     $("first-name").focus();
   } else {
     openName();
@@ -425,7 +734,8 @@ function cancelApproval() {
 // ---- sheets
 
 function openSheet(sheet, opener, focus) {
-  for (const s of [$("sheet-name"), $("sheet-approve"), $("sheet-stopped")]) s.hidden = s !== sheet;
+  const sheets = [$("sheet-name"), $("sheet-approve"), $("sheet-stopped"), $("sheet-code"), $("sheet-code-made")];
+  for (const s of sheets) s.hidden = s !== sheet;
   $("scrim").hidden = false;
   $("account").inert = true;
   if (opener && !state.opener) state.opener = opener; // the first opener is where focus returns
@@ -442,7 +752,7 @@ function closeSheet(returnFocus) {
   if (opener && opener.offsetParent !== null) {
     opener.focus();
   } else {
-    ($("keys").hidden ? $("first-title") : $("keys-title")).focus();
+    ($("keys").hidden ? $("first-title") : $("agents-title")).focus();
   }
 }
 
@@ -457,6 +767,7 @@ function escape(e) {
   if (e.key !== "Escape" || $("scrim").hidden || state.busy) return;
   e.preventDefault();
   if (!$("sheet-approve").hidden) return cancelApproval();
+  if (!$("sheet-code-made").hidden) return codeDone();
   state.pending = null;
   closeSheet(true);
 }
@@ -479,6 +790,13 @@ function start() {
   on($("approve-cancel"), "click", $("approve-problem"), cancelApproval);
   on($("restart"), "click", $("stopped-text"), restart);
   on($("stopped-close"), "click", $("stopped-text"), () => { state.pending = null; closeSheet(true); });
+  on($("add-agent"), "click", $("agents-status"), openCodeSheet);
+  on($("code-sheet-form"), "submit", $("code-count-problem"), makeCode);
+  on($("code-cancel"), "click", $("code-count-problem"), () => closeSheet(true));
+  on($("made-done"), "click", $("agents-status"), codeDone);
+  on($("approve-waiting"), "click", $("agents-status"), approveWaiting);
+  // Agents that redeem a code show up here without a reload.
+  state.poll = setInterval(refreshAgents, 10_000);
   document.addEventListener("keydown", escape);
   loadAccount().catch((err) => {
     if (err instanceof Stop) return;
@@ -486,5 +804,9 @@ function start() {
     showSignIn();
   });
 }
+
+
+// The BIP39 English list (uam/data/bip39-english.txt), for the four words.
+export const WORDS = "abandon ability able about above absent absorb abstract absurd abuse access accident account accuse achieve acid acoustic acquire across act action actor actress actual adapt add addict address adjust admit adult advance advice aerobic affair afford afraid again age agent agree ahead aim air airport aisle alarm album alcohol alert alien all alley allow almost alone alpha already also alter always amateur amazing among amount amused analyst anchor ancient anger angle angry animal ankle announce annual another answer antenna antique anxiety any apart apology appear apple approve april arch arctic area arena argue arm armed armor army around arrange arrest arrive arrow art artefact artist artwork ask aspect assault asset assist assume asthma athlete atom attack attend attitude attract auction audit august aunt author auto autumn average avocado avoid awake aware away awesome awful awkward axis baby bachelor bacon badge bag balance balcony ball bamboo banana banner bar barely bargain barrel base basic basket battle beach bean beauty because become beef before begin behave behind believe below belt bench benefit best betray better between beyond bicycle bid bike bind biology bird birth bitter black blade blame blanket blast bleak bless blind blood blossom blouse blue blur blush board boat body boil bomb bone bonus book boost border boring borrow boss bottom bounce box boy bracket brain brand brass brave bread breeze brick bridge brief bright bring brisk broccoli broken bronze broom brother brown brush bubble buddy budget buffalo build bulb bulk bullet bundle bunker burden burger burst bus business busy butter buyer buzz cabbage cabin cable cactus cage cake call calm camera camp can canal cancel candy cannon canoe canvas canyon capable capital captain car carbon card cargo carpet carry cart case cash casino castle casual cat catalog catch category cattle caught cause caution cave ceiling celery cement census century cereal certain chair chalk champion change chaos chapter charge chase chat cheap check cheese chef cherry chest chicken chief child chimney choice choose chronic chuckle chunk churn cigar cinnamon circle citizen city civil claim clap clarify claw clay clean clerk clever click client cliff climb clinic clip clock clog close cloth cloud clown club clump cluster clutch coach coast coconut code coffee coil coin collect color column combine come comfort comic common company concert conduct confirm congress connect consider control convince cook cool copper copy coral core corn correct cost cotton couch country couple course cousin cover coyote crack cradle craft cram crane crash crater crawl crazy cream credit creek crew cricket crime crisp critic crop cross crouch crowd crucial cruel cruise crumble crunch crush cry crystal cube culture cup cupboard curious current curtain curve cushion custom cute cycle dad damage damp dance danger daring dash daughter dawn day deal debate debris decade december decide decline decorate decrease deer defense define defy degree delay deliver demand demise denial dentist deny depart depend deposit depth deputy derive describe desert design desk despair destroy detail detect develop device devote diagram dial diamond diary dice diesel diet differ digital dignity dilemma dinner dinosaur direct dirt disagree discover disease dish dismiss disorder display distance divert divide divorce dizzy doctor document dog doll dolphin domain donate donkey donor door dose double dove draft dragon drama drastic draw dream dress drift drill drink drip drive drop drum dry duck dumb dune during dust dutch duty dwarf dynamic eager eagle early earn earth easily east easy echo ecology economy edge edit educate effort egg eight either elbow elder electric elegant element elephant elevator elite else embark embody embrace emerge emotion employ empower empty enable enact end endless endorse enemy energy enforce engage engine enhance enjoy enlist enough enrich enroll ensure enter entire entry envelope episode equal equip era erase erode erosion error erupt escape essay essence estate eternal ethics evidence evil evoke evolve exact example excess exchange excite exclude excuse execute exercise exhaust exhibit exile exist exit exotic expand expect expire explain expose express extend extra eye eyebrow fabric face faculty fade faint faith fall false fame family famous fan fancy fantasy farm fashion fat fatal father fatigue fault favorite feature february federal fee feed feel female fence festival fetch fever few fiber fiction field figure file film filter final find fine finger finish fire firm first fiscal fish fit fitness fix flag flame flash flat flavor flee flight flip float flock floor flower fluid flush fly foam focus fog foil fold follow food foot force forest forget fork fortune forum forward fossil foster found fox fragile frame frequent fresh friend fringe frog front frost frown frozen fruit fuel fun funny furnace fury future gadget gain galaxy gallery game gap garage garbage garden garlic garment gas gasp gate gather gauge gaze general genius genre gentle genuine gesture ghost giant gift giggle ginger giraffe girl give glad glance glare glass glide glimpse globe gloom glory glove glow glue goat goddess gold good goose gorilla gospel gossip govern gown grab grace grain grant grape grass gravity great green grid grief grit grocery group grow grunt guard guess guide guilt guitar gun gym habit hair half hammer hamster hand happy harbor hard harsh harvest hat have hawk hazard head health heart heavy hedgehog height hello helmet help hen hero hidden high hill hint hip hire history hobby hockey hold hole holiday hollow home honey hood hope horn horror horse hospital host hotel hour hover hub huge human humble humor hundred hungry hunt hurdle hurry hurt husband hybrid ice icon idea identify idle ignore ill illegal illness image imitate immense immune impact impose improve impulse inch include income increase index indicate indoor industry infant inflict inform inhale inherit initial inject injury inmate inner innocent input inquiry insane insect inside inspire install intact interest into invest invite involve iron island isolate issue item ivory jacket jaguar jar jazz jealous jeans jelly jewel job join joke journey joy judge juice jump jungle junior junk just kangaroo keen keep ketchup key kick kid kidney kind kingdom kiss kit kitchen kite kitten kiwi knee knife knock know lab label labor ladder lady lake lamp language laptop large later latin laugh laundry lava law lawn lawsuit layer lazy leader leaf learn leave lecture left leg legal legend leisure lemon lend length lens leopard lesson letter level liar liberty library license life lift light like limb limit link lion liquid list little live lizard load loan lobster local lock logic lonely long loop lottery loud lounge love loyal lucky luggage lumber lunar lunch luxury lyrics machine mad magic magnet maid mail main major make mammal man manage mandate mango mansion manual maple marble march margin marine market marriage mask mass master match material math matrix matter maximum maze meadow mean measure meat mechanic medal media melody melt member memory mention menu mercy merge merit merry mesh message metal method middle midnight milk million mimic mind minimum minor minute miracle mirror misery miss mistake mix mixed mixture mobile model modify mom moment monitor monkey monster month moon moral more morning mosquito mother motion motor mountain mouse move movie much muffin mule multiply muscle museum mushroom music must mutual myself mystery myth naive name napkin narrow nasty nation nature near neck need negative neglect neither nephew nerve nest net network neutral never news next nice night noble noise nominee noodle normal north nose notable note nothing notice novel now nuclear number nurse nut oak obey object oblige obscure observe obtain obvious occur ocean october odor off offer office often oil okay old olive olympic omit once one onion online only open opera opinion oppose option orange orbit orchard order ordinary organ orient original orphan ostrich other outdoor outer output outside oval oven over own owner oxygen oyster ozone pact paddle page pair palace palm panda panel panic panther paper parade parent park parrot party pass patch path patient patrol pattern pause pave payment peace peanut pear peasant pelican pen penalty pencil people pepper perfect permit person pet phone photo phrase physical piano picnic picture piece pig pigeon pill pilot pink pioneer pipe pistol pitch pizza place planet plastic plate play please pledge pluck plug plunge poem poet point polar pole police pond pony pool popular portion position possible post potato pottery poverty powder power practice praise predict prefer prepare present pretty prevent price pride primary print priority prison private prize problem process produce profit program project promote proof property prosper protect proud provide public pudding pull pulp pulse pumpkin punch pupil puppy purchase purity purpose purse push put puzzle pyramid quality quantum quarter question quick quit quiz quote rabbit raccoon race rack radar radio rail rain raise rally ramp ranch random range rapid rare rate rather raven raw razor ready real reason rebel rebuild recall receive recipe record recycle reduce reflect reform refuse region regret regular reject relax release relief rely remain remember remind remove render renew rent reopen repair repeat replace report require rescue resemble resist resource response result retire retreat return reunion reveal review reward rhythm rib ribbon rice rich ride ridge rifle right rigid ring riot ripple risk ritual rival river road roast robot robust rocket romance roof rookie room rose rotate rough round route royal rubber rude rug rule run runway rural sad saddle sadness safe sail salad salmon salon salt salute same sample sand satisfy satoshi sauce sausage save say scale scan scare scatter scene scheme school science scissors scorpion scout scrap screen script scrub sea search season seat second secret section security seed seek segment select sell seminar senior sense sentence series service session settle setup seven shadow shaft shallow share shed shell sheriff shield shift shine ship shiver shock shoe shoot shop short shoulder shove shrimp shrug shuffle shy sibling sick side siege sight sign silent silk silly silver similar simple since sing siren sister situate six size skate sketch ski skill skin skirt skull slab slam sleep slender slice slide slight slim slogan slot slow slush small smart smile smoke smooth snack snake snap sniff snow soap soccer social sock soda soft solar soldier solid solution solve someone song soon sorry sort soul sound soup source south space spare spatial spawn speak special speed spell spend sphere spice spider spike spin spirit split spoil sponsor spoon sport spot spray spread spring spy square squeeze squirrel stable stadium staff stage stairs stamp stand start state stay steak steel stem step stereo stick still sting stock stomach stone stool story stove strategy street strike strong struggle student stuff stumble style subject submit subway success such sudden suffer sugar suggest suit summer sun sunny sunset super supply supreme sure surface surge surprise surround survey suspect sustain swallow swamp swap swarm swear sweet swift swim swing switch sword symbol symptom syrup system table tackle tag tail talent talk tank tape target task taste tattoo taxi teach team tell ten tenant tennis tent term test text thank that theme then theory there they thing this thought three thrive throw thumb thunder ticket tide tiger tilt timber time tiny tip tired tissue title toast tobacco today toddler toe together toilet token tomato tomorrow tone tongue tonight tool tooth top topic topple torch tornado tortoise toss total tourist toward tower town toy track trade traffic tragic train transfer trap trash travel tray treat tree trend trial tribe trick trigger trim trip trophy trouble truck true truly trumpet trust truth try tube tuition tumble tuna tunnel turkey turn turtle twelve twenty twice twin twist two type typical ugly umbrella unable unaware uncle uncover under undo unfair unfold unhappy uniform unique unit universe unknown unlock until unusual unveil update upgrade uphold upon upper upset urban urge usage use used useful useless usual utility vacant vacuum vague valid valley valve van vanish vapor various vast vault vehicle velvet vendor venture venue verb verify version very vessel veteran viable vibrant vicious victory video view village vintage violin virtual virus visa visit visual vital vivid vocal voice void volcano volume vote voyage wage wagon wait walk wall walnut want warfare warm warrior wash wasp waste water wave way wealth weapon wear weasel weather web wedding weekend weird welcome west wet whale what wheat wheel when where whip whisper wide width wife wild will win window wine wing wink winner winter wire wisdom wise wish witness wolf woman wonder wood wool word work world worry worth wrap wreck wrestle wrist write wrong yard year yellow you young youth zebra zero zone zoo".split(" ");
 
 if (typeof document !== "undefined") start();

@@ -79,7 +79,7 @@ def _log(client, owner_id, since=None):
 
 def test_registration_options_ask_for_a_verified_discoverable_es256_passkey(ada):
     options = _start(ada)
-    assert options["rp"] == {"id": RP_ID, "name": "UAM"}
+    assert options["rp"] == {"id": RP_ID, "name": "YouAM"}
     assert options["pubKeyCredParams"] == [{"type": "public-key", "alg": -7}]
     assert options["authenticatorSelection"] == {
         "residentKey": "required", "requireResidentKey": True, "userVerification": "required",
@@ -106,7 +106,7 @@ def test_finishing_a_registration_asks_to_sign_entry_zero(ada):
     assert key["label"] == "Ada phone" and key["rpId"] == RP_ID
     assert approval["hash"] == object_hash(body)
     assert approval["screen"] == (
-        'Make "Ada phone" the first passkey of your UAM owner account on test.local.'
+        'Make "Ada phone" the first passkey of your YouAM account on test.local.'
     )
     assert approval["challenge"] == b64u(entry_challenge(approval["hash"], approval["screen"]))
     assert approval["allowCredentials"] == [phone.id]
@@ -141,7 +141,7 @@ def test_a_second_passkey_is_signed_for_by_the_first(ada, relay):
     assert parse_body(approval["body"])["seq"] == 1
     assert approval["allowCredentials"] == [phone.id]
     assert approval["rpId"] == RP_ID
-    assert approval["screen"] == 'Add the passkey "Ada laptop" to your UAM owner account.'
+    assert approval["screen"] == 'Add the passkey "Ada laptop" to your YouAM account.'
     assert _sign(ada, phone, approval).status_code == 200
     entries = _log(relay, signed["owner_id"]).json()["entries"]
     log = verify_key_log(entries, rp_id=RP_ID, origin=OWNER_ORIGIN)

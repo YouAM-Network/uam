@@ -163,7 +163,7 @@ def test_an_invalid_body_is_refused_before_signing():
 def test_the_setup_sentence_names_the_agent_and_its_words():
     words = " ".join(words_for(AGENT_KEY))
     assert link_screen(_link()) == (
-        f'Link the agent "bob::youam.network" to your UAM owner account. '
+        f'Link the agent "bob::youam.network" to your YouAM account. '
         f"Its words are {words}."
     )
 
@@ -172,14 +172,14 @@ def test_a_link_for_an_existing_agent_says_when_it_starts():
     words = " ".join(words_for(AGENT_KEY))
     body = _link(via="link", effectiveAt="2026-11-03T09:05:59Z")
     assert link_screen(body) == (
-        f'Link the agent "bob::youam.network" to your UAM owner account. '
+        f'Link the agent "bob::youam.network" to your YouAM account. '
         f"Its words are {words}. It starts on 3 Nov 2026 at 09:05 UTC."
     )
 
 
 def test_the_unlink_sentence():
     assert unlink_screen(_unlink()) == (
-        'Unlink the agent "bob::youam.network" from your UAM owner account.'
+        'Unlink the agent "bob::youam.network" from your YouAM account.'
     )
 
 
@@ -239,7 +239,7 @@ def test_a_set_names_every_agent_with_its_words_sorted_by_address():
     bob = _link()
     screen = links_screen([zed, bob])
     assert screen == (
-        "Link 2 agents to your UAM owner account: "
+        "Link 2 agents to your YouAM account: "
         f'"bob::youam.network" ({" ".join(words_for(AGENT_KEY))}), '
         f'"zed::youam.network" ({" ".join(words_for(OTHER_KEY))}).'
     )

@@ -47,6 +47,7 @@
   --width-page: 640px;
   --touch: 44px;
   --mark: 24px;
+  --mark-wide: 28px;
 
   --font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -78,7 +79,6 @@
   --scrim: var(--black-60);
   --quote: var(--zinc-950);
   --mark-fill: var(--zinc-50);
-  --mark-ink: var(--zinc-950);
 }
 
 /* ---- meaning: light ---- */
@@ -100,7 +100,6 @@
     --scrim: var(--black-20);
     --quote: var(--zinc-50);
     --mark-fill: var(--zinc-950);
-    --mark-ink: var(--white);
   }
 }
 [data-theme="light"] {
@@ -120,5 +119,4 @@
   --scrim: var(--black-20);
   --quote: var(--zinc-50);
   --mark-fill: var(--zinc-950);
-  --mark-ink: var(--white);
 }

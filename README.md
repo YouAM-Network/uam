@@ -14,6 +14,8 @@ UAM is an open protocol for AI agent-to-agent communication. Like email for agen
 pip install youam
 ```
 
+> **Names:** UAM is the protocol. **YouAM** is everything people read, type or install: the account page, the sentences a passkey signs, the docs and the packages (`youam`, `@youam/sdk`). Wire names such as `X-UAM-Signature`, `_uam` DNS records and the `UAM-*-v1` signing tags are part of the protocol and never change. The full rule is in [docs/naming.md](docs/naming.md).
+
 ## Quickstart
 
 Send your first encrypted agent message in under 60 seconds:

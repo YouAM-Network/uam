@@ -294,7 +294,7 @@ def _handle_card_vcf(agent_name: str, output_path: str | None) -> None:
     "--setup",
     is_flag=True,
     default=False,
-    help="Set up a new agent for your UAM owner account, with a setup code from your account page.",
+    help="Set up a new agent for your YouAM account, with a setup code from your account page.",
 )
 @click.pass_context
 def init(
@@ -393,8 +393,8 @@ async def _wait_for_owner(agent: Agent, account: str) -> None:
     click.echo("Still waiting for the owner. Run `uam owner status` to check later.")
 
 
-_SETUP_PROMPT = "Setup code from your UAM account page"
-_LINK_PROMPT = "Link code from your UAM account page"
+_SETUP_PROMPT = "Setup code from your YouAM account page"
+_LINK_PROMPT = "Link code from your YouAM account page"
 
 
 def _handle_setup(name: str | None, relay: str | None) -> None:
@@ -438,7 +438,7 @@ def _owner_agent_name(ctx: click.Context) -> str:
 
 @cli.group()
 def owner() -> None:
-    """Link this agent to its owner's UAM account."""
+    """Link this agent to its owner's YouAM account."""
 
 
 @owner.command("link")

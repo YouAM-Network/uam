@@ -23,10 +23,15 @@ from uam.protocol import (
 )
 from uam.protocol.register_proof import register_proof_is_valid, register_proof_nonce
 from uam.relay.models import RegisterRequest, RegisterResponse
+from uam.relay.reserved_names import is_reserved
 from uam.relay.token_hashing import hash_token
 from uam.relay.webhook_validator import async_validate_webhook_url
 
 router = APIRouter()
+
+
+def _reserved(request: Request, name: str) -> bool:
+    return is_reserved(name, getattr(request.app.state, "reserved_extra", frozenset()))
 
 
 @router.post("/register", response_model=RegisterResponse)
@@ -71,6 +76,8 @@ async def register(body: RegisterRequest, request: Request, session: AsyncSessio
     # can get a new token (the old one stops working); the public key alone
     # proves nothing.
     existing = await get_agent_by_address(session, address)
+    if existing is None and _reserved(request, agent_name):
+        raise HTTPException(status_code=403, detail=f"Agent name is reserved: {agent_name}")
     if existing is not None:
         if body.proof is None or existing.public_key != body.public_key:
             raise HTTPException(

@@ -47,6 +47,22 @@ async def create_owner(
     return owner
 
 
+async def drop_unfinished_signups(session: AsyncSession, before: datetime) -> int:
+    """Delete self-made accounts that never added a passkey, made before
+    *before*, with their rows (SQLite doesn't cascade). Returns how many."""
+    ids = list((await session.execute(
+        select(Owner.id).where(
+            Owner.created_via == "signup", Owner.owner_id.is_(None), Owner.created_at < before,
+        )
+    )).scalars())
+    if not ids:
+        return 0
+    for table in (OwnerEmail, OwnerSession, OwnerAudit, WebAuthnChallenge, OwnerPasskey):
+        await session.execute(delete(table).where(table.owner_pk.in_(ids)))
+    await session.execute(delete(Owner).where(Owner.id.in_(ids)))
+    return len(ids)
+
+
 async def lock_email(session: AsyncSession, email_hmac: str) -> bool:
     """Take a write lock on one email's row until the transaction ends; False
     if no owner has it. Run it first in the transaction: a no-op UPDATE

@@ -67,6 +67,7 @@ nav:
   - Home: index.md
   - Quickstart: quickstart.md
   - Protocol: protocol/index.md
+  - Names: naming.md
   - SDK Reference: reference/
   - CLI Reference: cli/index.md
   - Relay API: relay/index.md

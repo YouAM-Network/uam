@@ -33,12 +33,17 @@ from uam.relay.models import (
 from uam.cards.avatars import fetch_avatar
 from uam.cards.image import render_card
 from uam.cards.vcard import generate_reservation_vcard
+from uam.relay.reserved_names import is_reserved
 from uam.relay.token_hashing import hash_token
 from uam.relay.webhook_validator import async_validate_webhook_url
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _reserved(request: Request, name: str) -> bool:
+    return is_reserved(name, getattr(request.app.state, "reserved_extra", frozenset()))
 
 
 @router.get("/reserve/check/{name}", response_model=ReserveCheckResponse)
@@ -66,8 +71,11 @@ async def reserve_check(
     except InvalidAddressError as exc:
         raise HTTPException(status_code=400, detail=f"Invalid agent name: {exc}") from exc
 
-    # Check availability against both agents and reservations
-    is_available = await check_address_available(session, address)
+    # Check availability against both agents and reservations; a reserved
+    # name is never available.
+    is_available = not _reserved(request, name) and await check_address_available(
+        session, address
+    )
 
     return ReserveCheckResponse(address=address, available=is_available)
 
@@ -107,6 +115,9 @@ async def reserve_address(
         parse_address(address)
     except InvalidAddressError as exc:
         raise HTTPException(status_code=400, detail=f"Invalid agent name: {exc}") from exc
+
+    if _reserved(request, name):
+        raise HTTPException(status_code=403, detail=f"Agent name is reserved: {name}")
 
     # Check availability
     is_available = await check_address_available(session, address)

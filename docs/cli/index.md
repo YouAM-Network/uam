@@ -19,7 +19,7 @@ The `uam` command-line interface provides 12 commands for agent management, mess
     :style: table
     :list_subcommands: true
 
-## Linking an agent to your UAM account
+## Linking an agent to your YouAM account
 
 Owner accounts are being rolled out and are off on most relays (`uam owner status` says so).
 

@@ -606,6 +606,7 @@ def create_app() -> FastAPI:
 
     # Store settings on app.state so lifespan and routes can access it
     app.state.settings = settings
+    app.state.reserved_extra = settings.reserved_names
 
     # Phase 48 Q7 — graceful drain coordinator. Instantiated here (before
     # middleware registration) so DrainBlockMiddleware can hold a reference

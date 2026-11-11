@@ -108,11 +108,11 @@ def test_a_later_entry_chains_to_the_one_before(alice):
 
 def test_the_screen_says_what_is_being_signed(alice):
     assert screen_for(alice["bodies"][0], None) == (
-        'Make "Alice iPhone" the first passkey of your UAM owner account on test.local.'
+        'Make "Alice iPhone" the first passkey of your YouAM account on test.local.'
     )
     _add_laptop(alice)
     assert screen_for(alice["bodies"][1], alice["bodies"][0]) == (
-        'Add the passkey "Alice laptop" to your UAM owner account.'
+        'Add the passkey "Alice laptop" to your YouAM account.'
     )
 
 
@@ -120,7 +120,7 @@ def test_entry_zero_with_two_passkeys_names_both(alice):
     tablet_key = _key(SoftPasskey(), "Alice tablet")
     body0 = next_entry(None, relay=RELAY, add=[alice["phone_key"], tablet_key])
     assert screen_for(body0, None) == (
-        'Make "Alice iPhone", "Alice tablet" the first passkeys of your UAM owner account'
+        'Make "Alice iPhone", "Alice tablet" the first passkeys of your YouAM account'
         " on test.local."
     )
 
@@ -144,7 +144,7 @@ def test_a_removed_key_cannot_sign_again(alice):
     prev = alice["bodies"][1]
     body2 = next_entry(prev, remove=[(alice["phone_key"]["id"], "removed")])
     assert [k["id"] for k in body2["keys"]] == [alice["laptop_key"]["id"]]
-    assert screen_for(body2, prev) == 'Remove the passkey "Alice iPhone" from your UAM owner account.'
+    assert screen_for(body2, prev) == 'Remove the passkey "Alice iPhone" from your YouAM account.'
     alice["entries"].append(_signed(body2, prev, alice["laptop"], alice["laptop_key"]["id"]))
     assert set(verify_key_log(alice["entries"], rp_id=RP_ID, origin=ORIGIN).keys) == {
         alice["laptop_key"]["id"]

@@ -16,6 +16,17 @@ for (const c of cases.approvals) {
     out.approvals.push({ name: c.name, ok: false, error: String(e.message) });
   }
 }
+out.links = [];
+for (const c of cases.links ?? []) {
+  try {
+    out.links.push({ name: c.name, ok: true, screen: await page.checkLinkApproval(c.kind, c.answer, c.ownerId) });
+  } catch (e) {
+    out.links.push({ name: c.name, ok: false, error: String(e.message) });
+  }
+}
+out.words = {};
+for (const key of cases.agentKeys ?? []) out.words[key] = await page.wordsFor(key);
+out.wordList = page.WORDS?.length === 2048 ? page.WORDS.join(" ") : null;
 for (const label of cases.labels) out.labels[label] = page.validLabel(label);
 for (const iso of cases.dates) out.dates[iso] = page.addedOn(iso);
 process.stdout.write(JSON.stringify(out));

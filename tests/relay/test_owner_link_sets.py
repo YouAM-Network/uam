@@ -233,7 +233,7 @@ def test_one_passkey_approves_a_set(ada, relay):
     bodies = [parse_body(b) for b in approval["bodies"]]
     assert [b["agent"] for b in bodies] == sorted(a["address"] for a in agents)
     assert approval["screen"] == links_screen(bodies)
-    assert approval["screen"].startswith("Link 3 agents to your UAM owner account: ")
+    assert approval["screen"].startswith("Link 3 agents to your YouAM account: ")
     assert b64u(links_challenge(bodies)) == approval["challenge"]
     resp = _set_approve(ada, ada.phone, approval)
     assert resp.status_code == 200, resp.text

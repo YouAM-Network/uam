@@ -82,6 +82,34 @@ async def start_sign_in(
     sink(owner.id, email, code)
 
 
+#: An account someone started but never added a passkey to is deleted after this.
+SIGNUP_TTL = timedelta(hours=24)
+
+
+async def sign_up(
+    session: AsyncSession, vault: EmailVault, email: str, sink: CodeSink
+) -> None:
+    """Make an account for *email* if it has none, then send a sign-in code.
+
+    The account is the person's once they add a first passkey; until then
+    it gives nothing, and after a day without one it is deleted. Call it in
+    a fresh session, after the caller has answered: whether the email was
+    known never shows."""
+    await crud.drop_unfinished_signups(session, utcnow() - SIGNUP_TTL)
+    await session.commit()
+    email_hmac = vault.lookup(email)
+    if await crud.find_by_email(session, email_hmac) is None:
+        try:
+            await crud.create_owner(
+                session, email_hmac=email_hmac, email_enc=vault.encrypt(email),
+                created_via="signup",
+            )
+            await session.commit()
+        except crud.EmailTaken:
+            pass  # someone signed up with it a moment ago: send them a code too
+    await start_sign_in(session, vault, email, sink)
+
+
 async def finish_sign_in(
     session: AsyncSession, vault: EmailVault, email: str, code: str
 ) -> str | None:

@@ -83,7 +83,7 @@ Owner accounts are being built (the people who approve contacts for their agents
 | `UAM_EMAIL_KEY` | *(unset)* | string (secret) | Base64url of 32 random bytes. Owners' emails are stored encrypted with it (AES-GCM). |
 | `UAM_OWNER_CODES_TO_LOG` | `false` | boolean | For test relays only, until owner email is wired: write sign-in codes to the relay log (the code and the owner's number, never the email). Refused with a production RP ID. |
 
-Create an owner with `POST /api/v1/admin/owners {"email": "..."}` (`X-Admin-Key`). The owner then signs in on the owner origin with a 6-digit code (10 minutes, 5 tries, at most 3 codes an hour) and gets a session cookie that lasts 12 idle hours and at most 7 days. Signed in, they register passkeys (ES256, user-verified, discoverable). Each passkey is added by a signed entry in the owner's key log: the first entry is signed by the passkey it adds and fixes the owner's id; later ones by a passkey already in the log. Anyone can fetch and verify an owner's key log at `GET /api/owner/keys/{owner_id}` on either origin.
+People make their own account on the owner origin (`POST /api/owner/sign-up {"email": "..."}`; 10 per client address an hour). The code goes to the email, and the account is theirs once they add a first passkey; one with no passkey after 24 hours is deleted. The admin can also create one with `POST /api/v1/admin/owners {"email": "..."}` (`X-Admin-Key`). The owner then signs in on the owner origin with a 6-digit code (10 minutes, 5 tries, at most 3 codes an hour) and gets a session cookie that lasts 12 idle hours and at most 7 days. Signed in, they register passkeys (ES256, user-verified, discoverable). Each passkey is added by a signed entry in the owner's key log: the first entry is signed by the passkey it adds and fixes the owner's id; later ones by a passkey already in the log. Anyone can fetch and verify an owner's key log at `GET /api/owner/keys/{owner_id}` on either origin.
 
 With a passkey, an owner links agents to their account:
 
@@ -92,6 +92,10 @@ With a passkey, an owner links agents to their account:
 3. The owner sees the agent with four words worked out from its key, and approves with a passkey. Several waiting links can be approved with one passkey over one sentence that names each agent and its words (`POST /api/owner/link-sets/approve/start {"ids": [...]}`, then `/approve`).
 
 A link made with a `link` code starts 72 hours after it is redeemed, and the owner can cancel it until then. So can whoever runs the agent, with its token (`POST /api/v1/owner/link/cancel`); once the link is in effect only the owner can end it. Unlinking needs the owner's passkey, or the admin (`POST /api/v1/admin/links/{id}/unlink`), and closes the agent's inbound policy. An agent reads where its link stands with `GET /api/v1/owner/link`.
+
+### Reserved names
+
+Some names can't be newly registered or reserved on any relay: roles people trust by default (`admin`, `support`, `security`, `verify`, …), the network's own names, and the big AI companies and assistants (`anthropic`, `claude`, `openai`, `chatgpt`, …), plus `uam-*`, `youam-*`, `*-official` and `<reserved>-support` / `-security` / `-admin`. An agent that already has such a name keeps it. `UAM_RESERVED_NAMES` (comma-separated) holds more. The list is in `uam.relay.reserved_names`.
 
 ## Debug Settings
 

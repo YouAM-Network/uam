@@ -1,7 +1,8 @@
 """Admin route to create an owner account (P2c-1).
 
-Accounts are invite-only: until invites land (P2e) the relay admin is the
-only way in. The route is 404 while UAM_OWNERS_ENABLED is off.
+People can also make their own account (``POST /api/owner/sign-up`` on the
+owner origin, P2s); this route is for the relay admin. It is 404 while
+UAM_OWNERS_ENABLED is off.
 """
 
 from __future__ import annotations

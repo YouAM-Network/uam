@@ -145,6 +145,10 @@ class Settings:
         self.website_url: str = os.getenv(
             "UAM_WEBSITE_URL", f"https://{self.relay_domain}"
         )
+        # Names nobody can newly register, beyond the built-in list (P2s).
+        from uam.relay.reserved_names import parse_extra
+
+        self.reserved_names: frozenset[str] = parse_extra(os.getenv("UAM_RESERVED_NAMES", ""))
         # Owner accounts (P2c-1). Off by default; when on, the owner app is
         # served on UAM_OWNER_ORIGIN's host and these must all be valid.
         self.owners_enabled: bool = os.getenv(

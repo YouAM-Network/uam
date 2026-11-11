@@ -94,7 +94,7 @@ async def register_options(
     )
     await session.commit()
     return {
-        "rp": {"id": settings.rp_id, "name": "UAM"},
+        "rp": {"id": settings.rp_id, "name": "YouAM"},
         "user": {"id": user_handle, "name": email, "displayName": email},
         "challenge": challenge,
         "pubKeyCredParams": [{"type": "public-key", "alg": ES256}],

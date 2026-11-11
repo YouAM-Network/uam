@@ -113,7 +113,7 @@ def link_screen(body: dict[str, Any]) -> str:
     _hashed(body, LINK)
     words = " ".join(words_for(body["agentKey"]))
     text = (
-        f'Link the agent "{body["agent"]}" to your UAM owner account. '
+        f'Link the agent "{body["agent"]}" to your YouAM account. '
         f"Its words are {words}."
     )
     if body["via"] == "link":
@@ -154,7 +154,7 @@ def links_screen(bodies: list[dict[str, Any]]) -> str:
             detail += f", starts {_when(body['effectiveAt'])}"
         parts.append(f'"{body["agent"]}" ({detail})')
     return (
-        f"Link {len(ordered)} agents to your UAM owner account: " + ", ".join(parts) + "."
+        f"Link {len(ordered)} agents to your YouAM account: " + ", ".join(parts) + "."
     )
 
 
@@ -169,7 +169,7 @@ def links_challenge(bodies: list[dict[str, Any]]) -> bytes:
 def unlink_screen(body: dict[str, Any]) -> str:
     """The sentence the owner signs to unlink an agent."""
     _hashed(body, UNLINK)
-    return f'Unlink the agent "{body["agent"]}" from your UAM owner account.'
+    return f'Unlink the agent "{body["agent"]}" from your YouAM account.'
 
 
 def link_challenge(body: dict[str, Any]) -> bytes:
