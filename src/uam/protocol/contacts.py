@@ -134,6 +134,32 @@ def policy_screen(body: dict[str, Any]) -> str:
     return f'Let only your contacts message "{agent}".'
 
 
+def policies_screen(bodies: list[dict[str, Any]], fleet: str | None = None) -> str:
+    """One setting for several agents (or a fleet), named in address order."""
+    if not bodies:
+        raise ContactError("set at least one agent")
+    for body in bodies:
+        _checked(body, POLICY)
+    names = sorted(body["agent"] for body in bodies)
+    if len(set(names)) != len(names):
+        raise ContactError("each agent once")
+    if len({(body["policy"], body["sameOwner"]) for body in bodies}) != 1:
+        raise ContactError("one setting for all of them")
+    if len(bodies) == 1 and fleet is None:
+        return policy_screen(bodies[0])
+    first = bodies[0]
+    if first["policy"] == "open":
+        who = "Let anyone message"
+    elif first["sameOwner"]:
+        who = "Let your contacts and your own agents message"
+    else:
+        who = "Let only your contacts message"
+    count = f"{len(names)} agent" + ("" if len(names) == 1 else "s")
+    which = f'the {count} in the "{fleet}" fleet' if fleet is not None else f"these {count}"
+    listed = ", ".join(f'"{n}"' for n in names)
+    return f"{who} {which}: {listed}."
+
+
 REVOCATIONS = "UamRevocations"
 
 

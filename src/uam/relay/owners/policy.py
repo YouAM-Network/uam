@@ -6,6 +6,11 @@ passkey. Widening (to Anyone, from a closed policy, or letting the owner's
 own agents through again) needs the owner's passkey over a
 ``UamAgentPolicy``.
 
+Several agents (or a fleet's) can be set at once (P2e-1b): narrowing needs
+nothing and a request that would widen any of them is refused whole;
+widening signs one ``UamAgentPolicy`` per agent under one sentence. An
+agent that joins a fleet takes its setting if that only narrows.
+
 Choosing Only my contacts sets aside the contacts the agent had before
 (``inbound_contacts`` rows an admin added in P1): none is kept unless the
 owner keeps it, with a passkey, as a grant for that sender's address and
@@ -27,14 +32,15 @@ from uam.db.models import (
     AgentPolicyApproval,
     InboundContact,
     Owner,
+    OwnerFleet,
     OwnerGrant,
     OwnerLink,
     RoutedMessage,
 )
-from uam.protocol.contacts import GRANT, POLICY, keep_screen, policy_screen
+from uam.protocol.contacts import GRANT, POLICY, keep_screen, policies_screen, policy_screen
 from uam.protocol.signed import canonical, object_hash, parse_body
 from uam.relay.gate import _did
-from uam.relay.owners import contacts, service
+from uam.relay.owners import contacts, fleets, service
 from uam.relay.owners.links import _nonce, _stamp
 from uam.relay.owners.passkeys import PasskeyError
 
@@ -44,6 +50,8 @@ _RANK = {"closed": 0, "contacts": 1, "open": 2}
 RECENT = timedelta(days=14)
 #: Contacts one approval can keep.
 MAX_KEEP = 64
+#: Agents one request can set.
+MAX_SET = 50
 
 
 async def _linked(session: AsyncSession, owner: Owner, link_id: int) -> OwnerLink:
@@ -236,3 +244,121 @@ async def keep(
     await session.commit()
     return await view(session, link)
 
+
+
+# --- several agents, or a fleet, at once (P2e-1b) -------------------------------
+
+
+async def _targets(
+    session: AsyncSession, owner: Owner, ids: list[int] | None, fleet_id: int | None
+) -> tuple[list[OwnerLink], OwnerFleet | None]:
+    """The links to set, by agent address: *ids*, or the fleet's in effect."""
+    if fleet_id is not None:
+        fleet = await fleets.get(session, owner, fleet_id)
+        now = service.utcnow()
+        links = [
+            link for link in await fleets.members(session, fleet)
+            if link.state == "active" and service._aware(link.effective_at) <= now
+        ]
+        if not links:
+            raise PasskeyError(409, "no_agents", "No agent in this fleet is linked yet.")
+        return links, fleet
+    links = [await _linked(session, owner, link_id) for link_id in ids or []]
+    return sorted(links, key=lambda link: link.agent_address), None
+
+
+def _summary(links: list[OwnerLink], fleet: OwnerFleet | None, policy: str, same: bool) -> dict:
+    return {"links": [link.id for link in links], "fleet": fleet.id if fleet else None,
+            "policy": policy, "sameOwner": same}
+
+
+async def narrow_many(
+    session: AsyncSession, owner: Owner, ids: list[int] | None, fleet_id: int | None,
+    policy: str, same_owner: bool,
+) -> dict[str, Any]:
+    """Narrow several agents with no passkey: all of them, or none if any would widen."""
+    links, fleet = await _targets(session, owner, ids, fleet_id)
+    for link in links:
+        if _widens(await _current(session, link.agent_address), policy, same_owner):
+            raise PasskeyError(409, "needs_passkey", "Letting more in needs your passkey.")
+    for link in links:
+        await _apply(session, link.agent_address, policy, same_owner)
+    if fleet is not None:
+        fleet.policy, fleet.same_owner = policy, same_owner
+    await contacts.owner_crud.audit(session, owner.id, "policy_narrowed",
+                                    _summary(links, fleet, policy, same_owner))
+    await session.commit()
+    return {"policies": [await view(session, link) for link in links]}
+
+
+async def widen_many_start(
+    session: AsyncSession, settings, owner: Owner, ids: list[int] | None, fleet_id: int | None,
+    policy: str, same_owner: bool, credential_id: str | None,
+) -> dict[str, Any]:
+    links, fleet = await _targets(session, owner, ids, fleet_id)
+    keys_hash = await contacts._head(session, owner)
+    signer = await contacts._signer(session, owner, keys_hash, credential_id)
+    owner_ref = contacts._owner_ref(settings, owner, keys_hash)
+    stamp = _stamp(service.utcnow())
+    bodies = [{
+        "type": POLICY, "v": 1, "owner": owner_ref, "agent": link.agent_address,
+        "agentKey": link.agent_key, "policy": policy, "sameOwner": same_owner,
+        "validFrom": stamp, "nonce": _nonce(),
+    } for link in links]
+    held = {
+        "owner": {"keysHash": keys_hash}, "links": [link.id for link in links],
+        "bodies": [canonical(body).decode() for body in bodies],
+        **({"fleet": fleet.id} if fleet else {}),  # canonical JSON has no null
+    }
+    screen = policies_screen(bodies, fleet.name if fleet else None)
+    return await contacts._ask(session, settings, owner, "policies", held,
+                               [(POLICY, body) for body in bodies], screen, signer)
+
+
+async def widen_many(
+    session: AsyncSession, settings, owner: Owner, assertion: dict[str, str]
+) -> dict[str, Any]:
+    """Apply every signed body, or none: each agent must still be linked, with that key."""
+    row, held, signer = await contacts._approved(session, settings, owner, "policies", assertion)
+    bodies = [parse_body(text) for text in held["bodies"]]
+    links = []
+    for link_id, body in zip(held["links"], bodies, strict=True):
+        try:
+            link = await _linked(session, owner, link_id)
+        except PasskeyError:
+            await session.rollback()
+            raise PasskeyError(409, "not_linked", "One of these agents isn't linked now.") from None
+        if body["agentKey"] != link.agent_key:
+            await session.rollback()
+            raise _not_this_agent()
+        links.append(link)
+    hashes = [object_hash(body) for body in bodies]
+    kept = json.dumps(hashes) if len(bodies) > 1 else None
+    proof = contacts._proof(row, signer, assertion)
+    for link, body, text, digest in zip(links, bodies, held["bodies"], hashes, strict=True):
+        await _apply(session, link.agent_address, body["policy"], body["sameOwner"])
+        session.add(AgentPolicyApproval(
+            owner_pk=owner.id, agent_address=link.agent_address, body=text, hash=digest,
+            approval_set=kept, **proof,
+        ))
+    first = bodies[0]
+    fleet = await session.get(OwnerFleet, held["fleet"]) if "fleet" in held else None
+    if fleet is not None and fleet.owner_pk == owner.id:
+        fleet.policy, fleet.same_owner = first["policy"], first["sameOwner"]
+    await contacts.owner_crud.audit(session, owner.id, "policy_widened",
+                                    _summary(links, fleet, first["policy"], first["sameOwner"]))
+    await session.commit()
+    return {"policies": [await view(session, link) for link in links]}
+
+
+async def join_fleet(session: AsyncSession, link: OwnerLink, now) -> None:
+    """A link just approved takes its fleet's setting, if it's in effect now
+    and the setting only lets fewer in. Called before the approval commits."""
+    if link.fleet_id is None or service._aware(link.effective_at) > now:
+        return
+    fleet = await session.get(OwnerFleet, link.fleet_id)
+    if fleet is None or fleet.policy is None:
+        return
+    same = bool(fleet.same_owner)
+    if not _widens(await _current(session, link.agent_address), fleet.policy, same):
+        await _apply(session, link.agent_address, fleet.policy, same)

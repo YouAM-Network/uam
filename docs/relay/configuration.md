@@ -110,6 +110,10 @@ Each linked agent takes messages from Anyone (the default) or Only my contacts (
 
 Narrowing needs no passkey. Widening (back to Anyone, or letting the owner's own agents in again) needs a passkey over a `UamAgentPolicy` (`/policy/approve/start`, then `/approve`). Narrowing sets aside any contacts the agent had before; the owner can keep some with a passkey (`/keep/start`, then `/keep`), each bound to that sender's key. No route an agent's token can reach widens anything.
 
+Several agents can be set at once (`POST /api/owner/policy` with `"links": [...]` or `"fleet": id`, at most 50): narrowing needs no passkey, and a request that would widen any of them changes none. Widening them is one passkey approval over one sentence naming every agent (`/api/owner/policy/approve/start`, then `/approve`); each agent keeps its own signed `UamAgentPolicy` and the hashes signed with it.
+
+A fleet is a named group of an owner's agents; a link is in one at most. A code can name one (`"fleet": "support"` on `POST /api/owner/codes`): the agents that use it join, and one that is linked at once takes the fleet's setting if that only lets fewer in. Owners list, make, move agents between, rename and ungroup fleets (`GET`/`POST /api/owner/fleets`, `/fleets/move`, `/fleets/{id}/rename`, `/fleets/{id}/ungroup`). Grouping changes nobody's access and needs no passkey.
+
 ### Reserved names
 
 Some names can't be newly registered or reserved on any relay: roles people trust by default (`admin`, `support`, `security`, `verify`, …), the network's own names, and the big AI companies and assistants (`anthropic`, `claude`, `openai`, `chatgpt`, …), plus `uam-*`, `youam-*`, `*-official` and `<reserved>-support` / `-security` / `-admin`. An agent that already has such a name keeps it. `UAM_RESERVED_NAMES` (comma-separated) holds more. The list is in `uam.relay.reserved_names`.

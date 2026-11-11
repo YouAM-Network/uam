@@ -123,6 +123,7 @@ def view(link: OwnerLink, now: datetime) -> dict[str, Any]:
         "createdAt": _stamp(link.created_at),
         "approvedAt": _stamp(link.approved_at) if link.approved_at else None,
         "endedAt": _stamp(link.ended_at) if link.ended_at else None,
+        "fleet": link.fleet_id,
     }
 
 
@@ -131,23 +132,30 @@ def view(link: OwnerLink, now: datetime) -> dict[str, Any]:
 
 async def make_code(
     session: AsyncSession, vault: EmailVault, owner: Owner, kind: str, count: int = 1,
-    *, reservation_id: int | None = None,
+    *, reservation_id: int | None = None, fleet: str | None = None,
 ) -> dict[str, Any]:
     """A code for one agent (10 minutes) or for up to 25 (30 minutes). A
-    setup code for a reserved name (*reservation_id*) is for that name only."""
+    setup code for a reserved name (*reservation_id*) is for that name only.
+    A code naming a *fleet* (found or made) puts the agents that use it there."""
+    from uam.relay.owners import fleets
+
     if owner.owner_id is None:
         raise PasskeyError(409, "no_passkey", "Add a passkey first.")
     now = service.utcnow()
     expires_at = now + (FLEET_CODE_TTL if count > 1 else CODE_TTL)
+    group = await fleets.find_or_make(session, owner, fleet) if fleet else None
     code = new_link_code()
-    await crud.add_code(
+    row = await crud.add_code(
         session, owner_pk=owner.id, kind=kind, code_hash=vault.link_code_hash(code),
         now=now, expires_at=expires_at, max_uses=count, reservation_id=reservation_id,
     )
-    await owner_crud.audit(session, owner.id, "code_made", {"kind": kind, "count": count})
+    row.fleet_id = group.id if group else None
+    await owner_crud.audit(session, owner.id, "code_made",
+                           {"kind": kind, "count": count, "fleet": row.fleet_id})
     await session.commit()
     return {
         "code": show_code(code), "kind": kind, "count": count, "expiresAt": _stamp(expires_at),
+        "fleet": {"id": group.id, "name": group.name} if group else None,
     }
 
 
@@ -202,6 +210,7 @@ async def start(
         raise _bad_code()
 
     link = await new_link(session, settings, owner, head.hash, agent, row.kind, now)
+    link.fleet_id = row.fleet_id
     await owner_crud.audit(session, owner.id, "link_started", {"link": link.id, "via": row.kind})
     await session.commit()
     return {
@@ -454,10 +463,17 @@ async def approve(
     ):
         await session.rollback()
         raise PasskeyError(409, "not_waiting", "This link isn't waiting for you.")
+    await _join_fleet(session, link, now)
     await owner_crud.audit(session, owner.id, "link_approved", {"link": link.id})
     await session.commit()
     await session.refresh(link)
     return view(link, now)
+
+
+async def _join_fleet(session: AsyncSession, link: OwnerLink, now: datetime) -> None:
+    from uam.relay.owners import policy  # policy imports this module
+
+    await policy.join_fleet(session, link, now)
 
 
 # --- a set of links, one passkey (P2d-4) ---------------------------------------
@@ -525,6 +541,7 @@ async def approve_set(
         ):
             await session.rollback()
             raise PasskeyError(409, "not_waiting", "One of these links isn't waiting for you.")
+        await _join_fleet(session, link, now)
         await owner_crud.audit(session, owner.id, "link_approved",
                                {"link": link.id, "set": len(found)})
     await session.commit()

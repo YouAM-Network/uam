@@ -636,6 +636,26 @@ def _agent_fk(table: str, *, index: bool = True) -> Column:
     )
 
 
+class OwnerFleet(SQLModel, table=True):
+    """A named group of one owner's agents (P2e-1b, migration 0020).
+
+    ``name_key`` is the name in lower case, unique per owner. ``policy`` and
+    ``same_owner`` are the setting its agents were last given together
+    (null until then); an agent that joins later takes it if it narrows.
+    Grouping grants nothing."""
+
+    __tablename__ = "owner_fleets"
+    __table_args__ = (UniqueConstraint("owner_pk", "name_key", name="uq_owner_fleets_name"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    owner_pk: int = Field(sa_column=_owner_fk("owner_fleets"))
+    name: str = Field(sa_column=Column(String, nullable=False))
+    name_key: str = Field(sa_column=Column(String, nullable=False))
+    policy: str | None = Field(default=None, sa_column=Column(String, nullable=True))
+    same_owner: bool | None = Field(default=None, sa_column=Column(Boolean, nullable=True))
+    created_at: datetime = Field(default_factory=_now, sa_column=_created_at())
+
+
 class OwnerCode(SQLModel, table=True):
     """A setup or link code an owner made (P2d, migration 0015).
 
@@ -674,6 +694,15 @@ class OwnerCode(SQLModel, table=True):
         sa_column=Column(
             Integer,
             ForeignKey("reservations.id", ondelete="CASCADE", name="fk_owner_codes_reservation"),
+            nullable=True,
+        ),
+    )
+    # The fleet the agents that use it join (migration 0020); ungrouping sets it null.
+    fleet_id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey("owner_fleets.id", ondelete="SET NULL", name="fk_owner_codes_fleet"),
             nullable=True,
         ),
     )
@@ -738,6 +767,16 @@ class OwnerLink(SQLModel, table=True):
     # null when the link was approved on its own (migration 0016).
     approval_set: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     ended_at: datetime | None = Field(default=None, sa_column=_maybe_time())
+    # The fleet it's in, if any (migration 0020); ungrouping sets it null.
+    fleet_id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey("owner_fleets.id", ondelete="SET NULL", name="fk_owner_links_fleet"),
+            nullable=True,
+            index=True,
+        ),
+    )
 
 
 class OwnerUnlink(SQLModel, table=True):
@@ -910,6 +949,9 @@ class AgentPolicyApproval(SQLModel, table=True):
     client_data_json: str = Field(sa_column=Column(Text, nullable=False))
     signature: str = Field(sa_column=Column(Text, nullable=False))
     screen: str = Field(sa_column=Column(Text, nullable=False))
+    # The hashes signed together, in sentence order (JSON); null when the
+    # agent was widened on its own (migration 0020).
+    approval_set: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     created_at: datetime = Field(default_factory=_now, sa_column=_created_at())
 
 

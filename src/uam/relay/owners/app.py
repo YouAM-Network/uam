@@ -14,7 +14,15 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, HTTPException, Path, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, Field, StrictBool, StrictInt, field_validator, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    Field,
+    StrictBool,
+    StrictInt,
+    field_validator,
+    model_validator,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.cors import CORSMiddleware
 from starlette.routing import Host
@@ -22,7 +30,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from uam.db.crud import owners as crud
 from uam.db.session import get_session
-from uam.relay.owners import contacts, links, names, passkeys, policy, requests, service
+from uam.relay.owners import contacts, fleets, links, names, passkeys, policy, requests, service
 from uam.relay.rate_limit import SlidingWindowCounter
 from uam.relay.owners.crypto import EmailVault, normalise_email
 from uam.relay.owners.page import page_router
@@ -125,9 +133,64 @@ class SignEntry(BaseModel):
     signature: Annotated[str, Field(max_length=512)]
 
 
+def _fleet_name(name: str) -> str:
+    if any(ord(c) < 32 or ord(c) == 127 for c in name):
+        raise ValueError("one line")
+    tidy = fleets.tidy(name)
+    if not 1 <= len(tidy) <= fleets.MAX_NAME:
+        raise ValueError(f"1 to {fleets.MAX_NAME} characters")
+    return tidy
+
+
+FleetName = Annotated[str, Field(max_length=200), AfterValidator(_fleet_name)]
+
+
+def _distinct(ids: list[int]) -> list[int]:
+    if len(set(ids)) != len(ids):
+        raise ValueError("each link once")
+    return ids
+
+
+SomeLinks = Annotated[
+    list[Annotated[StrictInt, Field(ge=1)]], Field(max_length=policy.MAX_SET),
+    AfterValidator(_distinct),
+]
+
+
 class CodeRequest(BaseModel):
     kind: Literal["setup", "link"]
     count: Annotated[StrictInt, Field(ge=1, le=links.MAX_FLEET)] = 1
+    fleet: FleetName | None = None
+
+
+class FleetRequest(BaseModel):
+    name: FleetName
+    links: SomeLinks = []
+
+
+class RenameRequest(BaseModel):
+    name: FleetName
+
+
+class MoveRequest(BaseModel):
+    links: Annotated[SomeLinks, Field(min_length=1)]
+    fleet: Annotated[StrictInt, Field(ge=1)] | None
+
+
+class ManyPolicyRequest(BaseModel):
+    """Several agents (``links``) or one fleet (``fleet``), never both."""
+
+    policy: Literal["open", "contacts"]
+    sameOwner: StrictBool
+    links: Annotated[SomeLinks, Field(min_length=1)] | None = None
+    fleet: Annotated[StrictInt, Field(ge=1)] | None = None
+    credentialId: Annotated[str, Field(min_length=1, max_length=1400)] | None = None
+
+    @model_validator(mode="after")
+    def _one_of(self) -> "ManyPolicyRequest":
+        if (self.links is None) == (self.fleet is None):
+            raise ValueError("name some agents or one fleet")
+        return self
 
 
 class SetRequest(BaseModel):
@@ -206,6 +269,7 @@ class KeepRequest(BaseModel):
 
 
 LinkId = Annotated[int, Path(ge=1)]
+FleetId = Annotated[int, Path(ge=1)]
 OwnerIdPath = Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]{22}$")]
 
 
@@ -453,7 +517,9 @@ def build_owner_app(settings, parent: FastAPI) -> FastAPI:
     ) -> Response:
         try:
             return JSONResponse(
-                await links.make_code(session, vault, who.owner, body.kind, body.count)
+                await links.make_code(
+                    session, vault, who.owner, body.kind, body.count, fleet=body.fleet
+                )
             )
         except passkeys.PasskeyError as exc:
             return _refused(exc)
@@ -875,6 +941,99 @@ def build_owner_app(settings, parent: FastAPI) -> FastAPI:
         try:
             return JSONResponse(
                 await policy.widen(session, settings, who.owner, link_id, body.model_dump())
+            )
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    # --- fleets, and several agents at once (P2e-1b) ---------------------------
+
+    @app.get("/api/owner/fleets")
+    async def list_fleets(
+        who: service.SignedIn = Depends(signed_in), session: AsyncSession = Depends(get_session)
+    ) -> dict:
+        return await fleets.list_fleets(session, who.owner)
+
+    @app.post("/api/owner/fleets")
+    async def make_fleet(
+        body: FleetRequest,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(await fleets.make(session, who.owner, body.name, body.links))
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.post("/api/owner/fleets/move")
+    async def move_to_fleet(
+        body: MoveRequest,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(await fleets.move(session, who.owner, body.links, body.fleet))
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.post("/api/owner/fleets/{fleet_id}/rename")
+    async def rename_fleet(
+        fleet_id: FleetId,
+        body: RenameRequest,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(await fleets.rename(session, who.owner, fleet_id, body.name))
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.post("/api/owner/fleets/{fleet_id}/ungroup")
+    async def ungroup_fleet(
+        fleet_id: FleetId,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(await fleets.ungroup(session, who.owner, fleet_id))
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.post("/api/owner/policy")
+    async def narrow_many(
+        body: ManyPolicyRequest,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(await policy.narrow_many(
+                session, who.owner, body.links, body.fleet, body.policy, body.sameOwner,
+            ))
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.post("/api/owner/policy/approve/start")
+    async def widen_many_start(
+        body: ManyPolicyRequest,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(await policy.widen_many_start(
+                session, settings, who.owner, body.links, body.fleet, body.policy,
+                body.sameOwner, body.credentialId,
+            ))
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.post("/api/owner/policy/approve")
+    async def widen_many(
+        body: SignEntry,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(
+                await policy.widen_many(session, settings, who.owner, body.model_dump())
             )
         except passkeys.PasskeyError as exc:
             return _refused(exc)

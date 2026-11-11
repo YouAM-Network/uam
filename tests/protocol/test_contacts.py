@@ -22,6 +22,7 @@ from uam.protocol.contacts import (
     invite_words,
     keep_screen,
     new_secret,
+    policies_screen,
     policy_screen,
     redeem_screen,
     confirm_screen,
@@ -156,6 +157,52 @@ def test_keeping_several_names_each_by_address():
 def test_the_policy_sentence_says_who_can_message_the_agent(policy, same, text):
     assert policy_screen(_policy(policy=policy, sameOwner=same)) == text
 
+
+
+def _several(*names, **over):
+    return [_policy(agent=f"{n}::youam.network", **over) for n in names]
+
+
+@pytest.mark.parametrize("policy, same, start", [
+    ("open", True, "Let anyone message"),
+    ("contacts", True, "Let your contacts and your own agents message"),
+    ("contacts", False, "Let only your contacts message"),
+])
+def test_one_sentence_names_every_agent_in_order(policy, same, start):
+    bodies = _several("zed", "amy", "kit", policy=policy, sameOwner=same)
+    assert policies_screen(bodies) == (
+        f'{start} these 3 agents: "amy::youam.network", "kit::youam.network", '
+        '"zed::youam.network".'
+    )
+
+
+def test_a_fleet_is_named_in_the_sentence():
+    assert policies_screen(_several("s-2", "s-1"), fleet="support") == (
+        'Let anyone message the 2 agents in the "support" fleet: '
+        '"s-1::youam.network", "s-2::youam.network".'
+    )
+
+
+def test_one_agent_reads_as_it_does_alone():
+    [body] = _several("bob")
+    assert policies_screen([body]) == policy_screen(body)
+
+
+def test_a_fleet_of_one_is_still_named():
+    assert policies_screen(_several("s-1"), fleet="support") == (
+        'Let anyone message the 1 agent in the "support" fleet: "s-1::youam.network".'
+    )
+
+
+@pytest.mark.parametrize("bodies", [
+    [],
+    _several("a", "b", policy="open") + _several("c", policy="contacts"),
+    _several("a", sameOwner=True) + _several("b", sameOwner=False),
+    _several("a", "a"),
+])
+def test_a_sentence_for_several_needs_one_setting_and_distinct_agents(bodies):
+    with pytest.raises(ContactError):
+        policies_screen(bodies)
 
 # ---------------------------------------------------------------- the policy object
 
