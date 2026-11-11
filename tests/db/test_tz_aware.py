@@ -94,6 +94,10 @@ DATETIME_COLUMNS = [
     ("owner_links", "approved_at", True),
     ("owner_links", "ended_at", True),
     ("owner_unlinks", "created_at", False),
+    ("owner_requests", "created_at", False),
+    ("owner_requests", "expires_at", False),
+    ("owner_requests", "ended_at", True),
+    ("owner_request_optouts", "created_at", False),
 ]
 # The census-drift test below allows ±2 to absorb minor additions.
 

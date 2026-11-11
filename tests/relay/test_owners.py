@@ -300,7 +300,9 @@ def test_sign_in_sets_a_host_only_strict_session_cookie(relay, owner, codes):
     assert "domain=" not in lowered
     me = owner.get("/api/owner/me")
     assert me.status_code == 200
-    assert me.json() == {"email": "ada@example.com", "status": "active", "owner_id": None}
+    assert me.json() == {
+        "email": "ada@example.com", "status": "active", "owner_id": None, "request": None,
+    }
 
 
 @pytest.fixture()

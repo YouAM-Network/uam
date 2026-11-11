@@ -1,11 +1,15 @@
 """UAM MCP server -- exposes Agent messaging as MCP tools.
 
-Provides three tools for any MCP-compatible client (Claude Desktop,
+Provides these tools for any MCP-compatible client (Claude Desktop,
 Cursor, CrewAI, LangGraph, etc.):
 
   - **uam_send**: Send an encrypted, signed message to another agent
   - **uam_inbox**: Retrieve and decrypt pending messages
   - **uam_contact_card**: Get a signed contact card for this agent
+  - **uam_request_owner**: Ask a person, by email, to own this agent
+  - **uam_owner_status**: Where that request, or this agent's owner link, stands
+
+There is no tool to approve anything: only the owner's passkey does that.
 
 Uses the ``mcp`` package (FastMCP) for tool registration and transport.
 All tools wrap the existing :class:`uam.sdk.agent.Agent` class with zero
@@ -108,6 +112,10 @@ def _error_code(exc: Exception) -> str:
             return _MAP[cls]
     if isinstance(exc, NotConfiguredError):
         return "not_configured"
+    from uam.sdk.owner_link import OwnerLinkRefused
+
+    if isinstance(exc, OwnerLinkRefused):
+        return exc.code  # has_owner, too_many, unavailable, ...
     if isinstance(exc, (ConnectionError, TimeoutError)):
         return "network_error"
     if isinstance(exc, UAMError):
@@ -320,6 +328,70 @@ async def uam_contact_card() -> dict[str, Any]:
         return _error_envelope(exc)
 
 
+async def uam_request_owner(email: str) -> dict[str, Any]:
+    """Ask a person to own this agent: they get an email to confirm.
+
+    Use it when the person running you asks you to get a YouAM address and
+    link it to them. Ask them for the email address first. Tell them the
+    four ``words`` this returns: they check the same words on the YouAM
+    page before approving with Face ID or a passkey. You sign your part
+    automatically once they accept; you can't approve for them.
+
+    Args:
+        email: The person's email address.
+
+    Returns:
+        Envelope dict.
+
+        Success::
+
+            {"ok": True, "data": {"detail": ..., "words": [4 words],
+                                  "via": "setup" | "link", "expiresAt": ...}}
+
+        ``via`` ``link`` means the link starts 72 hours after this agent
+        signs (it is not brand new), so whoever runs it can cancel. The answer is the same
+        whether or not the email has an account.
+
+        Failure codes: ``has_owner`` (this agent already has an owner; only
+        they can unlink it), ``too_many`` (try tomorrow), ``unavailable``
+        (this relay doesn't link agents to owners), ``not_configured``.
+    """
+    try:
+        agent = await _get_agent()
+        return _ok_envelope(await agent.request_owner(email))
+    except Exception as exc:
+        return _error_envelope(exc)
+
+
+async def uam_owner_status() -> dict[str, Any]:
+    """Where this agent's owner request and owner link stand.
+
+    Also signs the link for this agent's own request if the owner has just
+    accepted it.
+
+    Returns:
+        Envelope dict.
+
+        Success::
+
+            {"ok": True, "data": {"state": ..., "request": {"state": ...,
+                                                            "expiresAt": ...}}}
+
+        ``state`` is the link: ``none``, ``waiting_for_agent``,
+        ``waiting_for_owner``, ``starts``, ``linked``, ``cancelled``,
+        ``unlinked`` or ``unavailable``. ``request.state`` is ``open``
+        (emailed, not answered yet), ``waiting_for_agent``,
+        ``waiting_for_you`` (the owner approves next), ``approved``,
+        ``declined``, ``expired`` or ``cancelled``.
+    """
+    try:
+        agent = await _get_agent()
+        status = await agent.check_owner_request()
+        return _ok_envelope({k: v for k, v in status.items() if k != "offer"})
+    except Exception as exc:
+        return _error_envelope(exc)
+
+
 # ---------------------------------------------------------------------------
 # Server factory and entry point
 # ---------------------------------------------------------------------------
@@ -328,13 +400,15 @@ async def uam_contact_card() -> dict[str, Any]:
 def create_server() -> FastMCP:
     """Create and return a configured FastMCP server with UAM tools.
 
-    This is the testable entry point -- it registers all three module-level
-    tool functions on a fresh FastMCP instance without starting any transport.
+    This is the testable entry point -- it registers the module-level tool
+    functions on a fresh FastMCP instance without starting any transport.
     """
     mcp = FastMCP("uam")
     mcp.tool()(uam_send)
     mcp.tool()(uam_inbox)
     mcp.tool()(uam_contact_card)
+    mcp.tool()(uam_request_owner)
+    mcp.tool()(uam_owner_status)
     return mcp
 
 

@@ -163,6 +163,11 @@ class Settings:
         self.owner_codes_to_log: bool = os.getenv(
             "UAM_OWNER_CODES_TO_LOG", ""
         ).lower() in ("1", "true", "yes")
+        # Emails sent for agents asking for an owner (P2s-3), across the
+        # whole relay, in any 24 hours. Over it, requests are still recorded.
+        self.owner_request_emails_per_day: int = int(
+            os.getenv("UAM_OWNER_REQUEST_EMAILS_PER_DAY", "500")
+        )
         if self.owners_enabled:
             self._check_owner_settings()
 

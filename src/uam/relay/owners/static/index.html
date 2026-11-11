@@ -57,6 +57,40 @@
   </div>
 </main>
 
+<main class="narrow" id="request" hidden>
+  <div class="brand"><svg class="logo" viewBox="0 0 727 129" role="img" aria-label="YouAM" focusable="false"><use href="#youam-logo"/></svg></div>
+  <div class="stack">
+    <p class="kicker">Agent request</p>
+    <h1 id="request-title" tabindex="-1">An agent wants you as its owner</h1>
+    <p class="lede" id="request-lede"></p>
+  </div>
+  <div class="stack">
+    <ul class="items" id="request-item" aria-labelledby="request-title"></ul>
+    <p class="hint" id="request-check">Check these are the words the agent gave you.</p>
+  </div>
+  <p class="hint" id="request-status" role="status" hidden></p>
+  <form class="stack" id="request-form" novalidate hidden>
+    <div class="field">
+      <label for="request-name">Name a passkey for this device</label>
+      <input id="request-name" maxlength="64" autocomplete="off" required>
+      <p class="problem" id="request-problem" hidden></p>
+    </div>
+    <button class="btn btn-primary" id="request-create" type="submit">Create passkey and accept</button>
+  </form>
+  <button class="btn btn-primary" id="request-go" type="button" hidden>Accept</button>
+  <p class="hint" id="request-no"><button class="link" id="request-decline" type="button">Decline</button> · <button class="link" id="request-block" type="button">Decline and stop this agent asking</button></p>
+</main>
+
+<main class="narrow" id="never" hidden>
+  <div class="brand"><svg class="logo" viewBox="0 0 727 129" role="img" aria-label="YouAM" focusable="false"><use href="#youam-logo"/></svg></div>
+  <div class="stack">
+    <h1 id="never-title" tabindex="-1">Stop emails about agents?</h1>
+    <p class="lede" id="never-lede">Agents won't be able to email you to ask you to own them. If you have a YouAM account, their requests still show there.</p>
+  </div>
+  <p class="problem" id="never-problem" role="alert" hidden></p>
+  <button class="btn btn-primary" id="never-go" type="button">Stop these emails</button>
+</main>
+
 <div id="account" hidden>
   <header class="head">
     <div class="head-in">
@@ -96,6 +130,11 @@
         <div class="row">
           <button class="btn btn-primary" id="approve-waiting" type="button">Approve</button>
         </div>
+      </div>
+      <div class="stack" id="asking" hidden>
+        <h2 id="asking-title">Asking by email</h2>
+        <p class="hint">These agents asked to join your account. Accept one you know; it signs its part, then waits for your passkey.</p>
+        <ul class="items" id="asking-list" aria-labelledby="asking-title"></ul>
       </div>
       <ul class="items" id="agent-list" aria-labelledby="agents-title"></ul>
       <p class="hint" id="agents-empty" hidden>No agents yet. Add one with a code from here.</p>

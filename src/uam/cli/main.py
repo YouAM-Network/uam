@@ -557,6 +557,72 @@ _STATUS_LINES = {
 }
 
 
+#: How long `uam owner request` waits for the owner: ticks of _REQUEST_WAIT_SECONDS.
+_REQUEST_WAIT_TICKS = 360
+_REQUEST_WAIT_SECONDS = 5.0
+
+_REQUEST_LINES = {
+    "waiting_for_you": "They accepted, and this agent signed. They approve it with their passkey next.",
+    "declined": "They declined.",
+    "expired": "The request expired. Run `uam owner request` again to ask again.",
+    "cancelled": "The request was cancelled.",
+}
+
+
+async def _wait_for_request(agent: Agent) -> None:
+    said = "open"
+    for _ in range(_REQUEST_WAIT_TICKS):
+        await _sleep(_REQUEST_WAIT_SECONDS)
+        status = await agent.check_owner_request()
+        state = (status.get("request") or {}).get("state", "open")
+        if state == "approved" or status["state"] in ("linked", "starts"):
+            line = banner(status) or f"Linked to {status.get('account', '')}."
+            click.echo(line)
+            return
+        if state != said and state in _REQUEST_LINES:
+            click.echo(_REQUEST_LINES[state])
+            said = state
+        if state in ("declined", "expired", "cancelled"):
+            return
+    click.echo(
+        "Still waiting for them. This agent signs when it next connects; "
+        "`uam owner status` shows where it stands."
+    )
+
+
+@owner.command("request")
+@click.argument("email")
+@click.pass_context
+def owner_request(ctx: click.Context, email: str) -> None:
+    """Ask a person, by email, to own this agent."""
+    agent_name = _owner_agent_name(ctx)
+
+    async def run() -> None:
+        agent = _linking_agent(agent_name)
+        await agent.connect()
+        try:
+            data = await agent.request_owner(email, watch=False)
+            click.echo(f"Asked {email} to own {agent.address}.")
+            click.echo(f"Words: {' '.join(data['words'])}")
+            click.echo(
+                "They get an email with a link. On the page it opens, they check these "
+                "words and approve with Face ID or a passkey."
+            )
+            if data["via"] == "link":
+                click.echo(
+                    "This agent isn't new, so the link starts 72 hours after this agent signs. "
+                    "Until then you can stop it with `uam owner cancel`."
+                )
+            await _wait_for_request(agent)
+        finally:
+            await agent.close()
+
+    try:
+        asyncio.run(run())
+    except UAMError as exc:
+        _error(f"Error: {exc}")
+
+
 @owner.command("status")
 @click.pass_context
 def owner_status(ctx: click.Context) -> None:
@@ -567,7 +633,7 @@ def owner_status(ctx: click.Context) -> None:
         agent = _linking_agent(agent_name)
         await agent.connect()
         try:
-            return await agent.owner_link_status()
+            return await agent.check_owner_request()  # signs an accepted request
         finally:
             await agent.close()
 

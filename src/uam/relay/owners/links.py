@@ -43,6 +43,7 @@ from uam.protocol.links import (
     verify_agent_signature,
     words_for,
 )
+from uam.protocol.signed import _parse_time as parse_time
 from uam.protocol.signed import canonical, object_hash, parse_body
 from uam.protocol.webauthn import ES256, Credential, WebAuthnError, verify_assertion
 from uam.relay.owners import service
@@ -194,22 +195,48 @@ async def start(
         await session.rollback()
         raise _bad_code()
 
+    link = await new_link(session, settings, owner, head.hash, agent, row.kind, now)
+    await owner_crud.audit(session, owner.id, "link_started", {"link": link.id, "via": row.kind})
+    await session.commit()
+    return {
+        "link": link.id, "body": link.body, "hash": link.hash,
+        "account": await _account(session, vault, owner.id), "words": words_for(link.agent_key),
+    }
+
+
+def agent_key_of(agent: Agent) -> str:
+    return encode_did_key(ED25519, bytes(deserialize_verify_key(agent.public_key)))
+
+
+def _link_body(
+    settings, owner: Owner, keys_hash: str, agent: str, agent_key: str, via: str, now: datetime
+) -> dict[str, Any]:
     valid_from = now.replace(microsecond=0)
-    effective_at = valid_from + (LINK_DELAY if row.kind == "link" else timedelta(0))
-    agent_key = encode_did_key(ED25519, bytes(deserialize_verify_key(agent.public_key)))
-    body = {
+    effective_at = valid_from + (LINK_DELAY if via == "link" else timedelta(0))
+    return {
         "type": LINK, "v": 1,
-        "owner": {"relay": settings.relay_domain, "ownerId": owner.owner_id, "keysHash": head.hash},
-        "agent": address, "agentKey": agent_key, "relay": settings.relay_domain,
-        "via": row.kind, "shared": True,
+        "owner": {"relay": settings.relay_domain, "ownerId": owner.owner_id, "keysHash": keys_hash},
+        "agent": agent, "agentKey": agent_key, "relay": settings.relay_domain,
+        "via": via, "shared": True,
         "effectiveAt": _stamp(effective_at), "validFrom": _stamp(valid_from), "nonce": _nonce(),
     }
-    text = canonical(body).decode()
-    link_hash = object_hash(body)
+
+
+async def new_link(
+    session: AsyncSession, settings, owner: Owner, keys_hash: str, agent: Agent, via: str,
+    now: datetime,
+) -> OwnerLink:
+    """Build a link body for *agent* to sign first and add it, ``started``.
+
+    The unique live_for index allows one live link per agent: a second
+    rolls back and is refused."""
+    agent_key = agent_key_of(agent)
+    body = _link_body(settings, owner, keys_hash, agent.address, agent_key, via, now)
     link = OwnerLink(
-        owner_pk=owner.id, agent_address=address, agent_key=agent_key, body=text,
-        hash=link_hash, via=row.kind, effective_at=effective_at, state="started",
-        live_for=address, created_at=now,
+        owner_pk=owner.id, agent_address=agent.address, agent_key=agent_key,
+        body=canonical(body).decode(), hash=object_hash(body), via=via,
+        effective_at=parse_time(body["effectiveAt"]), state="started",
+        live_for=agent.address, created_at=now,
     )
     session.add(link)
     try:
@@ -217,12 +244,18 @@ async def start(
     except IntegrityError:
         await session.rollback()
         raise PasskeyError(409, "already_linked", "This agent is already linked or waiting.") from None
-    await owner_crud.audit(session, owner.id, "link_started", {"link": link.id, "via": row.kind})
-    await session.commit()
-    return {
-        "link": link.id, "body": text, "hash": link_hash,
-        "account": await _account(session, vault, owner.id), "words": words_for(agent_key),
-    }
+    return link
+
+
+def rebuild(settings, owner: Owner, link: OwnerLink, now: datetime) -> None:
+    """New times and nonce for a link the agent hasn't signed yet, so a body
+    built a while ago still passes the agent's clock check (and a ``link``
+    still starts 72 hours after the agent sees it)."""
+    old = parse_body(link.body)
+    body = _link_body(settings, owner, old["owner"]["keysHash"], link.agent_address,
+                      link.agent_key, link.via, now)
+    link.body, link.hash = canonical(body).decode(), object_hash(body)
+    link.effective_at = parse_time(body["effectiveAt"])
 
 
 async def agent_sign(
@@ -461,10 +494,15 @@ async def approve_set_start(
 
 
 async def approve_set(
-    session: AsyncSession, settings, owner: Owner, assertion: dict[str, str]
+    session: AsyncSession, settings, owner: Owner, assertion: dict[str, str],
+    only: set[int] | None = None,
 ) -> dict[str, Any]:
-    """Approve every link in the set, or none of them."""
+    """Approve every link in the set, or none of them. *only*: the links
+    this session may approve (a session opened from a request email)."""
     row, held, signer = await _assert(session, settings, owner, "links", assertion)
+    if only is not None and not set(held["links"]) <= only:
+        await session.rollback()
+        raise PasskeyError(403, "not_yours", "This session can only approve its own request.")
     try:
         found = await _waiting_set(session, owner, held["links"])
     except PasskeyError:

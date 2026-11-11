@@ -210,6 +210,7 @@ class Stop extends Error {} // already handled (signed out); nothing more to say
 const state = {
   me: null, email: "", pending: null, opener: null, busy: false, timer: 0,
   links: [], skipped: new Set(), poll: 0,
+  request: null, requestId: null, requestTimer: 0, never: "", // an agent asking by email (P2s-3)
 };
 
 async function api(path, body) {
@@ -265,7 +266,10 @@ function on(el, event, problemEl, handler) {
 }
 
 function show(screen) {
-  const screens = { loading: $("loading"), signin: $("signin"), code: $("code"), account: $("account") };
+  const screens = {
+    loading: $("loading"), signin: $("signin"), code: $("code"), account: $("account"),
+    request: $("request"), never: $("never"),
+  };
   for (const [name, el] of Object.entries(screens)) el.hidden = name !== screen;
 }
 
@@ -356,6 +360,8 @@ async function loadAccount() {
   const me = await api("/api/owner/me");
   if (!me.ok) return showSignIn();
   state.me = me.data;
+  // A session opened from a request email only sees that request.
+  if (me.data.request || state.requestId) return loadRequest(me.data.request ?? state.requestId);
   $("who-email").textContent = me.data.email;
   $("who-email").title = me.data.email; // the header may shorten a long one
   const first = !me.data.owner_id;
@@ -447,9 +453,41 @@ function approveLabel() {
   button.textContent = n === 1 ? "Approve 1 agent" : `Approve ${n} agents`;
 }
 
+function askingItem(request) {
+  const li = document.createElement("li");
+  const kind = request.via === "link"
+    ? "Asked by email · an agent someone already runs: it starts 72 hours after it signs"
+    : "Asked by email · a new agent: linked as soon as you approve";
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  actions.append(
+    quiet("Accept", () => acceptAsking(request)),
+    quiet("Decline", () => declineAsking(request)),
+  );
+  li.append(text("span", "name", request.agent), text("span", "words", request.words.join(" ")),
+    foot(text("span", "meta", kind), actions));
+  return li;
+}
+
+async function acceptAsking(request) {
+  const r = await api(`/api/owner/requests/${request.id}/accept`, {});
+  if (!r.ok) return afterChange(r.data.detail ?? AGAIN);
+  await afterChange(`Accepted ${request.agent}. It signs its part next, then waits for you here.`);
+}
+
+async function declineAsking(request) {
+  const r = await api(`/api/owner/requests/${request.id}/decline`, { block: false });
+  if (!r.ok) return afterChange(r.data.detail ?? AGAIN);
+  await afterChange(`Declined ${request.agent}.`);
+}
+
 async function loadAgents() {
   const r = await api("/api/owner/links");
   if (!r.ok) throw new Error(`links: ${r.status}`);
+  const asked = await api("/api/owner/requests");
+  const asking = asked.ok ? (asked.data.requests ?? []).filter((q) => q.state === "open") : [];
+  $("asking-list").replaceChildren(...asking.map(askingItem));
+  $("asking").hidden = !asking.length;
   state.links = r.data.links ?? [];
   const waiting = state.links.filter((l) => l.state === "waiting");
   const live = state.links.filter((l) => l.state === "active");
@@ -458,7 +496,7 @@ async function loadAgents() {
   $("agent-list").replaceChildren(...await Promise.all(live.map(agentItem)));
   $("waiting").hidden = !waiting.length;
   $("agent-list").hidden = !live.length;
-  $("agents-empty").hidden = Boolean(waiting.length || live.length);
+  $("agents-empty").hidden = Boolean(waiting.length || live.length || asking.length);
   // One main button: approving when something waits, else adding an agent.
   $("add-agent").classList.toggle("btn-primary", !waiting.length);
   $("add-agent").classList.toggle("btn-quiet", Boolean(waiting.length));
@@ -686,6 +724,10 @@ async function approve() {
 async function approvedLinks(p) {
   state.pending = null;
   closeSheet(false);
+  if (state.request) {
+    await loadRequest(state.request.id);
+    return $("request-title").focus();
+  }
   await afterChange(p.kind === "unlink" ? `Unlinked ${p.agent}.`
     : p.count === 1 ? "Approved 1 agent." : `Approved ${p.count} agents.`);
 }
@@ -693,6 +735,7 @@ async function approvedLinks(p) {
 async function added(p) {
   state.pending = null;
   closeSheet(false);
+  if (state.request) return acceptRequest(); // the first passkey was made to accept
   await loadAccount();
   say($("keys-status"), `Added "${p.label}".`);
   $("keys-title").focus();
@@ -716,7 +759,9 @@ function restart() {
   const first = state.pending?.first ?? !state.me?.owner_id;
   state.pending = null;
   closeSheet(false);
-  if (linking) {
+  if (state.request) {
+    loadRequest(state.request.id).catch((err) => console.error(err));
+  } else if (linking) {
     afterChange("").catch((err) => console.error(err));
   } else if (first) {
     $("first-name").focus();
@@ -738,6 +783,7 @@ function openSheet(sheet, opener, focus) {
   for (const s of sheets) s.hidden = s !== sheet;
   $("scrim").hidden = false;
   $("account").inert = true;
+  $("request").inert = true;
   if (opener && !state.opener) state.opener = opener; // the first opener is where focus returns
   focus.focus();
 }
@@ -746,11 +792,14 @@ function closeSheet(returnFocus) {
   clearTimeout(state.timer);
   $("scrim").hidden = true;
   $("account").inert = false;
+  $("request").inert = false;
   const opener = state.opener;
   state.opener = null;
   if (!returnFocus) return;
   if (opener && opener.offsetParent !== null) {
     opener.focus();
+  } else if (!$("request").hidden) {
+    $("request-title").focus();
   } else {
     ($("keys").hidden ? $("first-title") : $("agents-title")).focus();
   }
@@ -770,6 +819,149 @@ function escape(e) {
   if (!$("sheet-code-made").hidden) return codeDone();
   state.pending = null;
   closeSheet(true);
+}
+
+// ---- an agent asking by email (P2s-3)
+
+const ENDED = {
+  approved: "Done",
+  declined: "You declined",
+  expired: "This request expired",
+  cancelled: "This request was cancelled",
+};
+
+function requestLede(q, fresh) {
+  const starts = q.via === "link"
+    ? "It already runs somewhere, so the link starts 72 hours after it signs, and whoever runs it can cancel until then."
+    : "It's a new agent, so it's linked as soon as you approve.";
+  return {
+    open: fresh
+      ? `If you know this agent, make a passkey to accept it. There's no password: your device asks for Face ID, a fingerprint or your PIN. ${starts}`
+      : `If you know this agent, accept it, then approve it with your passkey once it has signed. ${starts}`,
+    waiting_for_agent: "Accepted. Waiting for the agent to sign its part: it does this by itself, within seconds if it's online, or when it's next online. You can leave this page open.",
+    waiting_for_you: "The agent signed. Check its words, then approve it with your passkey.",
+    approved: q.via === "link"
+      ? `${q.agent} is linked to your YouAM account. The link is waiting its 72 hours.`
+      : `${q.agent} is linked to your YouAM account.`,
+    declined: `${q.agent} wasn't linked. You can close this page.`,
+    expired: "Requests last 7 days. Ask the agent to send a new one.",
+    cancelled: "The agent asked someone else, or stopped asking. Nothing was linked.",
+  }[q.state];
+}
+
+async function loadRequest(id) {
+  clearTimeout(state.requestTimer);
+  const r = await api(`/api/owner/requests/${id}`);
+  if (!r.ok) return requestGone(r.data.detail ?? AGAIN);
+  renderRequest(r.data);
+  show("request");
+}
+
+function renderRequest(q) {
+  state.request = q;
+  const fresh = !state.me.owner_id;
+  const live = ["open", "waiting_for_agent", "waiting_for_you"].includes(q.state);
+  $("request-title").textContent = ENDED[q.state]
+    ?? (fresh ? "An agent wants you as its owner" : "An agent wants to join your YouAM account");
+  $("request-lede").textContent = requestLede(q, fresh);
+  const meta = q.via === "link" ? "An agent someone already runs" : "A new agent";
+  const li = document.createElement("li");
+  li.append(text("span", "name", q.agent), text("span", "words", q.words.join(" ")),
+    text("span", "meta", meta));
+  $("request-item").replaceChildren(li);
+  $("request-check").hidden = !live;
+  $("request-form").hidden = !(q.state === "open" && fresh);
+  const go = { open: fresh ? null : "Accept", waiting_for_you: "Approve with passkey",
+    approved: "Open your account" }[q.state];
+  $("request-go").hidden = !go;
+  $("request-go").textContent = go ?? "";
+  $("request-no").hidden = !live;
+  if (q.state === "waiting_for_agent") {
+    state.requestTimer = setTimeout(() => {
+      if ($("scrim").hidden) loadRequest(q.id).catch((err) => { if (!(err instanceof Stop)) console.error(err); });
+    }, 3000);
+  }
+}
+
+function requestGone(why) {
+  state.request = null;
+  $("request-title").textContent = "This link doesn't work";
+  $("request-lede").textContent = why;
+  $("request-item").replaceChildren();
+  for (const id of ["request-check", "request-form", "request-go", "request-no"]) $(id).hidden = true;
+  say($("request-status"), "");
+  show("request");
+  $("request-title").focus();
+}
+
+async function acceptRequest() {
+  const q = state.request;
+  const r = await api(`/api/owner/requests/${q.id}/accept`, {});
+  const me = await api("/api/owner/me");
+  if (me.ok) state.me = me.data;
+  if (!r.ok) {
+    await loadRequest(q.id);
+    return say($("request-status"), r.data.detail ?? AGAIN);
+  }
+  say($("request-status"), "");
+  renderRequest(r.data);
+  $("request-title").focus();
+}
+
+async function requestGo() {
+  const q = state.request;
+  if (!q) return;
+  if (q.state === "open") return acceptRequest();
+  if (q.state === "waiting_for_you") {
+    return startApproval("links", "/api/owner/link-sets/approve/start", { ids: [q.link] },
+      $("request-go"), { count: 1 });
+  }
+  if (q.state === "approved") return openAccount();
+}
+
+async function openAccount() {
+  // A request email's session only finishes the request: seeing the
+  // account needs a normal sign-in.
+  state.request = null;
+  state.requestId = null;
+  if (state.me?.request) {
+    const email = state.me.email;
+    await api("/api/owner/sign-out", {});
+    showSignIn();
+    $("email").value = email;
+    return $("signin-title").focus();
+  }
+  await loadAccount();
+}
+
+async function declineRequest(block) {
+  const q = state.request;
+  if (!q) return;
+  const r = await api(`/api/owner/requests/${q.id}/decline`, { block });
+  if (!r.ok) return say($("request-status"), r.data.detail ?? AGAIN);
+  say($("request-status"), block ? "This agent can't email you again." : "");
+  renderRequest(r.data);
+  $("request-title").focus();
+}
+
+async function openFromEmail(token) {
+  const r = await api("/api/owner/requests/open", { token });
+  if (r.status === 410) return requestGone("This request has ended. Ask the agent to send a new one.");
+  if (!r.ok) return requestGone("Check you opened the whole link from the email.");
+  state.requestId = r.data.request.id;
+  await loadAccount();
+  $("request-title").focus();
+}
+
+async function stopEmails() {
+  const r = await api("/api/owner/requests/never", { token: state.never });
+  if (!r.ok) return say($("never-problem"), r.status === 404
+    ? "This link doesn't work. Check you opened the whole link from the email." : AGAIN);
+  say($("never-problem"), "");
+  $("never-title").textContent = "Done";
+  $("never-lede").textContent = r.data.detail;
+  $("never-go").hidden = true;
+  $("never-title").focus();
 }
 
 // ---- start
@@ -795,10 +987,28 @@ function start() {
   on($("code-cancel"), "click", $("code-count-problem"), () => closeSheet(true));
   on($("made-done"), "click", $("agents-status"), codeDone);
   on($("approve-waiting"), "click", $("agents-status"), approveWaiting);
+  on($("request-form"), "submit", $("request-problem"),
+    () => createPasskey($("request-name"), $("request-problem"), $("request-create")));
+  on($("request-go"), "click", $("request-status"), requestGo);
+  on($("request-decline"), "click", $("request-status"), () => declineRequest(false));
+  on($("request-block"), "click", $("request-status"), () => declineRequest(true));
+  on($("never-go"), "click", $("never-problem"), stopEmails);
   // Agents that redeem a code show up here without a reload.
   state.poll = setInterval(refreshAgents, 10_000);
   document.addEventListener("keydown", escape);
-  loadAccount().catch((err) => {
+  // An email link carries its token in the fragment, which never reaches
+  // the server; it leaves the address bar before anything else happens.
+  const from = new URLSearchParams(location.hash.slice(1));
+  if (location.hash) history.replaceState(null, "", location.pathname);
+  // A link pasted into this open tab only changes the fragment: start over.
+  window.addEventListener("hashchange", () => location.reload());
+  if (from.get("never")) {
+    state.never = from.get("never");
+    show("never");
+    return $("never-title").focus();
+  }
+  const first = from.get("request") ? openFromEmail(from.get("request")) : loadAccount();
+  first.catch((err) => {
     if (err instanceof Stop) return;
     console.error(err);
     showSignIn();

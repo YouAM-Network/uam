@@ -1,9 +1,9 @@
 """The agent's side of linking to an owner (P2d), and the admin unlink.
 
-An agent redeems its owner's code, signs the link body the relay built,
-can cancel its link before it starts, and can read its link's state (for
-its banners). There is no route for an agent to unlink itself or to
-approve anything. 404 while
+An agent redeems its owner's code, or asks an email address to own it
+(P2s-3); signs the link body the relay built; can cancel its link before
+it starts; and can read its link's state (for its banners). There is no
+route for an agent to unlink itself or to approve anything. 404 while
 UAM_OWNERS_ENABLED is off.
 """
 
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Path, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,8 +19,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from uam.db.models import Agent
 from uam.db.session import get_session
 from uam.relay.auth import verify_token_http
-from uam.relay.owners import links
+from uam.relay.owners import links, requests
+from uam.relay.owners.crypto import normalise_email
 from uam.relay.owners.passkeys import PasskeyError
+from uam.relay.rate_limit import SlidingWindowCounter
 from uam.relay.routes.admin import verify_admin_key
 from uam.relay.routes.admin_owners import owners_enabled
 
@@ -34,6 +36,14 @@ admin_router = APIRouter(
 
 class StartLink(BaseModel):
     code: Annotated[str, Field(max_length=32)]
+
+
+class RequestOwner(BaseModel):
+    email: Annotated[str, Field(max_length=320)]
+
+
+#: Requests one client address can make in an hour, across its agents.
+REQUESTS_PER_IP_HOUR = 10
 
 
 class SignLink(BaseModel):
@@ -59,6 +69,43 @@ async def start(
         return JSONResponse(await links.start(
             session, app.state.settings, app.state.owner_vault, await _agent(session, who), body.code,
         ))
+    except PasskeyError as exc:
+        return _refused(exc)
+
+
+def _request_sink(state) -> requests.RequestSink:
+    sink = getattr(state, "owner_request_sink", None)
+    if sink is not None:
+        return sink
+    return requests.log_sink if state.settings.owner_codes_to_log else requests.drop_sink
+
+
+@router.post("/link/request", status_code=202)
+async def request_owner(
+    body: RequestOwner, request: Request,
+    who: dict = Depends(verify_token_http), session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Ask an email address to own this agent. The answer is the same
+    whether or not it has an account, and whether or not an email went out."""
+    email = normalise_email(body.email)
+    if email is None:
+        raise HTTPException(status_code=422, detail="not an email address")
+    state = request.app.state
+    limiter = getattr(state, "owner_request_limiter", None)
+    if limiter is None:
+        limiter = state.owner_request_limiter = SlidingWindowCounter(
+            limit=REQUESTS_PER_IP_HOUR, window_seconds=3600.0
+        )
+    if not await limiter.check(request.client.host if request.client else "unknown"):
+        return JSONResponse(
+            {"error": "too_many", "detail": "Too many requests from here. Try again later."},
+            status_code=429,
+        )
+    try:
+        return JSONResponse(await requests.ask(
+            session, state.settings, state.owner_vault, await _agent(session, who), email,
+            _request_sink(state),
+        ), status_code=202)
     except PasskeyError as exc:
         return _refused(exc)
 
@@ -95,9 +142,9 @@ async def status(
     request: Request,
     who: dict = Depends(verify_token_http), session: AsyncSession = Depends(get_session),
 ) -> dict:
-    return await links.agent_status(
-        session, request.app.state.owner_vault, await _agent(session, who)
-    )
+    agent = await _agent(session, who)
+    status = await links.agent_status(session, request.app.state.owner_vault, agent)
+    return {**status, **(await requests.agent_view(session, request.app.state.settings, agent) or {})}
 
 
 @admin_router.post("/{link_id}/unlink")

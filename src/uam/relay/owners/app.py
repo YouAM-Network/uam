@@ -22,7 +22,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from uam.db.crud import owners as crud
 from uam.db.session import get_session
-from uam.relay.owners import links, passkeys, service
+from uam.relay.owners import links, passkeys, requests, service
 from uam.relay.rate_limit import SlidingWindowCounter
 from uam.relay.owners.crypto import EmailVault, normalise_email
 from uam.relay.owners.page import page_router
@@ -147,6 +147,14 @@ class PrivateRequest(BaseModel):
     private: StrictBool
 
 
+class TokenRequest(BaseModel):
+    token: Annotated[str, Field(pattern=r"^[A-Za-z0-9_-]{20,64}$")]
+
+
+class DeclineRequest(BaseModel):
+    block: StrictBool = False
+
+
 LinkId = Annotated[int, Path(ge=1)]
 
 
@@ -180,6 +188,8 @@ class MeResponse(BaseModel):
     email: str
     status: str
     owner_id: str | None
+    #: Set when this session came from an agent's request email.
+    request: int | None = None
 
 
 #: Sign-ups one client address can start in an hour.
@@ -220,13 +230,27 @@ def build_owner_app(settings, parent: FastAPI) -> FastAPI:
     async def _validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
         return JSONResponse({"error": "validation_error", "detail": "bad request body"}, status_code=422)
 
-    async def signed_in(
+    async def any_session(
         request: Request, session: AsyncSession = Depends(get_session)
     ) -> service.SignedIn:
+        """A signed-in session, or one opened from an agent's request email."""
         found = await service.current_owner(session, request.cookies.get(COOKIE))
         if found is None:
             raise HTTPException(status_code=401, detail="sign in first")
         return found
+
+    async def signed_in(who: service.SignedIn = Depends(any_session)) -> service.SignedIn:
+        """A full sign-in: a request email's session can't see the account."""
+        if who.request_id is not None:
+            raise HTTPException(status_code=401, detail="sign in first")
+        return who
+
+    async def first_passkey(who: service.SignedIn = Depends(any_session)) -> service.SignedIn:
+        """A full sign-in, or a request email's session making the account's
+        first passkey (an account with one approves with it instead)."""
+        if who.request_id is not None and who.owner.owner_id is not None:
+            raise HTTPException(status_code=401, detail="sign in first")
+        return who
 
     async def start_after_answering(email: str) -> None:
         import uam.db.session as sessions
@@ -293,18 +317,19 @@ def build_owner_app(settings, parent: FastAPI) -> FastAPI:
 
     @app.get("/api/owner/me", response_model=MeResponse)
     async def me(
-        who: service.SignedIn = Depends(signed_in), session: AsyncSession = Depends(get_session)
+        who: service.SignedIn = Depends(any_session), session: AsyncSession = Depends(get_session)
     ) -> MeResponse:
         email = await crud.primary_email(session, who.owner.id)
         return MeResponse(
             email=vault.decrypt(email.email_enc) if email else "",
             status=who.owner.status,
             owner_id=who.owner.owner_id,
+            request=who.request_id,
         )
 
     @app.post("/api/owner/passkeys/register/start")
     async def register_start(
-        who: service.SignedIn = Depends(signed_in), session: AsyncSession = Depends(get_session)
+        who: service.SignedIn = Depends(first_passkey), session: AsyncSession = Depends(get_session)
     ) -> Response:
         email = await crud.primary_email(session, who.owner.id)
         try:
@@ -319,7 +344,7 @@ def build_owner_app(settings, parent: FastAPI) -> FastAPI:
     @app.post("/api/owner/passkeys/register/finish")
     async def register_finish(
         body: FinishRegistration,
-        who: service.SignedIn = Depends(signed_in),
+        who: service.SignedIn = Depends(first_passkey),
         session: AsyncSession = Depends(get_session),
     ) -> Response:
         try:
@@ -333,7 +358,7 @@ def build_owner_app(settings, parent: FastAPI) -> FastAPI:
     @app.post("/api/owner/keys/sign")
     async def sign_entry(
         body: SignEntry,
-        who: service.SignedIn = Depends(signed_in),
+        who: service.SignedIn = Depends(first_passkey),
         session: AsyncSession = Depends(get_session),
     ) -> Response:
         try:
@@ -389,18 +414,32 @@ def build_owner_app(settings, parent: FastAPI) -> FastAPI:
         session: AsyncSession = Depends(get_session),
     ) -> Response:
         try:
-            return JSONResponse(
-                await links.approve(session, settings, who.owner, link_id, body.model_dump())
-            )
+            approved = await links.approve(session, settings, who.owner, link_id, body.model_dump())
         except passkeys.PasskeyError as exc:
             return _refused(exc)
+        await requests.settle_approved(session, [approved["id"]])
+        return JSONResponse(approved)
+
+    async def only_links(session: AsyncSession, who: service.SignedIn) -> set[int] | None:
+        """The links a request email's session may approve: its request's."""
+        if who.request_id is None:
+            return None
+        link_id = await requests.link_of(session, who.request_id)
+        return {link_id} if link_id else set()
+
+    _NOT_YOURS = passkeys.PasskeyError(
+        403, "not_yours", "This session can only approve its own request."
+    )
 
     @app.post("/api/owner/link-sets/approve/start")
     async def approve_set_start(
         body: SetRequest,
-        who: service.SignedIn = Depends(signed_in),
+        who: service.SignedIn = Depends(any_session),
         session: AsyncSession = Depends(get_session),
     ) -> Response:
+        only = await only_links(session, who)
+        if only is not None and not set(body.ids) <= only:
+            return _refused(_NOT_YOURS)
         try:
             return JSONResponse(
                 await links.approve_set_start(session, settings, who.owner, body.ids)
@@ -411,13 +450,94 @@ def build_owner_app(settings, parent: FastAPI) -> FastAPI:
     @app.post("/api/owner/link-sets/approve")
     async def approve_set(
         body: SignEntry,
-        who: service.SignedIn = Depends(signed_in),
+        who: service.SignedIn = Depends(any_session),
         session: AsyncSession = Depends(get_session),
     ) -> Response:
         try:
-            return JSONResponse(
-                await links.approve_set(session, settings, who.owner, body.model_dump())
+            approved = await links.approve_set(
+                session, settings, who.owner, body.model_dump(),
+                only=await only_links(session, who),
             )
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+        await requests.settle_approved(session, [x["id"] for x in approved["links"]])
+        return JSONResponse(approved)
+
+    # --- agents asking for an owner by email (P2s-3) ---------------------------
+
+    @app.post("/api/owner/requests/open")
+    async def open_request(
+        body: TokenRequest, request: Request, session: AsyncSession = Depends(get_session)
+    ) -> Response:
+        """The page calls this with the token from the email link's fragment."""
+        try:
+            owner, row = await requests.open_request(session, vault, body.token)
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+        shown = await requests.view(session, row, service.utcnow())
+        response = JSONResponse({"request": shown})
+        current = await service.current_owner(session, request.cookies.get(COOKIE))
+        if current is not None and current.owner.id == owner.id and current.request_id is None:
+            return response  # already signed in to this account: keep that session
+        token = await requests.scoped_session(session, owner, row)
+        response.set_cookie(
+            COOKIE, token, max_age=int(service.SESSION_MAX.total_seconds()), path="/",
+            secure=True, httponly=True, samesite="strict",
+        )
+        return response
+
+    @app.post("/api/owner/requests/never")
+    async def never_email(body: TokenRequest, session: AsyncSession = Depends(get_session)) -> Response:
+        try:
+            await requests.never(session, body.token)
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+        return JSONResponse({"detail": "We won't email you about agents again."})
+
+    @app.get("/api/owner/requests")
+    async def list_requests(
+        who: service.SignedIn = Depends(any_session), session: AsyncSession = Depends(get_session)
+    ) -> Response:
+        try:
+            return JSONResponse({"requests": await requests.list_requests(
+                session, who.owner, who.request_id)})
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.get("/api/owner/requests/{request_id}")
+    async def get_request(
+        request_id: LinkId,
+        who: service.SignedIn = Depends(any_session),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(await requests.get_request(
+                session, who.owner, request_id, who.request_id))
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.post("/api/owner/requests/{request_id}/accept")
+    async def accept_request(
+        request_id: LinkId,
+        who: service.SignedIn = Depends(any_session),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(await requests.accept(
+                session, settings, who.owner, request_id, who.request_id))
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.post("/api/owner/requests/{request_id}/decline")
+    async def decline_request(
+        request_id: LinkId,
+        body: DeclineRequest,
+        who: service.SignedIn = Depends(any_session),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(await requests.decline(
+                session, who.owner, request_id, body.block, who.request_id))
         except passkeys.PasskeyError as exc:
             return _refused(exc)
 

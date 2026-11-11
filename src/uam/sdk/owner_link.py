@@ -6,6 +6,11 @@ that the body says what it should: this agent and key, this relay, the
 kind of link it asked for, times that fit, and the four words it works
 out itself. ``banner`` gives the line the CLI and SDK show while a link
 is waiting or hasn't started yet.
+
+An agent can also ask an email address to own it (P2s-3): ``ask``. Once
+the owner accepts, the relay offers the link body for the agent's own
+request, and the agent signs it without asking again, since asking was
+its consent. It checks the body the same way first.
 """
 
 from __future__ import annotations
@@ -28,6 +33,15 @@ log = logging.getLogger(__name__)
 CLOCK_SKEW = timedelta(minutes=10)
 #: A link for an existing agent starts this long after it is redeemed.
 LINK_DELAY = timedelta(hours=72)
+
+#: While a request is open the agent checks for the owner's answer every
+#: REQUEST_POLL_FAST seconds for REQUEST_FAST_FOR seconds, then every
+#: REQUEST_POLL_SLOW seconds (and on every connect).
+REQUEST_POLL_FAST = 5.0
+REQUEST_FAST_FOR = 30 * 60.0
+REQUEST_POLL_SLOW = 10 * 60.0
+#: Request states the agent still has something to do in.
+REQUEST_PENDING = ("open", "waiting_for_agent")
 
 
 @dataclass(frozen=True)
@@ -90,6 +104,12 @@ def banner(status: dict[str, Any]) -> str | None:
             f"This agent is being linked to the YouAM account {account}. "
             f"It starts on {_when(status['effectiveAt'])}. If you didn't do this, "
             "run `uam owner cancel` before then."
+        )
+    request = status.get("request") or {}
+    if state in ("none", "cancelled", "unlinked") and request.get("state") == "open":
+        return (
+            "This agent asked for an owner by email. It is waiting for them to confirm, "
+            f"until {_when(request['expiresAt'])}."
         )
     if state == "waiting_for_owner":
         words = " ".join(status.get("words", []))
@@ -174,3 +194,15 @@ async def cancel(relay_url: str, token: str) -> None:
         )
     if resp.status_code != 200:
         raise _refusal(resp)
+
+
+async def ask(relay_url: str, token: str, email: str) -> dict[str, Any]:
+    """Ask *email* to own this agent: ``{detail, words, via, expiresAt}``."""
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            f"{relay_url}/api/v1/owner/link/request", json={"email": email},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    if resp.status_code != 202:
+        raise _refusal(resp)
+    return resp.json()

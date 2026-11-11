@@ -150,6 +150,9 @@ async def finish_sign_in(
 class SignedIn:
     owner: Owner
     session_id: int
+    #: Set for a session opened from an agent's request email: it may only
+    #: finish that request (P2s-3).
+    request_id: int | None = None
 
 
 async def current_owner(session: AsyncSession, token: str | None) -> SignedIn | None:
@@ -170,7 +173,8 @@ async def current_owner(session: AsyncSession, token: str | None) -> SignedIn | 
     if now - _aware(owner_session.last_seen) >= TOUCH_EVERY:
         owner_session.last_seen = now
         await session.commit()
-    return SignedIn(owner=owner, session_id=owner_session.id)
+    return SignedIn(owner=owner, session_id=owner_session.id,
+                    request_id=owner_session.request_id)
 
 
 async def sign_out(session: AsyncSession, signed_in: SignedIn) -> None:

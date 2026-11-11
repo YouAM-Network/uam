@@ -118,6 +118,8 @@ class Agent:
         #: Where this agent's link to an owner stands, read on connect (P2d).
         self.owner_link: dict | None = None
         self._announce_owner_link = True
+        #: Watches an open request for an owner (P2s-3) until the agent signs.
+        self._owner_request_task: asyncio.Task | None = None
 
         # Contact management
         self._contact_book = ContactBook(self._config.data_dir)
@@ -231,6 +233,9 @@ class Agent:
 
     async def close(self) -> None:
         """Disconnect the transport and clean up resources."""
+        task, self._owner_request_task = self._owner_request_task, None
+        if task is not None and not task.done():
+            task.cancel()
         # Close contact book first
         await self._contact_book.close()
         await self._replay_cache.close()
@@ -526,14 +531,101 @@ class Agent:
         await _owner_link.cancel(self._config.relay_url, self._token)
         self.owner_link = {"state": "cancelled"}
 
+    async def request_owner(self, email: str, *, watch: bool = True) -> dict:
+        """Ask *email* to be this agent's owner.
+
+        The address gets a confirmation link. When the owner accepts, this
+        agent signs the link the relay built (checked first, as for a code)
+        without asking again; the owner then approves it with a passkey.
+        While the agent stays connected it checks for that every 5 seconds
+        for 30 minutes, then every 10 minutes; it also checks on connect.
+
+        Returns ``{detail, words, via, expiresAt}``: ``words`` are this
+        agent's four words, for the owner to compare. The answer is the
+        same whether or not an email went out. Raises
+        :class:`~uam.sdk.owner_link.OwnerLinkRefused` (``has_owner``,
+        ``too_many``) if the relay refuses. ``watch=False``: don't check in
+        the background (the caller calls :meth:`check_owner_request`).
+        """
+        await self._ensure_connected()
+        data = await _owner_link.ask(self._config.relay_url, self._token, email)
+        if watch:
+            self._watch_owner_request()
+        return data
+
+    async def check_owner_request(self) -> dict:
+        """Read this agent's link state and, if the owner accepted the
+        agent's own request, check and sign the link. Returns the state
+        (as :meth:`owner_link_status`, plus ``request``)."""
+        await self._ensure_connected()
+        status = await _owner_link.fetch_status(self._config.relay_url, self._token)
+        if await self._sign_offer(status):
+            status = await _owner_link.fetch_status(self._config.relay_url, self._token)
+        self.owner_link = status
+        return status
+
+    async def _sign_offer(self, status: dict) -> bool:
+        """Sign the link offered for this agent's own open request, if any."""
+        offer, request = status.get("offer"), status.get("request") or {}
+        if not offer or request.get("state") != "waiting_for_agent":
+            return False
+        try:
+            body = parse_body(offer["body"])
+        except (KeyError, TypeError, SignedObjectError) as exc:
+            raise UAMError(f"The relay sent a link that isn't valid: {exc}") from None
+        agent_key = encode_did_key(ED25519, bytes(self._key_manager.verify_key))
+        _owner_link.check_offer(
+            body, address=self.address, agent_key=agent_key, via=request.get("via", ""),
+            words=status.get("words", []), now=datetime.now(timezone.utc),
+        )
+        signature = sign_as_agent(body, self._key_manager.signing_key)
+        await _owner_link.send_signature(
+            self._config.relay_url, self._token, object_hash(body), signature
+        )
+        _owner_link.log.info("Signed the link for this agent's request; the owner approves next.")
+        return True
+
+    def _watch_owner_request(self) -> None:
+        if self._owner_request_task is not None and not self._owner_request_task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._owner_request_task = loop.create_task(self._owner_request_loop())
+
+    async def _owner_request_loop(self) -> None:
+        clock = asyncio.get_running_loop().time
+        began = clock()
+        while self._connected:
+            fast = clock() - began < _owner_link.REQUEST_FAST_FOR
+            await asyncio.sleep(
+                _owner_link.REQUEST_POLL_FAST if fast else _owner_link.REQUEST_POLL_SLOW
+            )
+            try:
+                status = await self.check_owner_request()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # a missed check is fine: keep watching
+                logger.debug("Couldn't check the owner request: %s", exc)
+                continue
+            if (status.get("request") or {}).get("state") not in _owner_link.REQUEST_PENDING:
+                return
+
     async def _read_owner_link(self) -> None:
         try:
             self.owner_link = await _owner_link.fetch_status(
                 self._config.relay_url, self._token, timeout=5.0
             )
+            if await self._sign_offer(self.owner_link):
+                self.owner_link = await _owner_link.fetch_status(
+                    self._config.relay_url, self._token, timeout=5.0
+                )
         except Exception as exc:  # never stop a connect over this
             logger.debug("Couldn't read the owner link: %s", exc)
             return
+        if (self.owner_link.get("request") or {}).get("state") in _owner_link.REQUEST_PENDING:
+            self._watch_owner_request()
         line = _owner_link.banner(self.owner_link) if self._announce_owner_link else None
         if line:
             _owner_link.log.warning("%s", line)

@@ -467,6 +467,16 @@ class OwnerSession(SQLModel, table=True):
         default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
     )
     created_at: datetime = Field(default_factory=_now, sa_column=_created_at())
+    # Set for a session opened from an agent's request email (migration
+    # 0017): it may only finish that request (P2s-3).
+    request_id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey("owner_requests.id", ondelete="CASCADE", name="fk_owner_sessions_request"),
+            nullable=True,
+        ),
+    )
 
 
 class OwnerAudit(SQLModel, table=True):
@@ -1173,3 +1183,67 @@ __all__ = [
     "FederationQueueEntry",
     "Reservation",
 ]
+
+
+class OwnerRequest(SQLModel, table=True):
+    """An agent asking an email address to be its owner (P2s-3, migration 0017).
+
+    The email gets a link carrying a token (only its hash is kept). ``state``
+    is ``open`` (sent), ``accepted`` (the owner accepted; ``link_id`` is the
+    link the relay built), ``approved``, ``declined``, ``expired`` or
+    ``cancelled`` (replaced by the agent's next request, or its link was
+    cancelled). ``live_for`` is the agent's address while the request is
+    open or accepted, and is unique, so an agent has one at a time.
+    ``emailed`` says whether the limits let an email go out."""
+
+    __tablename__ = "owner_requests"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_owner_requests_token_hash"),
+        UniqueConstraint("live_for", name="uq_owner_requests_live_for"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    agent_address: str = Field(sa_column=_agent_fk("owner_requests"))
+    email_hmac: str = Field(sa_column=Column(String, nullable=False, index=True))
+    email_enc: str = Field(sa_column=Column(String, nullable=False))
+    token_hash: str = Field(sa_column=Column(String, nullable=False))
+    via: str = Field(sa_column=Column(String, nullable=False))
+    state: str = Field(
+        default="open", sa_column=Column(String, nullable=False, server_default="open")
+    )
+    live_for: str | None = Field(default=None, sa_column=Column(String, nullable=True))
+    emailed: bool = Field(
+        default=False, sa_column=Column(Boolean, nullable=False, server_default=false())
+    )
+    owner_pk: int | None = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey("owners.id", ondelete="SET NULL", name="fk_owner_requests_owner"),
+            nullable=True,
+        ),
+    )
+    link_id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey("owner_links.id", ondelete="SET NULL", name="fk_owner_requests_link"),
+            nullable=True,
+        ),
+    )
+    created_at: datetime = Field(default_factory=_now, sa_column=_created_at())
+    expires_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    ended_at: datetime | None = Field(default=None, sa_column=_maybe_time())
+
+
+class OwnerRequestOptOut(SQLModel, table=True):
+    """An email that asked not to hear about agents: all of them
+    (``agent_address`` NULL, "Never email me about agents") or one
+    ("Decline and stop this agent asking")."""
+
+    __tablename__ = "owner_request_optouts"
+
+    id: int | None = Field(default=None, primary_key=True)
+    email_hmac: str = Field(sa_column=Column(String, nullable=False, index=True))
+    agent_address: str | None = Field(default=None, sa_column=Column(String, nullable=True))
+    created_at: datetime = Field(default_factory=_now, sa_column=_created_at())

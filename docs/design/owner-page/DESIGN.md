@@ -54,7 +54,7 @@ Files:
 | Owner id | `.owner-id` | one (breaks anywhere) |
 | Header | `.head`, `.head-in`, `.who` | one |
 | Callout | `.callout` | one |
-| Agent list | `.items`, `.words`, `.meta`, `.foot`, `.actions` | waiting, linked, starts later, private, empty |
+| Agent list | `.items`, `.words`, `.meta`, `.foot`, `.actions` | waiting, asking by email, linked, starts later, private, empty |
 | Include box | `.check` | ticked, not ticked |
 | Choice of one | `.choice`, `.option` | one picked |
 | Code and command | `.shown-code`, `.command` | one each |
@@ -78,6 +78,15 @@ Files:
 | 12 | Adding a passkey | Sheet: name it | Create passkey |
 | 13 | Approve new passkey | Sheet with the sentence | Approve with passkey |
 | 14 | Request expired | Sheet: nothing changed | Start again |
+| 15 | Agent request, someone new (from the email link) | The agent, its words, name a passkey; Decline · Decline and stop this agent asking | Create passkey and accept |
+| 16 | Agent request, an account | The agent and its words; the decline links | Accept |
+| 17 | Request accepted, the agent hasn't signed | The agent; the page checks every 3 seconds | none |
+| 18 | Request signed by the agent | The agent and its words; the decline links | Approve with passkey |
+| 19 | Request done, declined, expired or cancelled | What happened | Open your account (when done), else none |
+| 20 | Stop emails about agents (from the email's link) | What it does | Stop these emails |
+| 21 | Account, agents asking by email | "Asking by email" list with Accept and Decline on each, above the agents | Add an agent |
 
 "Add a passkey" is a quiet button once the account has a passkey: agents are what the page is for.
 Agents that redeem a code appear without a reload (the page checks every 10 seconds while no sheet is open).
+
+The email link carries its token in the fragment (`#request=…`, `#never=…`): the server never sees it in a URL, and a mail scanner that fetches the page without running it does nothing. Opening the page shows the request (and makes the account, unfinished, if there is none); nothing is accepted, declined or stopped without a click. The script takes the fragment out of the address bar before anything else. A session opened from the link only finishes that request: "Open your account" signs it out and asks for a normal sign-in.
