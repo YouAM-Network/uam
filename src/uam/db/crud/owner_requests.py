@@ -11,7 +11,7 @@ from datetime import datetime
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from uam.db.models import OwnerLink, OwnerRequest, OwnerRequestOptOut
+from uam.db.models import OwnerLink, OwnerRequest, OwnerRequestOptOut, Reservation
 
 
 async def live_request(session: AsyncSession, agent: str) -> OwnerRequest | None:
@@ -52,14 +52,18 @@ async def asked_since(session: AsyncSession, agent: str, since: datetime) -> int
 
 
 async def emailed_since(session: AsyncSession, since: datetime, email_hmac: str | None = None) -> int:
-    """Request emails sent since *since*: to one address, or relay-wide."""
-    query = (
-        select(func.count()).select_from(OwnerRequest)
-        .where(OwnerRequest.emailed.is_(True), OwnerRequest.created_at >= since)
-    )
-    if email_hmac is not None:
-        query = query.where(OwnerRequest.email_hmac == email_hmac)
-    return await session.scalar(query) or 0
+    """Request and reservation emails sent since *since*: to one address, or
+    relay-wide. Both kinds share the limits."""
+    total = 0
+    for table in (OwnerRequest, Reservation):
+        query = (
+            select(func.count()).select_from(table)
+            .where(table.emailed.is_(True), table.created_at >= since)
+        )
+        if email_hmac is not None:
+            query = query.where(table.email_hmac == email_hmac)
+        total += await session.scalar(query) or 0
+    return total
 
 
 async def opted_out(session: AsyncSession, email_hmac: str, agent: str) -> bool:

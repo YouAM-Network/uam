@@ -1,20 +1,25 @@
-"""Admin route to create an owner account (P2c-1).
+"""Admin routes for owner accounts: create one (P2c-1), and give one a
+name (P2s-2).
 
 People can also make their own account (``POST /api/owner/sign-up`` on the
-owner origin, P2s); this route is for the relay admin. It is 404 while
-UAM_OWNERS_ENABLED is off.
+owner origin, P2s); these routes are for the relay admin. They are 404
+while UAM_OWNERS_ENABLED is off.
 """
 
 from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from uam.db.crud.owners import EmailTaken, create_owner
+from uam.db.crud.owners import EmailTaken, create_owner, owner_by_owner_id
+from uam.db.crud.reservations import AddressAlreadyReserved
 from uam.db.session import get_session
+from uam.protocol import InvalidAddressError, parse_address
+from uam.relay.models import _AGENT_NAME_PATTERN
+from uam.relay.owners import links, names
 from uam.relay.owners.crypto import normalise_email
 from uam.relay.routes.admin import verify_admin_key
 
@@ -61,3 +66,32 @@ async def create(
     return OwnerView(
         id=owner.id, status=owner.status, owner_id=owner.owner_id, created_via=owner.created_via
     )
+
+
+class GiveNameRequest(BaseModel):
+    name: Annotated[str, Field(max_length=64, pattern=_AGENT_NAME_PATTERN)]
+    days: Annotated[int, Field(ge=1, le=names.MAX_GIVE_DAYS)] = names.GIVE_DAYS
+
+
+@router.post("/{owner_id}/names", status_code=201)
+async def give_name(
+    body: GiveNameRequest,
+    request: Request,
+    owner_id: Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]{22}$")],
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Hold a name for an account, even one on the reserved list. The
+    account makes a setup code for it on its page."""
+    owner = await owner_by_owner_id(session, owner_id)
+    if owner is None or owner.status != "active":
+        raise HTTPException(status_code=404, detail="no such owner")
+    address = f"{body.name.strip().lower()}::{request.app.state.settings.relay_domain}"
+    try:
+        parse_address(address)
+    except InvalidAddressError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid agent name: {exc}") from exc
+    try:
+        row = await names.give(session, owner, address, body.days)
+    except AddressAlreadyReserved:
+        raise HTTPException(status_code=409, detail=f"Address already taken: {address}") from None
+    return {"address": row.address, "expiresAt": links._stamp(row.expires_at)}

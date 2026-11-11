@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import secrets
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.exc import IntegrityError
@@ -15,6 +16,7 @@ from uam.db.crud.agents import (
     update_agent,
 )
 from uam.db.crud.federation_nonces import record_nonce
+from uam.db.crud.reservations import get_active_reservation, mark_claimed
 from uam.db.session import get_session
 from uam.protocol import (
     InvalidAddressError,
@@ -23,6 +25,7 @@ from uam.protocol import (
 )
 from uam.protocol.register_proof import register_proof_is_valid, register_proof_nonce
 from uam.relay.models import RegisterRequest, RegisterResponse
+from uam.relay.owners import names
 from uam.relay.reserved_names import is_reserved
 from uam.relay.token_hashing import hash_token
 from uam.relay.webhook_validator import async_validate_webhook_url
@@ -76,7 +79,19 @@ async def register(body: RegisterRequest, request: Request, session: AsyncSessio
     # can get a new token (the old one stops working); the public key alone
     # proves nothing.
     existing = await get_agent_by_address(session, address)
-    if existing is None and _reserved(request, agent_name):
+    # A live reservation holds the name. One held for an email's account
+    # (P2s-2) gives it to an agent with a setup code made for it, even a
+    # name on the reserved list that the relay admin gave that account.
+    reservation = await get_active_reservation(session, address) if existing is None else None
+    if reservation is not None:
+        try:
+            await names.check_register(
+                session, getattr(request.app.state, "owner_vault", None), reservation,
+                body.setup_code,
+            )
+        except names.Refused as exc:
+            raise HTTPException(status_code=403, detail=exc.detail) from None
+    elif existing is None and _reserved(request, agent_name):
         raise HTTPException(status_code=403, detail=f"Agent name is reserved: {agent_name}")
     if existing is not None:
         if body.proof is None or existing.public_key != body.public_key:
@@ -124,6 +139,10 @@ async def register(body: RegisterRequest, request: Request, session: AsyncSessio
             token_hash=token_hash_value,
             commit=False,
         )
+        if reservation is not None and not await mark_claimed(
+            session, reservation.id, datetime.now(timezone.utc)
+        ):
+            raise HTTPException(status_code=409, detail="The reservation just ended. Try again.")
 
         # Optionally set webhook URL (HOOK-01)
         if body.webhook_url is not None:

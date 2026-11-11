@@ -95,11 +95,21 @@ def _rows(client, sql, **params):
 
 
 def _exec(client, sql, **params):
+    """Run raw SQL. Datetime params bind as timestamptz (asyncpg refuses strings)."""
+    import datetime as dt
+
+    from sqlalchemy import DateTime, bindparam
+
     import uam.db.session as sess
+
+    stmt = text(sql).bindparams(
+        *(bindparam(k, type_=DateTime(timezone=True))
+          for k, v in params.items() if isinstance(v, dt.datetime))
+    )
 
     async def run():
         async with sess._session_factory() as s:
-            await s.execute(text(sql), params)
+            await s.execute(stmt, params)
             await s.commit()
 
     client.portal.call(run)

@@ -81,11 +81,31 @@
   <p class="hint" id="request-no"><button class="link" id="request-decline" type="button">Decline</button> · <button class="link" id="request-block" type="button">Decline and stop this agent asking</button></p>
 </main>
 
+<main class="narrow" id="reserve" hidden>
+  <div class="brand"><svg class="logo" viewBox="0 0 727 129" role="img" aria-label="YouAM" focusable="false"><use href="#youam-logo"/></svg></div>
+  <div class="stack">
+    <p class="kicker">Reserved name</p>
+    <h1 id="reserve-title" tabindex="-1">This name is reserved for you</h1>
+    <p class="lede" id="reserve-lede"></p>
+  </div>
+  <ul class="items" id="reserve-item" aria-labelledby="reserve-title"></ul>
+  <p class="hint" id="reserve-status" role="status" hidden></p>
+  <form class="stack" id="reserve-form" novalidate hidden>
+    <div class="field">
+      <label for="reserve-name">Name a passkey for this device</label>
+      <input id="reserve-name" maxlength="64" autocomplete="off" required>
+      <p class="problem" id="reserve-problem" hidden></p>
+    </div>
+    <button class="btn btn-primary" id="reserve-create" type="submit">Create passkey and get a setup code</button>
+  </form>
+  <button class="btn btn-primary" id="reserve-go" type="button" hidden>Make a setup code</button>
+</main>
+
 <main class="narrow" id="never" hidden>
   <div class="brand"><svg class="logo" viewBox="0 0 727 129" role="img" aria-label="YouAM" focusable="false"><use href="#youam-logo"/></svg></div>
   <div class="stack">
     <h1 id="never-title" tabindex="-1">Stop emails about agents?</h1>
-    <p class="lede" id="never-lede">Agents won't be able to email you to ask you to own them. If you have a YouAM account, their requests still show there.</p>
+    <p class="lede" id="never-lede">Agents won't be able to email you to ask you to own them, and names reserved with your address won't be emailed to you. If you have a YouAM account, they still show there.</p>
   </div>
   <p class="problem" id="never-problem" role="alert" hidden></p>
   <button class="btn btn-primary" id="never-go" type="button">Stop these emails</button>
@@ -135,6 +155,11 @@
         <h2 id="asking-title">Asking by email</h2>
         <p class="hint">These agents asked to join your account. Accept one you know; it signs its part, then waits for your passkey.</p>
         <ul class="items" id="asking-list" aria-labelledby="asking-title"></ul>
+      </div>
+      <div class="stack" id="held" hidden>
+        <h2 id="held-title">Reserved for you</h2>
+        <p class="hint">Names held for your email. Make a setup code to set up an agent with one; only that code can take the name.</p>
+        <ul class="items" id="held-list" aria-labelledby="held-title"></ul>
       </div>
       <ul class="items" id="agent-list" aria-labelledby="agents-title"></ul>
       <p class="hint" id="agents-empty" hidden>No agents yet. Add one with a code from here.</p>

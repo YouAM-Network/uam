@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from uam.db.crud import owner_links as crud
 from uam.db.crud import owners as owner_crud
-from uam.db.models import Agent, Owner, OwnerLink, OwnerPasskey, OwnerUnlink
+from uam.db.models import Agent, Owner, OwnerLink, OwnerPasskey, OwnerUnlink, Reservation
 from uam.protocol.crypto import deserialize_verify_key, sign_message
 from uam.protocol.didkey import ED25519, encode_did_key
 from uam.protocol.links import (
@@ -130,9 +130,11 @@ def view(link: OwnerLink, now: datetime) -> dict[str, Any]:
 
 
 async def make_code(
-    session: AsyncSession, vault: EmailVault, owner: Owner, kind: str, count: int = 1
+    session: AsyncSession, vault: EmailVault, owner: Owner, kind: str, count: int = 1,
+    *, reservation_id: int | None = None,
 ) -> dict[str, Any]:
-    """A code for one agent (10 minutes) or for up to 25 (30 minutes)."""
+    """A code for one agent (10 minutes) or for up to 25 (30 minutes). A
+    setup code for a reserved name (*reservation_id*) is for that name only."""
     if owner.owner_id is None:
         raise PasskeyError(409, "no_passkey", "Add a passkey first.")
     now = service.utcnow()
@@ -140,7 +142,7 @@ async def make_code(
     code = new_link_code()
     await crud.add_code(
         session, owner_pk=owner.id, kind=kind, code_hash=vault.link_code_hash(code),
-        now=now, expires_at=expires_at, max_uses=count,
+        now=now, expires_at=expires_at, max_uses=count, reservation_id=reservation_id,
     )
     await owner_crud.audit(session, owner.id, "code_made", {"kind": kind, "count": count})
     await session.commit()
@@ -180,6 +182,10 @@ async def start(
     head = await owner_crud.key_log_head(session, row.owner_pk)
     if owner is None or owner.status != "active" or owner.owner_id is None or head is None:
         raise _bad_code()
+    if row.reservation_id is not None:  # a code for a reserved name is for that name only
+        held = await session.get(Reservation, row.reservation_id)
+        if held is None or held.address != address:
+            raise _bad_code()
     if row.kind == "setup" and service._aware(agent.created_at) <= service._aware(row.created_at):
         raise PasskeyError(
             409, "needs_link_code",

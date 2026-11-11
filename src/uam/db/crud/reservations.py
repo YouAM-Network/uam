@@ -238,3 +238,45 @@ async def count_active_reservations_by_ip(
     )
     result = await session.execute(stmt)
     return result.scalar_one()
+
+
+async def by_token_hash(session: AsyncSession, token_hash: str) -> Reservation | None:
+    """The reservation a confirmation link's token names (P2s-2)."""
+    return await session.scalar(
+        select(Reservation).where(Reservation.token_hash == token_hash)
+    )
+
+
+async def held_for(
+    session: AsyncSession, email_hmacs: list[str], now: datetime
+) -> list[Reservation]:
+    """Live reservations held for any of *email_hmacs*, oldest first."""
+    if not email_hmacs:
+        return []
+    result = await session.execute(
+        select(Reservation)
+        .where(
+            Reservation.email_hmac.in_(email_hmacs),  # type: ignore[union-attr]
+            Reservation.status == "reserved",
+            Reservation.expires_at > now,
+            Reservation.deleted_at.is_(None),  # type: ignore[union-attr]
+        )
+        .order_by(Reservation.id)
+    )
+    return list(result.scalars())
+
+
+async def mark_claimed(session: AsyncSession, reservation_id: int, now: datetime) -> bool:
+    """Claim a live reservation for an agent registering its name; False if
+    it was claimed or expired a moment ago."""
+    result = await session.execute(
+        update(Reservation)
+        .where(
+            Reservation.id == reservation_id,
+            Reservation.status == "reserved",
+            Reservation.expires_at > now,
+        )
+        .values(status="claimed", claimed_at=now)
+        .execution_options(synchronize_session=False)
+    )
+    return result.rowcount == 1

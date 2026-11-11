@@ -211,6 +211,7 @@ const state = {
   me: null, email: "", pending: null, opener: null, busy: false, timer: 0,
   links: [], skipped: new Set(), poll: 0,
   request: null, requestId: null, requestTimer: 0, never: "", // an agent asking by email (P2s-3)
+  reservation: null, reservationId: null, made: false, // a name reserved with an email (P2s-2)
 };
 
 async function api(path, body) {
@@ -268,7 +269,7 @@ function on(el, event, problemEl, handler) {
 function show(screen) {
   const screens = {
     loading: $("loading"), signin: $("signin"), code: $("code"), account: $("account"),
-    request: $("request"), never: $("never"),
+    request: $("request"), never: $("never"), reserve: $("reserve"),
   };
   for (const [name, el] of Object.entries(screens)) el.hidden = name !== screen;
 }
@@ -362,6 +363,10 @@ async function loadAccount() {
   state.me = me.data;
   // A session opened from a request email only sees that request.
   if (me.data.request || state.requestId) return loadRequest(me.data.request ?? state.requestId);
+  // One opened from a reservation email only sets up that name.
+  if (me.data.reservation || state.reservationId) {
+    return loadReservation(me.data.reservation ?? state.reservationId);
+  }
   $("who-email").textContent = me.data.email;
   $("who-email").title = me.data.email; // the header may shorten a long one
   const first = !me.data.owner_id;
@@ -481,9 +486,23 @@ async function declineAsking(request) {
   await afterChange(`Declined ${request.agent}.`);
 }
 
+function heldItem(held) {
+  const li = document.createElement("li");
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  actions.append(quiet("Make a setup code", () => makeNamedCode(held, $("agents-status"))));
+  li.append(text("span", "name", held.address),
+    foot(text("span", "meta", `Held for you until ${startsOn(held.expiresAt)}`), actions));
+  return li;
+}
+
 async function loadAgents() {
   const r = await api("/api/owner/links");
   if (!r.ok) throw new Error(`links: ${r.status}`);
+  const kept = await api("/api/owner/reservations");
+  const held = kept.ok ? kept.data.reservations ?? [] : [];
+  $("held-list").replaceChildren(...held.map(heldItem));
+  $("held").hidden = !held.length;
   const asked = await api("/api/owner/requests");
   const asking = asked.ok ? (asked.data.requests ?? []).filter((q) => q.state === "open") : [];
   $("asking-list").replaceChildren(...asking.map(askingItem));
@@ -496,7 +515,7 @@ async function loadAgents() {
   $("agent-list").replaceChildren(...await Promise.all(live.map(agentItem)));
   $("waiting").hidden = !waiting.length;
   $("agent-list").hidden = !live.length;
-  $("agents-empty").hidden = Boolean(waiting.length || live.length || asking.length);
+  $("agents-empty").hidden = Boolean(waiting.length || live.length || asking.length || held.length);
   // One main button: approving when something waits, else adding an agent.
   $("add-agent").classList.toggle("btn-primary", !waiting.length);
   $("add-agent").classList.toggle("btn-quiet", Boolean(waiting.length));
@@ -591,8 +610,25 @@ async function makeCode() {
   openSheet($("sheet-code-made"), null, $("made-title"));
 }
 
+// A setup code for a reserved name: only an agent registering that name can use it.
+async function makeNamedCode(held, statusEl) {
+  const r = await api(`/api/owner/reservations/${held.id}/code`, {});
+  if (!r.ok) return say(statusEl, r.data.detail ?? AGAIN);
+  say(statusEl, "");
+  $("made-code").textContent = r.data.code;
+  $("made-how").textContent = `On the computer the agent runs on, run this and type the code when it asks. Only an agent named ${r.data.name} can use it.`;
+  $("made-command").textContent = `uam init --setup --name ${r.data.name}`;
+  $("made-when").textContent = `Works once, until ${startsOn(r.data.expiresAt)}. Then approve the agent from your account.`;
+  openSheet($("sheet-code-made"), null, $("made-title"));
+}
+
 async function codeDone() {
   closeSheet(false);
+  if (state.reservation) {
+    state.made = true;
+    renderReservation(state.reservation);
+    return $("reserve-title").focus();
+  }
   await afterChange("");
 }
 
@@ -736,6 +772,12 @@ async function added(p) {
   state.pending = null;
   closeSheet(false);
   if (state.request) return acceptRequest(); // the first passkey was made to accept
+  if (state.reservation) { // the first passkey was made to get a setup code
+    const me = await api("/api/owner/me");
+    if (me.ok) state.me = me.data;
+    renderReservation(state.reservation);
+    return makeNamedCode(state.reservation, $("reserve-status"));
+  }
   await loadAccount();
   say($("keys-status"), `Added "${p.label}".`);
   $("keys-title").focus();
@@ -761,6 +803,8 @@ function restart() {
   closeSheet(false);
   if (state.request) {
     loadRequest(state.request.id).catch((err) => console.error(err));
+  } else if (state.reservation) {
+    $("reserve-title").focus();
   } else if (linking) {
     afterChange("").catch((err) => console.error(err));
   } else if (first) {
@@ -784,6 +828,7 @@ function openSheet(sheet, opener, focus) {
   $("scrim").hidden = false;
   $("account").inert = true;
   $("request").inert = true;
+  $("reserve").inert = true;
   if (opener && !state.opener) state.opener = opener; // the first opener is where focus returns
   focus.focus();
 }
@@ -793,6 +838,7 @@ function closeSheet(returnFocus) {
   $("scrim").hidden = true;
   $("account").inert = false;
   $("request").inert = false;
+  $("reserve").inert = false;
   const opener = state.opener;
   state.opener = null;
   if (!returnFocus) return;
@@ -800,6 +846,8 @@ function closeSheet(returnFocus) {
     opener.focus();
   } else if (!$("request").hidden) {
     $("request-title").focus();
+  } else if (!$("reserve").hidden) {
+    $("reserve-title").focus();
   } else {
     ($("keys").hidden ? $("first-title") : $("agents-title")).focus();
   }
@@ -920,11 +968,11 @@ async function requestGo() {
 }
 
 async function openAccount() {
-  // A request email's session only finishes the request: seeing the
+  // An email link's session only finishes its request or name: seeing the
   // account needs a normal sign-in.
   state.request = null;
   state.requestId = null;
-  if (state.me?.request) {
+  if (state.me?.request || state.me?.reservation) {
     const email = state.me.email;
     await api("/api/owner/sign-out", {});
     showSignIn();
@@ -951,6 +999,66 @@ async function openFromEmail(token) {
   state.requestId = r.data.request.id;
   await loadAccount();
   $("request-title").focus();
+}
+
+// ---- a name reserved with an email (P2s-2)
+
+async function loadReservation(id) {
+  const r = await api("/api/owner/reservations");
+  const held = r.ok ? (r.data.reservations ?? []).find((x) => x.id === id) : null;
+  if (!held) return reservationGone("This name is no longer reserved. It may have expired, or an agent has it now.");
+  renderReservation(held);
+  show("reserve");
+}
+
+function renderReservation(held) {
+  state.reservation = held;
+  const fresh = !state.me.owner_id;
+  $("reserve-title").textContent = state.made ? `Set up ${held.name}` : `${held.name} is reserved for you`;
+  $("reserve-lede").textContent = state.made
+    ? `Use the code on the computer ${held.name} runs on. Once it's set up, approve it from your YouAM account.`
+    : fresh
+      ? `Make a passkey to keep it, then you get a setup code for the agent. There's no password: your device asks for Face ID, a fingerprint or your PIN.`
+      : "Make a setup code, then set up the agent with it.";
+  const li = document.createElement("li");
+  li.append(text("span", "name", held.address),
+    text("span", "meta", `Held for you until ${startsOn(held.expiresAt)}`));
+  $("reserve-item").replaceChildren(li);
+  $("reserve-form").hidden = state.made || !fresh;
+  const go = state.made ? "Open your account" : fresh ? null : "Make a setup code";
+  $("reserve-go").hidden = !go;
+  $("reserve-go").textContent = go ?? "";
+}
+
+function reservationGone(why) {
+  state.reservation = null;
+  $("reserve-title").textContent = "This link doesn't work";
+  $("reserve-lede").textContent = why;
+  $("reserve-item").replaceChildren();
+  for (const id of ["reserve-form", "reserve-go"]) $(id).hidden = true;
+  say($("reserve-status"), "");
+  show("reserve");
+  $("reserve-title").focus();
+}
+
+async function reserveGo() {
+  const held = state.reservation;
+  if (!held) return;
+  if (state.made) {
+    state.reservation = null;
+    state.reservationId = null;
+    return openAccount();
+  }
+  return makeNamedCode(held, $("reserve-status"));
+}
+
+async function openReservation(token) {
+  const r = await api("/api/owner/reservations/open", { token });
+  if (r.status === 410) return reservationGone("This name is no longer reserved. Reserve it again if it's still free.");
+  if (!r.ok) return reservationGone("Check you opened the whole link from the email.");
+  state.reservationId = r.data.reservation.id;
+  await loadAccount();
+  $("reserve-title").focus();
 }
 
 async function stopEmails() {
@@ -993,6 +1101,9 @@ function start() {
   on($("request-decline"), "click", $("request-status"), () => declineRequest(false));
   on($("request-block"), "click", $("request-status"), () => declineRequest(true));
   on($("never-go"), "click", $("never-problem"), stopEmails);
+  on($("reserve-form"), "submit", $("reserve-problem"),
+    () => createPasskey($("reserve-name"), $("reserve-problem"), $("reserve-create")));
+  on($("reserve-go"), "click", $("reserve-status"), reserveGo);
   // Agents that redeem a code show up here without a reload.
   state.poll = setInterval(refreshAgents, 10_000);
   document.addEventListener("keydown", escape);
@@ -1007,7 +1118,8 @@ function start() {
     show("never");
     return $("never-title").focus();
   }
-  const first = from.get("request") ? openFromEmail(from.get("request")) : loadAccount();
+  const first = from.get("request") ? openFromEmail(from.get("request"))
+    : from.get("reserve") ? openReservation(from.get("reserve")) : loadAccount();
   first.catch((err) => {
     if (err instanceof Stop) return;
     console.error(err);

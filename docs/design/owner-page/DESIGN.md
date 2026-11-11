@@ -85,8 +85,13 @@ Files:
 | 19 | Request done, declined, expired or cancelled | What happened | Open your account (when done), else none |
 | 20 | Stop emails about agents (from the email's link) | What it does | Stop these emails |
 | 21 | Account, agents asking by email | "Asking by email" list with Accept and Decline on each, above the agents | Add an agent |
+| 22 | Reserved name, someone new (from the email link) | The name and how long it's held; name a passkey | Create passkey and get a setup code |
+| 23 | Reserved name, an account | The name and how long it's held | Make a setup code |
+| 24 | Reserved name, code made | What to do with the code | Open your account |
+| 25 | Reserved name link that ended | Why: expired, taken, or not the whole link | none |
+| 26 | Account, names reserved for you | "Reserved for you" list with "Make a setup code" on each, above the agents | Add an agent |
 
 "Add a passkey" is a quiet button once the account has a passkey: agents are what the page is for.
 Agents that redeem a code appear without a reload (the page checks every 10 seconds while no sheet is open).
 
-The email link carries its token in the fragment (`#request=…`, `#never=…`): the server never sees it in a URL, and a mail scanner that fetches the page without running it does nothing. Opening the page shows the request (and makes the account, unfinished, if there is none); nothing is accepted, declined or stopped without a click. The script takes the fragment out of the address bar before anything else. A session opened from the link only finishes that request: "Open your account" signs it out and asks for a normal sign-in.
+The email link carries its token in the fragment (`#request=…`, `#reserve=…`, `#never=…`): the server never sees it in a URL, and a mail scanner that fetches the page without running it does nothing. Opening the page shows the request (and makes the account, unfinished, if there is none); nothing is accepted, declined or stopped without a click. The script takes the fragment out of the address bar before anything else. A session opened from the link only finishes that request, or sets up that name: "Open your account" signs it out and asks for a normal sign-in.

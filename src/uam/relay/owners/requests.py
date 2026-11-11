@@ -173,7 +173,7 @@ async def ask(
         # "Stop this agent asking": recorded, ended at once, never shown.
         row.state, row.live_for, row.ended_at = "declined", None, now
     else:
-        row.emailed = await _may_email(session, settings, email_hmac, address, now)
+        row.emailed = await may_email(session, settings, email_hmac, address, now)
     session.add(row)
     try:
         await session.flush()
@@ -200,9 +200,11 @@ async def ask(
     return reply
 
 
-async def _may_email(
-    session: AsyncSession, settings, email_hmac: str, agent: str, now: datetime
+async def may_email(
+    session: AsyncSession, settings, email_hmac: str, agent: str | None, now: datetime
 ) -> bool:
+    """Whether an email to *email_hmac* fits the limits (about *agent*, or
+    None for a reserved name). Request and reservation emails share them."""
     if await crud.opted_out(session, email_hmac, agent):
         return False
     hour = await crud.emailed_since(session, now - timedelta(hours=1), email_hmac)

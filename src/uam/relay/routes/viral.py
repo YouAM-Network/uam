@@ -74,10 +74,20 @@ async def viral_installer(request: Request):
     relay_domain = settings.relay_domain
     relay_http_url = settings.relay_http_url
 
+    if settings.owners_enabled:
+        steps = (
+            '        printf "    3. Register it so you can send messages\\n"\n'
+            '        printf "    4. Ask you, by email, to confirm you own it\\n"'
+        )
+    else:
+        steps = (
+            '        printf "    3. Reserve it and download your identity card\\n"\n'
+            '        printf "    4. Claim your address so you can send messages\\n"'
+        )
     installer = textwrap.dedent(f"""\
         #!/bin/sh
         # UAM Installer -- {relay_domain}
-        # Full interactive setup: pick a name, reserve it, claim it.
+        # Full interactive setup: pick a name and set it up.
         # Strict POSIX sh -- no bashisms.
         set -e
 
@@ -92,8 +102,7 @@ async def viral_installer(request: Request):
         printf "  This script will:\\n"
         printf "    1. Install the UAM CLI (if needed)\\n"
         printf "    2. Let you pick an agent name\\n"
-        printf "    3. Reserve it and download your identity card\\n"
-        printf "    4. Claim your address so you can send messages\\n"
+{steps}
         printf "\\n"
 
         # -----------------------------------------------------------------
@@ -188,6 +197,48 @@ async def viral_installer(request: Request):
             fi
         done
 
+    """)
+
+    if settings.owners_enabled:
+        # Owners on (P2s-2): names aren't reserved anonymously any more, so
+        # register the name and ask a person to own it by email (P2s-3).
+        rest = textwrap.dedent(f"""\
+        # -----------------------------------------------------------------
+        # Register, then ask a person to own it
+        # -----------------------------------------------------------------
+        printf "  Setting up %s...\\n" "$agent_name"
+        if ! uam init --name "$agent_name"; then
+            printf "  ERROR: Setup failed. You can retry with:\\n"
+            printf "    uam init --name %s\\n" "$agent_name"
+            exit 1
+        fi
+
+        printf "\\n"
+        printf "  Which email should confirm you own %s? (Enter to skip)\\n" "$agent_name"
+        printf "  Email: "
+        read owner_email
+        if [ -n "$owner_email" ]; then
+            uam --name "$agent_name" owner request "$owner_email" || {{
+                printf "  You can ask again later: uam owner request <email>\\n"
+            }}
+        fi
+
+        # -----------------------------------------------------------------
+        # Success
+        # -----------------------------------------------------------------
+        printf "\\n"
+        printf "  ===================================\\n"
+        printf "  Setup complete!\\n"
+        printf "  ===================================\\n"
+        printf "\\n"
+        printf "  Your agent address: %s::%s\\n" "$agent_name" "{relay_domain}"
+        printf "\\n"
+        printf "  Get started:\\n"
+        printf "    uam send hello::{relay_domain} 'Hello from %s!'\\n" "$agent_name"
+        printf "\\n"
+    """)
+    else:
+        rest = textwrap.dedent(f"""\
         # -----------------------------------------------------------------
         # Create reservation
         # -----------------------------------------------------------------
@@ -254,4 +305,4 @@ async def viral_installer(request: Request):
         printf "\\n"
     """)
 
-    return PlainTextResponse(installer, media_type="text/plain")
+    return PlainTextResponse(installer + rest, media_type="text/plain")

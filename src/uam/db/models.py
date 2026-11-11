@@ -401,8 +401,9 @@ class Owner(SQLModel, table=True):
     """A person who approves contacts for their agents (P2c-1, migration 0013).
 
     ``owner_id`` is filled once the owner's key log has an entry 0 (P2c-2).
-    ``status`` is ``active`` or ``frozen``; ``created_via`` is ``admin`` or
-    ``invite``.
+    ``status`` is ``active`` or ``frozen``; ``created_via`` is ``admin``,
+    ``signup``, ``request`` (an agent's request email) or ``reservation``
+    (a reservation email).
     """
 
     __tablename__ = "owners"
@@ -474,6 +475,18 @@ class OwnerSession(SQLModel, table=True):
         sa_column=Column(
             Integer,
             ForeignKey("owner_requests.id", ondelete="CASCADE", name="fk_owner_sessions_request"),
+            nullable=True,
+        ),
+    )
+    # Set for a session opened from a reservation email (migration 0018): it
+    # may only set up that name (P2s-2).
+    reservation_id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey(
+                "reservations.id", ondelete="CASCADE", name="fk_owner_sessions_reservation"
+            ),
             nullable=True,
         ),
     )
@@ -645,6 +658,16 @@ class OwnerCode(SQLModel, table=True):
     )
     uses: int = Field(default=0, sa_column=Column(Integer, nullable=False, server_default="0"))
     created_at: datetime = Field(default_factory=_now, sa_column=_created_at())
+    # A setup code for a reserved name (P2s-2, migration 0018): only an
+    # agent with that name can use it.
+    reservation_id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey("reservations.id", ondelete="CASCADE", name="fk_owner_codes_reservation"),
+            nullable=True,
+        ),
+    )
 
 
 class OwnerCodeTry(SQLModel, table=True):
@@ -1120,6 +1143,7 @@ class Reservation(SQLModel, table=True):
     __tablename__ = "reservations"
     __table_args__ = (
         UniqueConstraint("address", "status", name="uq_reservation_address_status"),
+        UniqueConstraint("token_hash", name="uq_reservations_token_hash"),
     )
 
     id: int | None = Field(default=None, primary_key=True)
@@ -1155,6 +1179,26 @@ class Reservation(SQLModel, table=True):
     deleted_at: datetime | None = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
+    # Held for an email (P2s-2, migration 0018): once owners are on, a name
+    # is reserved with an email, and only a setup code from that email's
+    # account can register it. ``token_hash`` is the confirmation link's;
+    # ``owner_pk`` the account that opened it, or was given the name.
+    email_hmac: str | None = Field(
+        default=None, sa_column=Column(String, nullable=True, index=True)
+    )
+    email_enc: str | None = Field(default=None, sa_column=Column(String, nullable=True))
+    token_hash: str | None = Field(default=None, sa_column=Column(String, nullable=True))
+    emailed: bool = Field(
+        default=False, sa_column=Column(Boolean, nullable=False, server_default=false())
+    )
+    owner_pk: int | None = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey("owners.id", ondelete="SET NULL", name="fk_reservations_owner"),
+            nullable=True,
+        ),
     )
 
 

@@ -288,7 +288,8 @@ def _handle_card_vcf(agent_name: str, output_path: str | None) -> None:
     "--claim",
     type=click.Path(exists=True, dir_okay=False),
     default=None,
-    help="Claim a reserved address from a reservation vCard file.",
+    help="Claim an address reserved without an email, from its reservation vCard file. "
+    "Names reserved with an email are set up with --setup instead.",
 )
 @click.option(
     "--setup",
@@ -355,8 +356,10 @@ _CODE_TRIES = 3
 _sleep = asyncio.sleep
 
 
-def _linking_agent(agent_name: str, relay: str | None = None) -> Agent:
-    agent = Agent(agent_name, relay=relay, transport="http")
+def _linking_agent(
+    agent_name: str, relay: str | None = None, setup_code: str | None = None
+) -> Agent:
+    agent = Agent(agent_name, relay=relay, transport="http", setup_code=setup_code)
     agent._announce_owner_link = False  # these commands say it themselves
     return agent
 
@@ -408,9 +411,20 @@ def _handle_setup(name: str | None, relay: str | None) -> None:
             "To link it to your account, run `uam owner link` with a link code."
         )
 
+    key_path = Path(cfg.key_dir) / f"{agent_name}.key"
+
     async def run() -> None:
-        agent = _linking_agent(agent_name, relay)
-        await agent.connect()
+        # The code goes with registering too: a name reserved for your
+        # account registers only with a setup code made for it.
+        agent = _linking_agent(agent_name, relay, setup_code=code)
+        try:
+            await agent.connect()
+        except UAMError as exc:
+            # Never registered: drop the key this command made, so the
+            # same name can be tried again.
+            await agent.close()
+            key_path.unlink(missing_ok=True)
+            _error(f"Error: {exc}")
         try:
             click.echo(f"Initialized agent: {agent.address}")
             click.echo(f"Fingerprint: {public_key_fingerprint(agent._key_manager.verify_key)}")

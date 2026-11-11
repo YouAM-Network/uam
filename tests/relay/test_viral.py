@@ -12,6 +12,8 @@ from __future__ import annotations
 import io
 
 import pytest
+
+from tests.relay._owner_fixtures import owner_env  # noqa: F401  (a fixture)
 from PIL import Image
 from unittest.mock import patch
 
@@ -218,3 +220,46 @@ class TestViral04Confirmation:
         assert isinstance(result, bytes)
         assert len(result) > 0
         assert result[:2] == b"\xff\xd8"  # JPEG magic bytes
+
+
+class TestInstallerWithOwners:
+    """Once owners are on (P2s-2), names aren't reserved without an email:
+    the installer registers the name and asks for an owner by email."""
+
+    @pytest.fixture()
+    def script(self, owner_env, app):
+        from fastapi.testclient import TestClient
+
+        with TestClient(app) as c:
+            yield c.get("/new/install.sh").text
+
+    def test_it_registers_and_asks_for_an_owner(self, script):
+        assert 'uam init --name "$agent_name"' in script
+        assert 'owner request "$owner_email"' in script
+        assert "--claim" not in script
+        assert '"name": ' not in script  # no anonymous reservation
+        assert "Ask you, by email, to confirm you own it" in script
+
+    def test_it_still_checks_the_name_first(self, script):
+        assert "/api/v1/reserve/check/" in script
+        assert script.startswith("#!/bin/sh")
+
+    def test_it_is_valid_sh(self, script):
+        import shutil
+        import subprocess
+
+        sh = shutil.which("sh")
+        if sh is None:
+            pytest.skip("no sh")
+        assert subprocess.run([sh, "-n"], input=script, text=True).returncode == 0
+
+
+def test_the_installer_is_valid_sh(client):
+    import shutil
+    import subprocess
+
+    sh = shutil.which("sh")
+    if sh is None:
+        pytest.skip("no sh")
+    script = client.get("/new/install.sh").text
+    assert subprocess.run([sh, "-n"], input=script, text=True).returncode == 0

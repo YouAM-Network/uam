@@ -22,7 +22,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from uam.db.crud import owners as crud
 from uam.db.session import get_session
-from uam.relay.owners import links, passkeys, requests, service
+from uam.relay.owners import links, names, passkeys, requests, service
 from uam.relay.rate_limit import SlidingWindowCounter
 from uam.relay.owners.crypto import EmailVault, normalise_email
 from uam.relay.owners.page import page_router
@@ -190,6 +190,8 @@ class MeResponse(BaseModel):
     owner_id: str | None
     #: Set when this session came from an agent's request email.
     request: int | None = None
+    #: Set when this session came from a reservation email.
+    reservation: int | None = None
 
 
 #: Sign-ups one client address can start in an hour.
@@ -240,15 +242,27 @@ def build_owner_app(settings, parent: FastAPI) -> FastAPI:
         return found
 
     async def signed_in(who: service.SignedIn = Depends(any_session)) -> service.SignedIn:
-        """A full sign-in: a request email's session can't see the account."""
-        if who.request_id is not None:
+        """A full sign-in: an email link's session can't see the account."""
+        if who.scoped:
             raise HTTPException(status_code=401, detail="sign in first")
         return who
 
     async def first_passkey(who: service.SignedIn = Depends(any_session)) -> service.SignedIn:
-        """A full sign-in, or a request email's session making the account's
-        first passkey (an account with one approves with it instead)."""
-        if who.request_id is not None and who.owner.owner_id is not None:
+        """A full sign-in, or an email link's session making the account's
+        first passkey (an account with one uses it instead)."""
+        if who.scoped and who.owner.owner_id is not None:
+            raise HTTPException(status_code=401, detail="sign in first")
+        return who
+
+    async def not_a_request(who: service.SignedIn = Depends(any_session)) -> service.SignedIn:
+        """A full sign-in, or a reservation email's session."""
+        if who.request_id is not None:
+            raise HTTPException(status_code=401, detail="sign in first")
+        return who
+
+    async def not_a_reservation(who: service.SignedIn = Depends(any_session)) -> service.SignedIn:
+        """A full sign-in, or a request email's session."""
+        if who.reservation_id is not None:
             raise HTTPException(status_code=401, detail="sign in first")
         return who
 
@@ -325,6 +339,7 @@ def build_owner_app(settings, parent: FastAPI) -> FastAPI:
             status=who.owner.status,
             owner_id=who.owner.owner_id,
             request=who.request_id,
+            reservation=who.reservation_id,
         )
 
     @app.post("/api/owner/passkeys/register/start")
@@ -434,7 +449,7 @@ def build_owner_app(settings, parent: FastAPI) -> FastAPI:
     @app.post("/api/owner/link-sets/approve/start")
     async def approve_set_start(
         body: SetRequest,
-        who: service.SignedIn = Depends(any_session),
+        who: service.SignedIn = Depends(not_a_reservation),
         session: AsyncSession = Depends(get_session),
     ) -> Response:
         only = await only_links(session, who)
@@ -450,7 +465,7 @@ def build_owner_app(settings, parent: FastAPI) -> FastAPI:
     @app.post("/api/owner/link-sets/approve")
     async def approve_set(
         body: SignEntry,
-        who: service.SignedIn = Depends(any_session),
+        who: service.SignedIn = Depends(not_a_reservation),
         session: AsyncSession = Depends(get_session),
     ) -> Response:
         try:
@@ -462,6 +477,46 @@ def build_owner_app(settings, parent: FastAPI) -> FastAPI:
             return _refused(exc)
         await requests.settle_approved(session, [x["id"] for x in approved["links"]])
         return JSONResponse(approved)
+
+    # --- names held for an account (P2s-2) -------------------------------------
+
+    @app.post("/api/owner/reservations/open")
+    async def open_reservation(
+        body: TokenRequest, request: Request, session: AsyncSession = Depends(get_session)
+    ) -> Response:
+        """The page calls this with the token from the email link's fragment."""
+        try:
+            owner, row = await names.open_reservation(session, vault, body.token)
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+        response = JSONResponse({"reservation": names.view(row)})
+        current = await service.current_owner(session, request.cookies.get(COOKIE))
+        if current is not None and current.owner.id == owner.id and not current.scoped:
+            return response  # already signed in to this account: keep that session
+        token = await names.scoped_session(session, owner, row)
+        response.set_cookie(
+            COOKIE, token, max_age=int(service.SESSION_MAX.total_seconds()), path="/",
+            secure=True, httponly=True, samesite="strict",
+        )
+        return response
+
+    @app.get("/api/owner/reservations")
+    async def list_reservations(
+        who: service.SignedIn = Depends(not_a_request), session: AsyncSession = Depends(get_session)
+    ) -> dict:
+        return {"reservations": await names.list_held(session, who.owner, who.reservation_id)}
+
+    @app.post("/api/owner/reservations/{reservation_id}/code")
+    async def reservation_code(
+        reservation_id: LinkId,
+        who: service.SignedIn = Depends(not_a_request),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(await names.make_code(
+                session, vault, who.owner, reservation_id, who.reservation_id))
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
 
     # --- agents asking for an owner by email (P2s-3) ---------------------------
 
@@ -477,7 +532,7 @@ def build_owner_app(settings, parent: FastAPI) -> FastAPI:
         shown = await requests.view(session, row, service.utcnow())
         response = JSONResponse({"request": shown})
         current = await service.current_owner(session, request.cookies.get(COOKIE))
-        if current is not None and current.owner.id == owner.id and current.request_id is None:
+        if current is not None and current.owner.id == owner.id and not current.scoped:
             return response  # already signed in to this account: keep that session
         token = await requests.scoped_session(session, owner, row)
         response.set_cookie(
@@ -489,14 +544,15 @@ def build_owner_app(settings, parent: FastAPI) -> FastAPI:
     @app.post("/api/owner/requests/never")
     async def never_email(body: TokenRequest, session: AsyncSession = Depends(get_session)) -> Response:
         try:
-            await requests.never(session, body.token)
+            if not await names.never(session, body.token):
+                await requests.never(session, body.token)
         except passkeys.PasskeyError as exc:
             return _refused(exc)
-        return JSONResponse({"detail": "We won't email you about agents again."})
+        return JSONResponse({"detail": "We won't email you about agents or reserved names again."})
 
     @app.get("/api/owner/requests")
     async def list_requests(
-        who: service.SignedIn = Depends(any_session), session: AsyncSession = Depends(get_session)
+        who: service.SignedIn = Depends(not_a_reservation), session: AsyncSession = Depends(get_session)
     ) -> Response:
         try:
             return JSONResponse({"requests": await requests.list_requests(
@@ -507,7 +563,7 @@ def build_owner_app(settings, parent: FastAPI) -> FastAPI:
     @app.get("/api/owner/requests/{request_id}")
     async def get_request(
         request_id: LinkId,
-        who: service.SignedIn = Depends(any_session),
+        who: service.SignedIn = Depends(not_a_reservation),
         session: AsyncSession = Depends(get_session),
     ) -> Response:
         try:
@@ -519,7 +575,7 @@ def build_owner_app(settings, parent: FastAPI) -> FastAPI:
     @app.post("/api/owner/requests/{request_id}/accept")
     async def accept_request(
         request_id: LinkId,
-        who: service.SignedIn = Depends(any_session),
+        who: service.SignedIn = Depends(not_a_reservation),
         session: AsyncSession = Depends(get_session),
     ) -> Response:
         try:
@@ -532,7 +588,7 @@ def build_owner_app(settings, parent: FastAPI) -> FastAPI:
     async def decline_request(
         request_id: LinkId,
         body: DeclineRequest,
-        who: service.SignedIn = Depends(any_session),
+        who: service.SignedIn = Depends(not_a_reservation),
         session: AsyncSession = Depends(get_session),
     ) -> Response:
         try:

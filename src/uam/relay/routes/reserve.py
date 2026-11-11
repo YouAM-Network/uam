@@ -23,6 +23,8 @@ from uam.db.crud.reservations import (
 from uam.db.session import get_session
 from uam.protocol import InvalidAddressError, parse_address
 from uam.protocol.crypto import deserialize_verify_key
+from uam.relay.owners import names
+from uam.relay.owners.crypto import normalise_email
 from uam.relay.models import (
     ReserveCheckResponse,
     ReserveClaimRequest,
@@ -124,6 +126,11 @@ async def reserve_address(
     if not is_available:
         raise HTTPException(status_code=409, detail=f"Address already taken: {address}")
 
+    # Once owners are on, a name is held for an email's account (P2s-2):
+    # no claim token, and only that account's setup code registers it.
+    if settings.owners_enabled:
+        return await _reserve_for_email(request, session, address, body.email, client_ip)
+
     # Generate 256-bit claim token (32 bytes = 256 bits)
     claim_token = secrets.token_urlsafe(32)
 
@@ -148,6 +155,35 @@ async def reserve_address(
         expires_at=reservation.expires_at.isoformat(),
         vcf_url=vcf_url,
     )
+
+
+def _reservation_sink(state) -> names.ReservationSink:
+    sink = getattr(state, "owner_reservation_sink", None)
+    if sink is not None:
+        return sink
+    return names.log_sink if state.settings.owner_codes_to_log else names.drop_sink
+
+
+async def _reserve_for_email(
+    request: Request, session: AsyncSession, address: str, raw_email: str | None, client_ip: str
+) -> ReserveResponse:
+    if raw_email is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Reserving a name needs an email address: the name is held for its account.",
+        )
+    email = normalise_email(raw_email)
+    if email is None:
+        raise HTTPException(status_code=422, detail="not an email address")
+    state = request.app.state
+    try:
+        reply = await names.reserve(
+            session, state.settings, state.owner_vault, address, email, client_ip,
+            _reservation_sink(state),
+        )
+    except AddressAlreadyReserved:
+        raise HTTPException(status_code=409, detail=f"Address already taken: {address}") from None
+    return ReserveResponse(**reply)
 
 
 @router.post("/reserve/claim", response_model=ReserveClaimResponse)
@@ -178,7 +214,8 @@ async def reserve_claim(
 
     # Look up reservation by claim token
     reservation = await get_reservation_by_token(session, body.claim_token)
-    if reservation is None:
+    if reservation is None or reservation.email_hmac is not None:
+        # A name held for an email is set up with a setup code, not claimed.
         raise HTTPException(status_code=404, detail="Invalid claim token")
 
     # Check reservation status
@@ -249,7 +286,7 @@ async def download_reservation_card(
 ) -> Response:
     """Download the reservation card image as JPEG for a given claim token."""
     reservation = await get_reservation_by_token(session, token)
-    if reservation is None:
+    if reservation is None or reservation.email_hmac is not None:
         raise HTTPException(status_code=404, detail="Invalid claim token")
 
     settings = request.app.state.settings
@@ -291,7 +328,7 @@ async def download_reservation_vcf(
     Content-Disposition: attachment header for browser download.
     """
     reservation = await get_reservation_by_token(session, token)
-    if reservation is None:
+    if reservation is None or reservation.email_hmac is not None:
         raise HTTPException(status_code=404, detail="Invalid claim token")
 
     settings = request.app.state.settings

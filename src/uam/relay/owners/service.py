@@ -153,6 +153,14 @@ class SignedIn:
     #: Set for a session opened from an agent's request email: it may only
     #: finish that request (P2s-3).
     request_id: int | None = None
+    #: Set for a session opened from a reservation email: it may only set
+    #: up that name (P2s-2).
+    reservation_id: int | None = None
+
+    @property
+    def scoped(self) -> bool:
+        """Opened from an email link, not a full sign-in."""
+        return self.request_id is not None or self.reservation_id is not None
 
 
 async def current_owner(session: AsyncSession, token: str | None) -> SignedIn | None:
@@ -174,7 +182,8 @@ async def current_owner(session: AsyncSession, token: str | None) -> SignedIn | 
         owner_session.last_seen = now
         await session.commit()
     return SignedIn(owner=owner, session_id=owner_session.id,
-                    request_id=owner_session.request_id)
+                    request_id=owner_session.request_id,
+                    reservation_id=owner_session.reservation_id)
 
 
 async def sign_out(session: AsyncSession, signed_in: SignedIn) -> None:

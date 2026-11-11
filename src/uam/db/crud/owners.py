@@ -23,6 +23,7 @@ from uam.db.models import (
     OwnerPasskey,
     OwnerRequest,
     OwnerSession,
+    Reservation,
     WebAuthnChallenge,
 )
 
@@ -49,15 +50,16 @@ async def create_owner(
 
 
 async def drop_unfinished_signups(session: AsyncSession, before: datetime) -> int:
-    """Delete self-made accounts (a sign-up, or an agent's request email)
-    that never added a passkey, made before *before*. Returns how many.
+    """Delete self-made accounts (a sign-up, an agent's request email, or a
+    reservation email) that never added a passkey, made before *before*. Returns how many.
 
     The child rows go first, explicitly, rather than trusting ON DELETE
     CASCADE: that holds on Postgres and on our SQLite engine (it turns
     foreign keys on), but not on a SQLite connection made elsewhere."""
     ids = list((await session.execute(
         select(Owner.id).where(
-            Owner.created_via.in_(("signup", "request")), Owner.owner_id.is_(None),
+            Owner.created_via.in_(("signup", "request", "reservation")),
+            Owner.owner_id.is_(None),
             Owner.created_at < before,
         )
     )).scalars())
@@ -65,10 +67,10 @@ async def drop_unfinished_signups(session: AsyncSession, before: datetime) -> in
         return 0
     for table in (OwnerEmail, OwnerSession, OwnerAudit, WebAuthnChallenge, OwnerPasskey):
         await session.execute(delete(table).where(table.owner_pk.in_(ids)))
-    # A request that made the account stays: its email link can make it again.
-    await session.execute(
-        update(OwnerRequest).where(OwnerRequest.owner_pk.in_(ids)).values(owner_pk=None)
-    )
+    # A request or reservation that made the account stays: its email link
+    # can make it again.
+    for table in (OwnerRequest, Reservation):
+        await session.execute(update(table).where(table.owner_pk.in_(ids)).values(owner_pk=None))
     await session.execute(delete(Owner).where(Owner.id.in_(ids)))
     return len(ids)
 
@@ -154,11 +156,11 @@ async def mark_used(session: AsyncSession, code_id: int, now: datetime) -> bool:
 
 async def add_session(
     session: AsyncSession, *, owner_pk: int, token_hash: str, now: datetime, expires_at: datetime,
-    request_id: int | None = None,
+    request_id: int | None = None, reservation_id: int | None = None,
 ) -> None:
     session.add(OwnerSession(
         owner_pk=owner_pk, token_hash=token_hash, created_at=now, last_seen=now,
-        expires_at=expires_at, request_id=request_id,
+        expires_at=expires_at, request_id=request_id, reservation_id=reservation_id,
     ))
     await session.flush()
 

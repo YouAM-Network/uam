@@ -24,11 +24,11 @@ LIVE = ("started", "agent_signed", "active")
 
 async def add_code(
     session: AsyncSession, *, owner_pk: int, kind: str, code_hash: str,
-    now: datetime, expires_at: datetime, max_uses: int = 1,
+    now: datetime, expires_at: datetime, max_uses: int = 1, reservation_id: int | None = None,
 ) -> OwnerCode:
     row = OwnerCode(
         owner_pk=owner_pk, kind=kind, code_hash=code_hash, created_at=now, expires_at=expires_at,
-        max_uses=max_uses,
+        max_uses=max_uses, reservation_id=reservation_id,
     )
     session.add(row)
     await session.flush()

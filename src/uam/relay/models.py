@@ -75,6 +75,8 @@ class RegisterRequest(BaseModel):
     ] = None
     # Needed only to get a new token for an existing address.
     proof: RegisterProof | None = None
+    # A setup code from the account a reserved name is held for (P2s-2).
+    setup_code: Annotated[str | None, Field(default=None, max_length=32)] = None
 
 
 class RegisterResponse(BaseModel):
@@ -497,15 +499,21 @@ class ReserveCheckResponse(BaseModel):
 class ReserveRequest(BaseModel):
     # just the agent name part (before ::)
     name: Annotated[str, Field(max_length=64, pattern=_AGENT_NAME_PATTERN)]
+    # Required once owners are on (P2s-2): the name is held for this email's
+    # account, and set up with a setup code from it.
+    email: Annotated[str | None, Field(default=None, max_length=320)] = None
 
 
 class ReserveResponse(BaseModel):
     address: Annotated[str, Field(max_length=128, pattern=_ADDRESS_PATTERN)]
-    claim_token: Annotated[str, Field(max_length=128, pattern=_ID_PATTERN)]
     expires_at: Annotated[str, Field(max_length=64)]
+    # Only for a name reserved without an email (owners off): the claim
+    # token and its card. A name held for an email has neither.
+    claim_token: Annotated[str | None, Field(default=None, max_length=128, pattern=_ID_PATTERN)] = None
     # vcf_url allows http for local-dev relay_http_url defaults; HTTPS is
     # enforced by deployment config, not by this Pydantic field.
-    vcf_url: Annotated[str, Field(max_length=2048)]
+    vcf_url: Annotated[str | None, Field(default=None, max_length=2048)] = None
+    detail: Annotated[str | None, Field(default=None, max_length=256)] = None
 
 
 class ReserveClaimRequest(BaseModel):

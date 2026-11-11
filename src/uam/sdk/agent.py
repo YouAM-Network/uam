@@ -59,6 +59,17 @@ from uam.sdk._sync import _run_sync
 
 logger = logging.getLogger(__name__)
 
+
+def _detail(resp: httpx.Response) -> str:
+    """The relay's ``detail`` for a refusal, or the body as it came."""
+    try:
+        data = resp.json()
+    except ValueError:
+        data = None
+    detail = data.get("detail") if isinstance(data, dict) else None
+    return detail if isinstance(detail, str) else resp.text
+
+
 # How long a relay's "no, I don't write relay_meta" is believed.
 _RELAY_NO_SECONDS = 60.0
 
@@ -97,8 +108,14 @@ class Agent:
         display_name: str | None = None,
         transport: str = "websocket",
         trust_policy: str = "auto-accept",
+        setup_code: str | None = None,
     ) -> None:
-        """Create an Agent.  No I/O happens here -- call ``connect()`` to initialize."""
+        """Create an Agent.  No I/O happens here -- call ``connect()`` to initialize.
+
+        *setup_code* is a setup code from a YouAM account page. Registering
+        a name reserved for that account needs it; redeem it after
+        connecting with ``start_owner_link(code, via="setup")``.
+        """
         self._config = SDKConfig(
             name=name,
             relay_url=relay,
@@ -115,6 +132,7 @@ class Agent:
         self._token: str | None = None
         self._connected: bool = False
         self._auto_register = auto_register
+        self._setup_code = setup_code
         #: Where this agent's link to an owner stands, read on connect (P2d).
         self.owner_link: dict | None = None
         self._announce_owner_link = True
@@ -1210,6 +1228,8 @@ class Agent:
             "agent_name": self._config.name,
             "public_key": serialize_verify_key(self._key_manager.verify_key),
         }
+        if self._setup_code:
+            body["setup_code"] = self._setup_code
         url = f"{self._config.relay_url}/api/v1/register"
 
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -1226,6 +1246,8 @@ class Agent:
                     f"not prove it owns it: {address}"
                 )
 
+        if resp.status_code == 403:
+            raise UAMError(f"Registration refused: {_detail(resp)}")
         if resp.status_code != 200:
             raise UAMError(
                 f"Registration failed: {resp.status_code} {resp.text}"
