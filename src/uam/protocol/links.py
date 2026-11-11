@@ -121,6 +121,51 @@ def link_screen(body: dict[str, Any]) -> str:
     return text
 
 
+def _in_order(bodies: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A set of links for one Face ID: one owner, each agent once, by address."""
+    if not bodies:
+        raise LinkError("a set holds at least one link")
+    for body in bodies:
+        _hashed(body, LINK)
+    owners = {(b["owner"]["relay"], b["owner"]["ownerId"]) for b in bodies}
+    if len(owners) != 1:
+        raise LinkError("every link in a set is for the same owner")
+    ordered = sorted(bodies, key=lambda b: b["agent"])
+    if len({b["agent"] for b in ordered}) != len(ordered):
+        raise LinkError("a set names each agent once")
+    return ordered
+
+
+def links_screen(bodies: list[dict[str, Any]]) -> str:
+    """The sentence the owner signs to approve several links at once.
+
+    A set of one reads exactly as :func:`link_screen`. Otherwise each agent
+    is named with its words (and, for an existing agent, when it starts),
+    sorted by address, so a verifier holding one link can find its own
+    part, and the set renders the same whatever order it arrived in.
+    """
+    ordered = _in_order(bodies)
+    if len(ordered) == 1:
+        return link_screen(ordered[0])
+    parts = []
+    for body in ordered:
+        detail = " ".join(words_for(body["agentKey"]))
+        if body["via"] == "link":
+            detail += f", starts {_when(body['effectiveAt'])}"
+        parts.append(f'"{body["agent"]}" ({detail})')
+    return (
+        f"Link {len(ordered)} agents to your UAM owner account: " + ", ".join(parts) + "."
+    )
+
+
+def links_challenge(bodies: list[dict[str, Any]]) -> bytes:
+    """The WebAuthn challenge for approving a set of links, in screen order."""
+    ordered = _in_order(bodies)
+    return approval_challenge(
+        [(LINK, _hashed(body, LINK)) for body in ordered], links_screen(ordered)
+    )
+
+
 def unlink_screen(body: dict[str, Any]) -> str:
     """The sentence the owner signs to unlink an agent."""
     _hashed(body, UNLINK)

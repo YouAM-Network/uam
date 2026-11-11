@@ -14,7 +14,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, HTTPException, Path, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, Field, StrictBool
+from pydantic import BaseModel, Field, StrictBool, StrictInt, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.cors import CORSMiddleware
 from starlette.routing import Host
@@ -126,6 +126,20 @@ class SignEntry(BaseModel):
 
 class CodeRequest(BaseModel):
     kind: Literal["setup", "link"]
+    count: Annotated[StrictInt, Field(ge=1, le=links.MAX_FLEET)] = 1
+
+
+class SetRequest(BaseModel):
+    ids: Annotated[
+        list[Annotated[StrictInt, Field(ge=1)]], Field(min_length=1, max_length=links.MAX_FLEET)
+    ]
+
+    @field_validator("ids")
+    @classmethod
+    def _distinct(cls, ids: list[int]) -> list[int]:
+        if len(set(ids)) != len(ids):
+            raise ValueError("each link once")
+        return ids
 
 
 class PrivateRequest(BaseModel):
@@ -309,7 +323,9 @@ def build_owner_app(settings, parent: FastAPI) -> FastAPI:
         session: AsyncSession = Depends(get_session),
     ) -> Response:
         try:
-            return JSONResponse(await links.make_code(session, vault, who.owner, body.kind))
+            return JSONResponse(
+                await links.make_code(session, vault, who.owner, body.kind, body.count)
+            )
         except passkeys.PasskeyError as exc:
             return _refused(exc)
 
@@ -340,6 +356,32 @@ def build_owner_app(settings, parent: FastAPI) -> FastAPI:
         try:
             return JSONResponse(
                 await links.approve(session, settings, who.owner, link_id, body.model_dump())
+            )
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.post("/api/owner/link-sets/approve/start")
+    async def approve_set_start(
+        body: SetRequest,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(
+                await links.approve_set_start(session, settings, who.owner, body.ids)
+            )
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.post("/api/owner/link-sets/approve")
+    async def approve_set(
+        body: SignEntry,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(
+                await links.approve_set(session, settings, who.owner, body.model_dump())
             )
         except passkeys.PasskeyError as exc:
             return _refused(exc)

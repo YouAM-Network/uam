@@ -89,13 +89,14 @@ def banner(status: dict[str, Any]) -> str | None:
         return (
             f"This agent is being linked to the UAM owner account {account}. "
             f"It starts on {_when(status['effectiveAt'])}. If you didn't do this, "
-            "contact your relay's admin before then."
+            "run `uam owner cancel` before then."
         )
     if state == "waiting_for_owner":
         words = " ".join(status.get("words", []))
         return (
             f"This agent asked to be linked to the UAM owner account {account} and is "
-            f"waiting for the owner to approve it. Its words are {words}."
+            f"waiting for the owner to approve it. Its words are {words}. "
+            "To stop it, run `uam owner cancel`."
         )
     return None
 
@@ -158,6 +159,17 @@ async def send_signature(relay_url: str, token: str, link_hash: str, signature: 
         resp = await client.post(
             f"{relay_url}/api/v1/owner/link/sign",
             json={"hash": link_hash, "signature": signature},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    if resp.status_code != 200:
+        raise _refusal(resp)
+
+
+async def cancel(relay_url: str, token: str) -> None:
+    """End this agent's link before it starts."""
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            f"{relay_url}/api/v1/owner/link/cancel",
             headers={"Authorization": f"Bearer {token}"},
         )
     if resp.status_code != 200:

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from uam.db.models import (
@@ -24,10 +24,11 @@ LIVE = ("started", "agent_signed", "active")
 
 async def add_code(
     session: AsyncSession, *, owner_pk: int, kind: str, code_hash: str,
-    now: datetime, expires_at: datetime,
+    now: datetime, expires_at: datetime, max_uses: int = 1,
 ) -> OwnerCode:
     row = OwnerCode(
-        owner_pk=owner_pk, kind=kind, code_hash=code_hash, created_at=now, expires_at=expires_at
+        owner_pk=owner_pk, kind=kind, code_hash=code_hash, created_at=now, expires_at=expires_at,
+        max_uses=max_uses,
     )
     session.add(row)
     await session.flush()
@@ -47,11 +48,18 @@ async def newest_code_id(session: AsyncSession, owner_pk: int, kind: str) -> int
 
 
 async def use_code(session: AsyncSession, code_id: int, now: datetime, agent: str) -> bool:
-    """Use a code up, atomically; False if something else already did."""
+    """Take one use of a code, atomically; False if none are left.
+
+    ``used_at`` is set when the last use is taken, so a used-up code reads
+    the same whether it was for one agent or a fleet."""
+    last = OwnerCode.uses + 1 >= OwnerCode.max_uses
     result = await session.execute(
         update(OwnerCode)
         .where(OwnerCode.id == code_id, OwnerCode.used_at.is_(None))
-        .values(used_at=now, used_by=agent)
+        .values(
+            uses=OwnerCode.uses + 1, used_by=agent,
+            used_at=case((last, now), else_=OwnerCode.used_at),
+        )
     )
     return result.rowcount == 1
 

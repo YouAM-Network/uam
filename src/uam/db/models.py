@@ -628,6 +628,12 @@ class OwnerCode(SQLModel, table=True):
     expires_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     used_at: datetime | None = Field(default=None, sa_column=_maybe_time())
     used_by: str | None = Field(default=None, sa_column=Column(String, nullable=True))
+    # A fleet code (P2d-4, migration 0016) can be redeemed by up to max_uses
+    # agents; used_at is set when the last use is taken.
+    max_uses: int = Field(
+        default=1, sa_column=Column(Integer, nullable=False, server_default="1")
+    )
+    uses: int = Field(default=0, sa_column=Column(Integer, nullable=False, server_default="0"))
     created_at: datetime = Field(default_factory=_now, sa_column=_created_at())
 
 
@@ -686,6 +692,9 @@ class OwnerLink(SQLModel, table=True):
     )
     created_at: datetime = Field(default_factory=_now, sa_column=_created_at())
     approved_at: datetime | None = Field(default=None, sa_column=_maybe_time())
+    # The hashes approved together in one Face ID, in screen order (JSON);
+    # null when the link was approved on its own (migration 0016).
+    approval_set: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     ended_at: datetime | None = Field(default=None, sa_column=_maybe_time())
 
 

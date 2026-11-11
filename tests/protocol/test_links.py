@@ -21,6 +21,8 @@ from uam.protocol.links import (
     agent_sig_message,
     link_challenge,
     link_screen,
+    links_challenge,
+    links_screen,
     relay_sig_message,
     sign_as_agent,
     unlink_challenge,
@@ -218,3 +220,56 @@ def test_a_relay_attests_with_its_own_prefix():
     assert relay_sig_message("UamOwnerUnlink", "h" * 43) == (
         b"UAM-RELAY-SIG-v1\nUamOwnerUnlink\n" + b"h" * 43
     )
+
+
+# --- a set of links, one passkey (P2d-4, DEC-006) -----------------------------
+
+OTHER = SigningKey(b"\x08" * 32)
+OTHER_KEY = encode_did_key(ED25519, bytes(OTHER.verify_key))
+
+
+def test_a_set_of_one_reads_exactly_like_a_single_link():
+    for body in (_link(), _link(via="link", effectiveAt="2026-11-16T15:04:59Z")):
+        assert links_screen([body]) == link_screen(body)
+        assert links_challenge([body]) == link_challenge(body)
+
+
+def test_a_set_names_every_agent_with_its_words_sorted_by_address():
+    zed = _link(agent="zed::youam.network", agentKey=OTHER_KEY)
+    bob = _link()
+    screen = links_screen([zed, bob])
+    assert screen == (
+        "Link 2 agents to your UAM owner account: "
+        f'"bob::youam.network" ({" ".join(words_for(AGENT_KEY))}), '
+        f'"zed::youam.network" ({" ".join(words_for(OTHER_KEY))}).'
+    )
+    assert links_screen([bob, zed]) == screen
+
+
+def test_existing_agents_in_a_set_each_say_when_they_start():
+    bob = _link(via="link", effectiveAt="2026-11-16T15:04:59Z")
+    zed = _link(agent="zed::youam.network", agentKey=OTHER_KEY)
+    screen = links_screen([bob, zed])
+    assert f'"bob::youam.network" ({" ".join(words_for(AGENT_KEY))}, starts 16 Nov 2026 at 15:04 UTC)' in screen
+    assert f'"zed::youam.network" ({" ".join(words_for(OTHER_KEY))})' in screen
+
+
+def test_the_set_challenge_covers_every_hash_in_screen_order():
+    zed = _link(agent="zed::youam.network", agentKey=OTHER_KEY)
+    bob = _link()
+    assert links_challenge([zed, bob]) == approval_challenge(
+        [("UamOwnerLink", object_hash(bob)), ("UamOwnerLink", object_hash(zed))],
+        links_screen([zed, bob]),
+    )
+
+
+@pytest.mark.parametrize("bodies", [
+    [],
+    [_link(), _link()],  # the same agent twice
+    [_link(), _link(agent="zed::youam.network", agentKey=OTHER_KEY,
+                    owner={**OWNER, "ownerId": "C" * 22})],  # two owners
+    [_link(), _unlink()],
+])
+def test_a_set_that_does_not_fit_is_refused(bodies):
+    with pytest.raises(LinkError):
+        links_screen(bodies)

@@ -369,7 +369,7 @@ def _owner_unlink(body: dict[str, Any]) -> None:
     _object({
         "type": _const("UamOwnerUnlink"), "v": _const(1), "owner": _owner_ref,
         "agent": _address, "agentKey": _agent_key,
-        "reason": _one_of("owner", "admin", "relink"),
+        "reason": _one_of("owner", "admin", "relink", "authority", "lapsed"),
         "validFrom": _time, "nonce": _nonce,
     }, dict(_EXT))(body, "$")
 

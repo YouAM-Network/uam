@@ -14,6 +14,7 @@ closes the agent's inbound policy.
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import os
 from collections.abc import Callable
@@ -34,6 +35,8 @@ from uam.protocol.links import (
     LinkError,
     link_challenge,
     link_screen,
+    links_challenge,
+    links_screen,
     relay_sig_message,
     unlink_challenge,
     unlink_screen,
@@ -57,16 +60,23 @@ log = logging.getLogger("uam.relay.owners")
 
 KINDS = ("setup", "link")
 CODE_TTL = timedelta(minutes=10)
+#: A code for several agents (a fleet) lasts longer: they're set up in turn.
+FLEET_CODE_TTL = timedelta(minutes=30)
+MAX_FLEET = 25
 TRIES = 5
 TRY_WINDOW = timedelta(minutes=10)
 LINK_DELAY = timedelta(hours=72)
 
-#: Told when an existing agent asks to be linked: (owner_pk, link view).
-#: P2g sends the owner an email with a cancel link instead.
+#: Told when an existing agent asks to be linked, and when an agent
+#: cancels its own link: (owner_pk, link view). P2g sends the owner an
+#: email instead (with a cancel link for the first).
 LinkNotice = Callable[[int, dict[str, Any]], None]
 
 
 def log_notice(owner_pk: int, link: dict[str, Any]) -> None:
+    if link["state"] == "cancelled":
+        log.warning("owner %d: agent %s cancelled its link", owner_pk, link["agent"])
+        return
     log.warning(
         "owner %d: agent %s asked to be linked; starts %s unless cancelled",
         owner_pk, link["agent"], link["effectiveAt"],
@@ -119,19 +129,23 @@ def view(link: OwnerLink, now: datetime) -> dict[str, Any]:
 
 
 async def make_code(
-    session: AsyncSession, vault: EmailVault, owner: Owner, kind: str
+    session: AsyncSession, vault: EmailVault, owner: Owner, kind: str, count: int = 1
 ) -> dict[str, Any]:
+    """A code for one agent (10 minutes) or for up to 25 (30 minutes)."""
     if owner.owner_id is None:
         raise PasskeyError(409, "no_passkey", "Add a passkey first.")
     now = service.utcnow()
+    expires_at = now + (FLEET_CODE_TTL if count > 1 else CODE_TTL)
     code = new_link_code()
     await crud.add_code(
         session, owner_pk=owner.id, kind=kind, code_hash=vault.link_code_hash(code),
-        now=now, expires_at=now + CODE_TTL,
+        now=now, expires_at=expires_at, max_uses=count,
     )
-    await owner_crud.audit(session, owner.id, "code_made", {"kind": kind})
+    await owner_crud.audit(session, owner.id, "code_made", {"kind": kind, "count": count})
     await session.commit()
-    return {"code": show_code(code), "kind": kind, "expiresAt": _stamp(now + CODE_TTL)}
+    return {
+        "code": show_code(code), "kind": kind, "count": count, "expiresAt": _stamp(expires_at),
+    }
 
 
 # --- the agent's side -----------------------------------------------------------
@@ -234,6 +248,31 @@ async def agent_sign(
     return {"state": "waiting_for_owner"}
 
 
+async def agent_cancel(session: AsyncSession, agent: Agent, notice: LinkNotice) -> dict[str, Any]:
+    """Whoever runs the agent ends a link that hasn't started yet.
+
+    The agent's token is enough: it only narrows. Once the link is in
+    effect the agent can't end it (an agent never unlinks itself)."""
+    link = await crud.live_link(session, agent.address)
+    if link is None:
+        raise PasskeyError(404, "no_link", "This agent has no link to cancel.")
+    now = service.utcnow()
+    if link.state == "active" and service._aware(link.effective_at) <= now:
+        raise PasskeyError(
+            409, "not_cancellable", "This link is in effect. Only its owner can unlink it.",
+        )
+    if not await crud.move_link(session, link.id, (link.state,), state="cancelled",
+                                live_for=None, ended_at=now):
+        await session.rollback()
+        raise PasskeyError(409, "not_cancellable", "This link changed. Check its state again.")
+    await owner_crud.audit(session, link.owner_pk, "link_cancelled", {"link": link.id, "by": "agent"})
+    await session.commit()
+    await session.refresh(link)
+    if link.agent_signature is not None:  # the owner never saw an unsigned one
+        notice(link.owner_pk, view(link, now))
+    return {"state": "cancelled"}
+
+
 _AGENT_STATES = {
     "started": "waiting_for_agent", "agent_signed": "waiting_for_owner",
     "cancelled": "cancelled", "unlinked": "unlinked",
@@ -283,6 +322,15 @@ async def _ask(
     session: AsyncSession, settings, owner: Owner, purpose: str, link: OwnerLink,
     body: dict[str, Any], screen: str, challenge: bytes,
 ) -> dict[str, Any]:
+    asked = await _challenge(session, settings, owner, purpose, body, screen, challenge)
+    return {"link": link.id, "body": canonical(body).decode(), "hash": object_hash(body), **asked}
+
+
+async def _challenge(
+    session: AsyncSession, settings, owner: Owner, purpose: str, body: dict[str, Any],
+    screen: str, challenge: bytes,
+) -> dict[str, Any]:
+    """Store a challenge for *body* (its ``owner.keysHash`` names who may sign)."""
     signers = await _signers(session, owner, body["owner"]["keysHash"])
     if not signers:
         raise PasskeyError(409, "no_passkey", "None of your passkeys can approve this.")
@@ -290,10 +338,13 @@ async def _ask(
     text = canonical(body).decode()
     encoded = _b64u(challenge)
     # A link's challenge comes from its body alone, so asking again gives
-    # the same one: renew that row rather than add a second.
-    old = await owner_crud.find_challenge(session, owner.id, purpose, encoded)
+    # the same one: renew that row rather than add a second. A set of one
+    # link has the same challenge as the link alone; the newest ask decides
+    # which route may use it.
+    old = await owner_crud.find_challenge(session, owner.id, None, encoded)
     if old is not None:
         old.used_at, old.created_at, old.expires_at = None, now, now + CHALLENGE_TTL
+        old.purpose, old.body, old.screen = purpose, text, screen
     else:
         await owner_crud.add_challenge(
             session, owner_pk=owner.id, purpose=purpose, challenge=encoded, now=now,
@@ -301,9 +352,8 @@ async def _ask(
         )
     await session.commit()
     return {
-        "link": link.id, "body": text, "hash": object_hash(body), "screen": screen,
-        "challenge": encoded, "allowCredentials": [p.credential_id for p in signers],
-        "rpId": settings.rp_id,
+        "screen": screen, "challenge": encoded,
+        "allowCredentials": [p.credential_id for p in signers], "rpId": settings.rp_id,
     }
 
 
@@ -371,6 +421,74 @@ async def approve(
     return view(link, now)
 
 
+# --- a set of links, one passkey (P2d-4) ---------------------------------------
+
+
+async def _waiting_set(session: AsyncSession, owner: Owner, ids: list[int]) -> list[OwnerLink]:
+    found = []
+    for link_id in ids:
+        link = await _owned(session, owner, link_id)
+        if link.state != "agent_signed":
+            raise PasskeyError(409, "not_waiting", "One of these links isn't waiting for you.")
+        found.append(link)
+    return sorted(found, key=lambda link: link.agent_address)
+
+
+async def approve_set_start(
+    session: AsyncSession, settings, owner: Owner, ids: list[int]
+) -> dict[str, Any]:
+    """One challenge over several waiting links and one sentence naming them."""
+    found = await _waiting_set(session, owner, ids)
+    bodies = [parse_body(link.body) for link in found]
+    keys_hashes = {body["owner"]["keysHash"] for body in bodies}
+    if len(keys_hashes) != 1:
+        raise PasskeyError(
+            409, "approve_one_by_one",
+            "Your passkeys changed while these were waiting. Approve them one by one.",
+        )
+    # What the challenge row keeps: the links, in screen order, and the
+    # key log entry whose passkeys may sign.
+    held = {
+        "owner": {"keysHash": keys_hashes.pop()},
+        "links": [link.id for link in found], "hashes": [link.hash for link in found],
+    }
+    asked = await _challenge(session, settings, owner, "links", held, links_screen(bodies),
+                             links_challenge(bodies))
+    return {
+        "links": held["links"], "bodies": [link.body for link in found],
+        "hashes": held["hashes"], **asked,
+    }
+
+
+async def approve_set(
+    session: AsyncSession, settings, owner: Owner, assertion: dict[str, str]
+) -> dict[str, Any]:
+    """Approve every link in the set, or none of them."""
+    row, held, signer = await _assert(session, settings, owner, "links", assertion)
+    try:
+        found = await _waiting_set(session, owner, held["links"])
+    except PasskeyError:
+        await session.rollback()
+        raise PasskeyError(409, "not_waiting", "One of these links isn't waiting for you.") from None
+    now = service.utcnow()
+    kept = json.dumps(held["hashes"]) if len(found) > 1 else None
+    for link in found:
+        if not await crud.move_link(
+            session, link.id, ("agent_signed",), state="active", owner_signer=signer.did,
+            authenticator_data=assertion["authenticatorData"],
+            client_data_json=assertion["clientDataJSON"], signature=assertion["signature"],
+            screen=row.screen, approved_at=now, approval_set=kept,
+        ):
+            await session.rollback()
+            raise PasskeyError(409, "not_waiting", "One of these links isn't waiting for you.")
+        await owner_crud.audit(session, owner.id, "link_approved",
+                               {"link": link.id, "set": len(found)})
+    await session.commit()
+    for link in found:
+        await session.refresh(link)
+    return {"links": [view(link, now) for link in found]}
+
+
 async def cancel(session: AsyncSession, owner: Owner, link_id: int) -> dict[str, Any]:
     """End a link that hasn't started yet. No passkey: it only narrows."""
     link = await _owned(session, owner, link_id)
@@ -381,7 +499,7 @@ async def cancel(session: AsyncSession, owner: Owner, link_id: int) -> dict[str,
         session, link.id, (link.state,), state="cancelled", live_for=None, ended_at=now
     ):
         raise PasskeyError(409, "not_cancellable", "Only a link that hasn't started can be cancelled.")
-    await owner_crud.audit(session, owner.id, "link_cancelled", {"link": link.id})
+    await owner_crud.audit(session, owner.id, "link_cancelled", {"link": link.id, "by": "owner"})
     await session.commit()
     await session.refresh(link)
     return view(link, now)

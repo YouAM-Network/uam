@@ -515,6 +515,17 @@ class Agent:
         signature = sign_as_agent(offer.body, self._key_manager.signing_key)
         await _owner_link.send_signature(self._config.relay_url, self._token, offer.hash, signature)
 
+    async def cancel_owner_link(self) -> None:
+        """Cancel this agent's link to an owner before it starts.
+
+        For whoever runs the agent: a link they didn't make can be stopped
+        until it takes effect. After that only the owner can unlink it.
+        Raises :class:`UAMError` if there's no such link.
+        """
+        await self._ensure_connected()
+        await _owner_link.cancel(self._config.relay_url, self._token)
+        self.owner_link = {"state": "cancelled"}
+
     async def _read_owner_link(self) -> None:
         try:
             self.owner_link = await _owner_link.fetch_status(

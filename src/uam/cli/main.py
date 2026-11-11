@@ -442,9 +442,16 @@ def owner() -> None:
 
 
 @owner.command("link")
+@click.option("--all", "every", is_flag=True,
+              help="Link every agent set up here on this relay, with one code for all of them.")
 @click.pass_context
-def owner_link(ctx: click.Context) -> None:
+def owner_link(ctx: click.Context, every: bool) -> None:
     """Link an existing agent, with a link code from your account page (starts after 72 hours)."""
+    if every:
+        if ctx.obj.get("name"):
+            _error("Use --name or --all, not both.")
+        _link_all()
+        return
     agent_name = _owner_agent_name(ctx)
     code = _ask_code(_LINK_PROMPT)
 
@@ -465,6 +472,79 @@ def owner_link(ctx: click.Context) -> None:
         asyncio.run(run())
     except UAMError as exc:
         _error(f"Error: {exc}")
+
+
+def _agents_here() -> tuple[list[str], list[str]]:
+    """Names of the agents set up here: (registered on this relay, not)."""
+    cfg = SDKConfig(name="_probe")
+    km = KeyManager(cfg.key_dir)
+    names = sorted(path.stem for path in Path(cfg.key_dir).glob("*.key"))
+    here = [n for n in names if km.load_token(n, cfg.relay_url) is not None]
+    return here, [n for n in names if n not in here]
+
+
+def _link_all() -> None:
+    """`uam owner link --all`: one code (made for several agents) for each agent here."""
+    here, elsewhere = _agents_here()
+    if not here:
+        _error("No agent here is registered on this relay. Run `uam init --setup` first.")
+    code = _ask_code(_LINK_PROMPT)
+    for name in elsewhere:
+        click.echo(f"{name}: not registered on this relay, skipped")
+
+    async def link_one(name: str) -> tuple[str, str | None, str | None]:
+        """(address, words if it worked, why if it didn't)."""
+        agent = _linking_agent(name)
+        await agent.connect()
+        try:
+            offer = await agent.start_owner_link(code, via="link")
+            await agent.sign_owner_link(offer)
+            return agent.address, " ".join(offer.words), None
+        except UAMError as exc:
+            return agent.address, None, str(exc)
+        finally:
+            await agent.close()
+
+    async def run() -> tuple[int, int]:
+        linked = 0
+        for name in here:  # one at a time: each takes one use of the code
+            address, words, failed = await link_one(name)
+            click.echo(f"{address}: {words or failed}")
+            linked += words is not None
+        return linked, len(here)
+
+    try:
+        linked, tried = asyncio.run(run())
+    except UAMError as exc:
+        _error(f"Error: {exc}")
+    noun = "agent is" if linked == 1 else "agents are"
+    click.echo(
+        f"{linked} {noun} waiting. On your account page, check each one's words, then "
+        "approve them together with your passkey. Each starts 72 hours after it asked."
+    )
+    if linked != tried:
+        sys.exit(1)
+
+
+@owner.command("cancel")
+@click.pass_context
+def owner_cancel(ctx: click.Context) -> None:
+    """Cancel this agent's link to an owner before it starts."""
+    agent_name = _owner_agent_name(ctx)
+
+    async def run() -> None:
+        agent = _linking_agent(agent_name)
+        await agent.connect()
+        try:
+            await agent.cancel_owner_link()
+        finally:
+            await agent.close()
+
+    try:
+        asyncio.run(run())
+    except UAMError as exc:
+        _error(f"Error: {exc}")
+    click.echo("Cancelled. This agent is not linked to an owner.")
 
 
 _STATUS_LINES = {

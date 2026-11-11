@@ -444,7 +444,7 @@ const SCHEMAS: Record<string, (body: Body) => void> = {
   UamOwnerUnlink(body) {
     object({
       type: constant("UamOwnerUnlink"), v: constant(1), owner: ownerRef, agent: address,
-      agentKey, reason: oneOf("owner", "admin", "relink"), validFrom: time, nonce,
+      agentKey, reason: oneOf("owner", "admin", "relink", "authority", "lapsed"), validFrom: time, nonce,
     }, { ...EXT })(body, "$");
   },
 

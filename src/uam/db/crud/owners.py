@@ -182,15 +182,15 @@ async def add_challenge(
 
 
 async def find_challenge(
-    session: AsyncSession, owner_pk: int, purpose: str, challenge: str
+    session: AsyncSession, owner_pk: int, purpose: str | None, challenge: str
 ) -> WebAuthnChallenge | None:
-    return await session.scalar(
-        select(WebAuthnChallenge).where(
-            WebAuthnChallenge.owner_pk == owner_pk,
-            WebAuthnChallenge.purpose == purpose,
-            WebAuthnChallenge.challenge == challenge,
-        )
+    """The owner's challenge row with these bytes (for *purpose*, unless None)."""
+    query = select(WebAuthnChallenge).where(
+        WebAuthnChallenge.owner_pk == owner_pk, WebAuthnChallenge.challenge == challenge,
     )
+    if purpose is not None:
+        query = query.where(WebAuthnChallenge.purpose == purpose)
+    return await session.scalar(query)
 
 
 async def use_challenge(session: AsyncSession, challenge_id: int, now: datetime) -> bool:

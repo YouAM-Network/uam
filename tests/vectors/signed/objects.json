@@ -117,6 +117,46 @@
   "hash": "YZGh-nccSEKok2SoGPy0C8R5S4UWvGkTQYFRFyNdzdk"
  },
  {
+  "name": "owner_unlink_authority",
+  "body": {
+   "type": "UamOwnerUnlink",
+   "v": 1,
+   "owner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+    "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   },
+   "agent": "bob::youam.network",
+   "agentKey": "did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb",
+   "reason": "authority",
+   "validFrom": "2026-11-09T10:00:00Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": true,
+  "canonical": "{\"agent\":\"bob::youam.network\",\"agentKey\":\"did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb\",\"nonce\":\"nonce-0123456789ab\",\"owner\":{\"keysHash\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"ownerId\":\"CCCCCCCCCCCCCCCCCCCCCC\",\"relay\":\"youam.network\"},\"reason\":\"authority\",\"type\":\"UamOwnerUnlink\",\"v\":1,\"validFrom\":\"2026-11-09T10:00:00Z\"}",
+  "hash": "wVfrnmaXsx9DZElzEGaJ_8SryfZoHd1NWjXYE5XQ804"
+ },
+ {
+  "name": "owner_unlink_lapsed",
+  "body": {
+   "type": "UamOwnerUnlink",
+   "v": 1,
+   "owner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+    "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   },
+   "agent": "bob::youam.network",
+   "agentKey": "did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb",
+   "reason": "lapsed",
+   "validFrom": "2026-11-09T10:00:00Z",
+   "nonce": "nonce-0123456789ab"
+  },
+  "ok": true,
+  "canonical": "{\"agent\":\"bob::youam.network\",\"agentKey\":\"did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb\",\"nonce\":\"nonce-0123456789ab\",\"owner\":{\"keysHash\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"ownerId\":\"CCCCCCCCCCCCCCCCCCCCCC\",\"relay\":\"youam.network\"},\"reason\":\"lapsed\",\"type\":\"UamOwnerUnlink\",\"v\":1,\"validFrom\":\"2026-11-09T10:00:00Z\"}",
+  "hash": "S6XVk8YAa-lD7Y1q4iLUE6wiWQARkjK4JOp-iC6AwFo"
+ },
+ {
   "name": "invite_preapproved",
   "body": {
    "type": "UamInvite",
@@ -824,6 +864,24 @@
      "reason": "lost"
     }
    ]
+  },
+  "ok": false
+ },
+ {
+  "name": "unlink_unknown_reason",
+  "body": {
+   "type": "UamOwnerUnlink",
+   "v": 1,
+   "owner": {
+    "relay": "youam.network",
+    "ownerId": "CCCCCCCCCCCCCCCCCCCCCC",
+    "keysHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   },
+   "agent": "bob::youam.network",
+   "agentKey": "did:key:z6MkuJ3Skz2wwBZ68CwgQDobssnYqbMjB1o4wYHyudGLMiJb",
+   "reason": "expired",
+   "validFrom": "2026-11-09T10:00:00Z",
+   "nonce": "nonce-0123456789ab"
   },
   "ok": false
  },

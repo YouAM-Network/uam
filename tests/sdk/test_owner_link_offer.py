@@ -91,7 +91,7 @@ def test_banners_say_where_the_link_stands():
     })
     assert "a•••@example.com" in starts
     assert "13 Nov 2026 at 15:04 UTC" in starts
-    assert "didn't" in starts
+    assert "uam owner cancel" in starts
     waiting = banner({
         "state": "waiting_for_owner", "account": "a•••@example.com",
         "words": ["apple", "river", "stone", "lamp"],

@@ -1,8 +1,9 @@
 """The agent's side of linking to an owner (P2d), and the admin unlink.
 
 An agent redeems its owner's code, signs the link body the relay built,
-and can read its link's state (for its banners). There is no route for an
-agent to unlink itself or to approve anything. 404 while
+can cancel its link before it starts, and can read its link's state (for
+its banners). There is no route for an agent to unlink itself or to
+approve anything. 404 while
 UAM_OWNERS_ENABLED is off.
 """
 
@@ -72,6 +73,19 @@ async def sign(
         return JSONResponse(await links.agent_sign(
             session, await _agent(session, who), body.hash, body.signature, notice,
         ))
+    except PasskeyError as exc:
+        return _refused(exc)
+
+
+@router.post("/link/cancel")
+async def cancel(
+    request: Request,
+    who: dict = Depends(verify_token_http), session: AsyncSession = Depends(get_session),
+) -> Response:
+    """End this agent's link before it starts (it never unlinks itself)."""
+    notice = getattr(request.app.state, "owner_link_notice", None) or links.log_notice
+    try:
+        return JSONResponse(await links.agent_cancel(session, await _agent(session, who), notice))
     except PasskeyError as exc:
         return _refused(exc)
 

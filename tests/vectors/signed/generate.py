@@ -88,6 +88,17 @@ VALID = {
         "type": "UamOwnerUnlink", "v": 1, "owner": owner_ref, "agent": "bob::youam.network",
         "agentKey": ED_DID, "reason": "owner", "validFrom": "2026-11-09T10:00:00Z", "nonce": NONCE,
     },
+    # Reserved for names given out by a domain or namespace (DEC-006): the
+    # authority took the name back, or the name lapsed. Nothing sends them yet.
+    "owner_unlink_authority": {
+        "type": "UamOwnerUnlink", "v": 1, "owner": owner_ref, "agent": "bob::youam.network",
+        "agentKey": ED_DID, "reason": "authority", "validFrom": "2026-11-09T10:00:00Z",
+        "nonce": NONCE,
+    },
+    "owner_unlink_lapsed": {
+        "type": "UamOwnerUnlink", "v": 1, "owner": owner_ref, "agent": "bob::youam.network",
+        "agentKey": ED_DID, "reason": "lapsed", "validFrom": "2026-11-09T10:00:00Z", "nonce": NONCE,
+    },
     "invite_preapproved": {
         "type": "UamInvite", "v": 1, "inviter": owner_ref,
         "offer": {"actions": ["message"], "locations": ["shared"]},
@@ -182,6 +193,7 @@ INVALID_OBJECTS = {
                                                          'Laptop" to your account. Remove "Phone')),
     "label_too_long": broken("owner_keys_entry0", _set(["keys", 0, "label"], "x" * 65)),
     "bad_removed_reason": broken("owner_keys_later", _set(["removed", 0, "reason"], "lost")),
+    "unlink_unknown_reason": broken("owner_unlink", _set(["reason"], "expired")),
     "preapproved_without_email": broken("invite_preapproved", _drop("emailHash")),
     "two_uses": broken("invite_preapproved", _set(["maxUses"], 2)),
     "redeem_too_late": broken("invite_preapproved", _set(["redeemBy"], "2026-11-16T10:00:01Z")),

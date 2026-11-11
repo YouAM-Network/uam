@@ -256,3 +256,102 @@ def test_uam_init_asks_for_a_name_in_a_terminal(routed, terminal):
     result = CliRunner().invoke(cli, ["init"], input="carol\n")
     assert result.exit_code == 0, result.output
     assert "Initialized agent: carol::test.local" in result.output
+
+
+# ---------------------------------------------------------------- P2d-4: cancel, fleets
+
+
+async def test_the_sdk_cancels_its_own_link_before_it_starts(ada, routed, tmp_path):
+    bob = _agent(tmp_path)
+    await bob.connect()
+    try:
+        await bob.sign_owner_link(await bob.start_owner_link(_code(ada, "link"), via="link"))
+        await bob.cancel_owner_link()
+        assert (await bob.owner_link_status())["state"] == "cancelled"
+        with pytest.raises(UAMError, match="no link"):
+            await bob.cancel_owner_link()
+    finally:
+        await bob.close()
+    assert _links(ada)[0]["state"] == "cancelled"
+
+
+def test_uam_owner_cancel(ada, routed, terminal):
+    runner = CliRunner()
+    assert runner.invoke(cli, ["init", "--name", "bob"]).exit_code == 0
+    runner.invoke(cli, ["--name", "bob", "owner", "link"], input=_code(ada, "link") + "\n")
+    result = runner.invoke(cli, ["--name", "bob", "owner", "cancel"])
+    assert result.exit_code == 0, result.output
+    assert "Cancelled" in result.output
+    assert _links(ada)[0]["state"] == "cancelled"
+
+
+def test_uam_owner_cancel_refuses_a_link_in_effect(ada, routed, terminal, monkeypatch):
+    monkeypatch.setattr(cli_main, "_sleep", _approving(ada))
+    assert CliRunner().invoke(cli, ["init", "--setup"], input=f"{_code(ada)}\nbob\n").exit_code == 0
+    result = CliRunner().invoke(cli, ["--name", "bob", "owner", "cancel"])
+    assert result.exit_code != 0
+    assert "Only its owner can unlink it" in result.output
+    assert _links(ada)[0]["state"] == "active"
+
+
+def test_the_banner_for_a_starting_link_says_how_to_cancel(ada, routed, terminal):
+    runner = CliRunner()
+    assert runner.invoke(cli, ["init", "--name", "bob"]).exit_code == 0
+    runner.invoke(cli, ["--name", "bob", "owner", "link"], input=_code(ada, "link") + "\n")
+    [link] = _links(ada)
+    assert _approve(ada, ada.phone, _approve_start(ada, link["id"])).status_code == 200
+    result = runner.invoke(cli, ["--name", "bob", "owner", "status"])
+    assert "uam owner cancel" in result.output
+
+
+def _fleet(ada, count):
+    resp = ada.post("/api/owner/codes", json={"kind": "link", "count": count})
+    assert resp.status_code == 200, resp.text
+    return resp.json()["code"]
+
+
+def test_uam_owner_link_all_links_every_agent_here(ada, routed, terminal):
+    runner = CliRunner()
+    for name in ("amy", "kit", "zed"):
+        assert runner.invoke(cli, ["init", "--name", name]).exit_code == 0
+    result = runner.invoke(cli, ["owner", "link", "--all"], input=_fleet(ada, 3) + "\n")
+    assert result.exit_code == 0, result.output
+    links = _links(ada)
+    assert sorted(x["agent"] for x in links) == [
+        "amy::test.local", "kit::test.local", "zed::test.local",
+    ]
+    assert {x["state"] for x in links} == {"waiting"}
+    for link in links:
+        assert f"{link['agent']}: {' '.join(link['words'])}" in result.output
+    assert "3 agents are waiting" in result.output
+    assert "approve them together" in result.output
+
+
+def test_uam_owner_link_all_says_which_agents_it_could_not_link(ada, routed, terminal):
+    runner = CliRunner()
+    for name in ("amy", "kit"):
+        assert runner.invoke(cli, ["init", "--name", name]).exit_code == 0
+    result = runner.invoke(cli, ["owner", "link", "--all"], input=_fleet(ada, 1) + "\n")
+    assert result.exit_code != 0
+    assert "amy::test.local:" in result.output
+    assert "kit::test.local: That code didn't work" in result.output
+    assert "1 agent is waiting" in result.output
+    assert [x["agent"] for x in _links(ada)] == ["amy::test.local"]
+
+
+def test_uam_owner_link_all_skips_agents_of_other_relays(ada, routed, terminal, tmp_path):
+    runner = CliRunner()
+    assert runner.invoke(cli, ["init", "--name", "amy"]).exit_code == 0
+    keys = tmp_path / "home" / "keys"
+    (keys / "far.key").write_bytes((keys / "amy.key").read_bytes())  # never registered here
+    result = runner.invoke(cli, ["owner", "link", "--all"], input=_fleet(ada, 2) + "\n")
+    assert result.exit_code == 0, result.output
+    assert "far: not registered on this relay, skipped" in result.output
+    assert [x["agent"] for x in _links(ada)] == ["amy::test.local"]
+
+
+def test_uam_owner_link_all_and_a_name_do_not_mix(ada, routed, terminal):
+    assert CliRunner().invoke(cli, ["init", "--name", "amy"]).exit_code == 0
+    result = CliRunner().invoke(cli, ["--name", "amy", "owner", "link", "--all"], input="X\n")
+    assert result.exit_code != 0
+    assert "--all" in result.output

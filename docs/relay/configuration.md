@@ -87,11 +87,11 @@ Create an owner with `POST /api/v1/admin/owners {"email": "..."}` (`X-Admin-Key`
 
 With a passkey, an owner links agents to their account:
 
-1. They make a code on their page (`POST /api/owner/codes`): 8 characters shown as `ABCD-EFGH`, valid 10 minutes, single use, and only the newest of each kind works. A `setup` code is for an agent set up after the code was made. A `link` code is for an existing agent.
+1. They make a code on their page (`POST /api/owner/codes`): 8 characters shown as `ABCD-EFGH`, valid 10 minutes, single use, and only the newest of each kind works. A `setup` code is for an agent set up after the code was made. A `link` code is for an existing agent. With `"count": n` (up to 25) one code serves n agents and lasts 30 minutes.
 2. The agent redeems it with its token (`POST /api/v1/owner/link/start`; 5 tries per 10 minutes) and signs the link the relay built (`POST /api/v1/owner/link/sign`).
-3. The owner sees the agent with four words worked out from its key, and approves with a passkey.
+3. The owner sees the agent with four words worked out from its key, and approves with a passkey. Several waiting links can be approved with one passkey over one sentence that names each agent and its words (`POST /api/owner/link-sets/approve/start {"ids": [...]}`, then `/approve`).
 
-A link made with a `link` code starts 72 hours after it is redeemed, and the owner can cancel it until then. Unlinking needs the owner's passkey, or the admin (`POST /api/v1/admin/links/{id}/unlink`), and closes the agent's inbound policy. An agent reads where its link stands with `GET /api/v1/owner/link`.
+A link made with a `link` code starts 72 hours after it is redeemed, and the owner can cancel it until then. So can whoever runs the agent, with its token (`POST /api/v1/owner/link/cancel`); once the link is in effect only the owner can end it. Unlinking needs the owner's passkey, or the admin (`POST /api/v1/admin/links/{id}/unlink`), and closes the agent's inbound policy. An agent reads where its link stands with `GET /api/v1/owner/link`.
 
 ## Debug Settings
 
