@@ -194,6 +194,165 @@ export async function checkLinkApproval(kind, answer, ownerId) {
   return screen;
 }
 
+// ---------------------------------------------------------------- contacts (P2e)
+//
+// The same rules as uam.protocol.contacts: the sentences an owner signs to
+// invite someone, accept or confirm an invite, keep carried-over contacts
+// and let more in. Each check also holds the bodies to what the person
+// chose or was shown: their own account, the other person (by owner id),
+// the invite's four words, the agents and the setting.
+
+const INVITE = "UamInvite";
+const REDEMPTION = "UamRedemption";
+const GRANT = "UamContactGrant";
+const POLICY = "UamAgentPolicy";
+const SETTINGS = { open: "Let anyone message", contacts: "Let only your contacts message" };
+
+/** Four words both owners read to each other to check one invite (contacts.invite_words). */
+export async function inviteWords(inviteHash) {
+  if (!HASH.test(inviteHash)) throw new Error("refused: not a hash");
+  const d = await sha256(`UAM-SAS-v1\n${inviteHash}`);
+  let head = 0n;
+  for (const b of d.slice(0, 6)) head = (head << 8n) | BigInt(b);
+  head >>= 4n;
+  return [3, 2, 1, 0].map((i) => WORDS[Number((head >> BigInt(11 * i)) & 2047n)]);
+}
+
+/** A pre-approved invite's invitee, salted by its nonce (contacts.email_hash). */
+async function emailHash(nonce, email) {
+  return b64u(await sha256(`UAM-INVITE-EMAIL-v1\n${nonce}${email.trim().toLowerCase()}`));
+}
+
+async function secretHash(secret) {
+  return b64u(await sha256(`UAM-INVITE-SECRET-v1\n${secret}`));
+}
+
+/** "9 Feb 2027" from a body's stamp. */
+function dayOf(stamp) {
+  const m = STAMP.exec(stamp ?? "");
+  if (!m) throw new Error("refused: not a time");
+  return `${Number(m[3])} ${MONTHS[Number(m[2]) - 1]} ${m[1]}`;
+}
+
+const sameList = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+
+function settingWords(body) {
+  if (body.policy === "contacts" && body.sameOwner) return "Let your contacts and your own agents message";
+  return SETTINGS[body.policy];
+}
+
+/**
+ * Checks what the relay asks a passkey to sign for contacts and settings.
+ * *answer* is a start route's {items: [{type, body, hash}], screen, challenge}.
+ * *ctx* is what the page holds: {ownerId} and, by *kind*,
+ *   invite:   {email} typed;
+ *   redeem:   {inviter: {ownerId, email}, words} shown, {secret} from a link (null for a code);
+ *   confirm:  {invitee: {ownerId, email}} shown;
+ *   keep:     {agent, addresses} chosen;
+ *   policies: {agents: [{agent, agentKey}], policy, sameOwner, fleet?} chosen.
+ * Returns the sentence to show, worked out here; throws if anything differs.
+ */
+export async function checkContactApproval(kind, answer, ctx) {
+  const refuse = (why) => { throw new Error(`refused: ${why}`); };
+  const want = {
+    invite: [INVITE, GRANT], redeem: [REDEMPTION, GRANT], confirm: [GRANT],
+  }[kind];
+  const items = Array.isArray(answer?.items) ? answer.items : refuse("no bodies");
+  if (!items.length) refuse("no bodies");
+  if (want && !sameList(items.map((x) => x.type), want)) refuse("not the bodies this needs");
+  if (!want && !["keep", "policies"].includes(kind)) refuse("not a kind of approval");
+  const each = kind === "keep" ? GRANT : POLICY;
+  if (!want && items.some((x) => x.type !== each)) refuse("not the bodies this needs");
+  const bodies = [];
+  for (const { type, body: text, hash } of items) {
+    let body;
+    try { body = JSON.parse(text); } catch { refuse("a body isn't JSON"); }
+    if (!body || body.type !== type) refuse(`not a ${type}`);
+    if (await objectHash(type, text) !== hash) refuse("a hash isn't its body's");
+    bodies.push(body);
+  }
+  const mine = (ref) => ref?.ownerId === ctx.ownerId || refuse("not for this account");
+  const grant = (body, subject, locations) => {
+    mine(body.issuerOwner);
+    const d = body.authorization_details;
+    if (!Array.isArray(d) || d.length !== 1 || d[0].type !== "uam_contact"
+        || !sameList(d[0].actions ?? [], ["message"]) || !sameList(d[0].locations ?? [], locations)) {
+      refuse("the grant lets in more than this says");
+    }
+    const s = body.credentialSubject ?? {};
+    if (Object.keys(subject).some((k) => s[k] !== subject[k])) refuse("the grant is for someone else");
+    return dayOf(body.validUntil);
+  };
+  let screen;
+  if (kind === "invite") {
+    const [invite, g] = bodies;
+    mine(invite.inviter);
+    if (invite.mode !== "preapproved" || invite.emailHash !== await emailHash(invite.nonce, ctx.email)) {
+      refuse("the invite is for another email address");
+    }
+    const until = grant(g, { kind: "invitee", invite: items[0].hash }, ["shared"]);
+    screen = `Invite ${ctx.email} to connect on YouAM. When they accept, their shared agents can message yours until ${until}.`;
+  } else if (kind === "redeem" || kind === "confirm") {
+    const other = kind === "redeem" ? ctx.inviter : ctx.invitee;
+    const g = bodies[bodies.length - 1];
+    if (g.credentialSubject?.kind !== "owner" || g.credentialSubject?.owner?.ownerId !== other.ownerId) {
+      refuse("the grant is for someone else");
+    }
+    const until = grant(g, { kind: "owner" }, ["shared"]);
+    if (kind === "redeem") {
+      const r = bodies[0];
+      mine(r.invitee);
+      if (r.issuer !== g.issuer) refuse("signed by another passkey");
+      if (!sameList(await inviteWords(r.invite), ctx.words)) refuse("not the invite you were shown");
+      if (ctx.secret && r.secret !== ctx.secret) refuse("not the invite you opened");
+    }
+    screen = `Connect with ${other.email} on YouAM. Their shared agents can message yours until ${until}.`;
+  } else if (kind === "keep") {
+    if (!ADDRESS.test(ctx.agent)) refuse("not an agent address");
+    const days = new Set();
+    const names = [];
+    for (const g of bodies) {
+      if (g.credentialSubject?.kind !== "agent") refuse("a kept contact is an agent");
+      days.add(grant(g, { kind: "agent" }, [ctx.agent]));
+      names.push(g.credentialSubject.address);
+    }
+    names.sort();
+    if (!sameList(names, [...ctx.addresses].sort()) || names.some((n) => !ADDRESS.test(n))) {
+      refuse("not the contacts you chose");
+    }
+    if (days.size !== 1) refuse("the grants end on different days");
+    const [until] = days;
+    screen = names.length === 1
+      ? `Let "${names[0]}" keep messaging "${ctx.agent}" until ${until}.`
+      : `Let ${names.length} agents keep messaging "${ctx.agent}" until ${until}: ${names.map((n) => `"${n}"`).join(", ")}.`;
+  } else {
+    const chosen = new Map(ctx.agents.map((a) => [a.agent, a.agentKey]));
+    for (const b of bodies) {
+      mine(b.owner);
+      if (!ADDRESS.test(b.agent) || chosen.get(b.agent) !== b.agentKey) refuse("not an agent you chose");
+      if (b.policy !== ctx.policy || b.sameOwner !== ctx.sameOwner || !SETTINGS[b.policy]) {
+        refuse("not the setting you chose");
+      }
+    }
+    const names = bodies.map((b) => b.agent).sort();
+    if (!sameList(names, [...chosen.keys()].sort())) refuse("not the agents you chose");
+    const fleet = ctx.fleet ?? null;
+    if (fleet !== null && (typeof fleet !== "string" || fleet.includes('"'))) refuse("not a fleet name");
+    const who = settingWords(bodies[0]);
+    if (names.length === 1 && fleet === null) {
+      screen = `${who} "${names[0]}".`;
+    } else {
+      const count = `${names.length} agent${names.length === 1 ? "" : "s"}`;
+      const which = fleet !== null ? `the ${count} in the "${fleet}" fleet` : `these ${count}`;
+      screen = `${who} ${which}: ${names.map((n) => `"${n}"`).join(", ")}.`;
+    }
+  }
+  if (screen !== answer.screen) refuse("the relay's words aren't the bodies'");
+  const challenge = await challengeFor(items.map((x) => ({ t: x.type, h: x.hash })), screen);
+  if (challenge !== answer.challenge) refuse("the challenge isn't these words");
+  return screen;
+}
+
 /** "9 Nov 2026" from the relay's UTC timestamp. */
 export function addedOn(iso) {
   const m = /^(\d{4})-(\d{2})-(\d{2})T/.exec(iso);
@@ -212,6 +371,10 @@ const state = {
   links: [], skipped: new Set(), poll: 0,
   request: null, requestId: null, requestTimer: 0, never: "", // an agent asking by email (P2s-3)
   reservation: null, reservationId: null, made: false, // a name reserved with an email (P2s-2)
+  // Contacts and many agents (P2e-2)
+  contacts: [], invites: [], fleets: [], shownContacts: new Set(),
+  find: "", showAll: false, picking: false, picked: new Set(), openFleet: null,
+  agent: null, agentView: null, many: null, invite: null, found: null, removing: null,
 };
 
 async function api(path, body) {
@@ -269,7 +432,7 @@ function on(el, event, problemEl, handler) {
 function show(screen) {
   const screens = {
     loading: $("loading"), signin: $("signin"), code: $("code"), account: $("account"),
-    request: $("request"), never: $("never"), reserve: $("reserve"),
+    request: $("request"), never: $("never"), reserve: $("reserve"), accept: $("accept"),
   };
   for (const [name, el] of Object.entries(screens)) el.hidden = name !== screen;
 }
@@ -279,6 +442,12 @@ function show(screen) {
 function showSignIn() {
   closeSheet(false);
   state.me = null;
+  const invited = Boolean(state.invite);
+  $("signin-kicker").hidden = !invited;
+  $("signin-title").textContent = invited ? "Someone invited you to connect on YouAM" : "Sign in or create an account";
+  $("signin-lede").textContent = invited
+    ? "Sign in to see who it's from. New to YouAM? The same code makes your account."
+    : "Your YouAM account approves who your agents may talk to.";
   show("signin");
 }
 
@@ -317,6 +486,7 @@ async function checkCode() {
   if (!r.ok) throw new Error(`sign-in finish: ${r.status}`);
   problem(input, $("code-problem"), "");
   await loadAccount();
+  if (!$("accept").hidden) return $("accept-title").focus();
   ($("first").hidden ? $("agents-title") : $("first-title")).focus();
 }
 
@@ -367,6 +537,7 @@ async function loadAccount() {
   if (me.data.reservation || state.reservationId) {
     return loadReservation(me.data.reservation ?? state.reservationId);
   }
+  if (state.invite) return openInvite();
   $("who-email").textContent = me.data.email;
   $("who-email").title = me.data.email; // the header may shorten a long one
   const first = !me.data.owner_id;
@@ -375,10 +546,11 @@ async function loadAccount() {
   $("first").hidden = !first;
   $("keys").hidden = first;
   $("agents").hidden = first;
+  $("contacts").hidden = first;
   $("owner-section").hidden = first;
   $("owner-id").textContent = me.data.owner_id ?? "";
   $("key-list").replaceChildren(...keys.map(passkeyItem));
-  if (!first) await loadAgents();
+  if (!first) await Promise.all([loadAgents(), loadContacts()]);
   show("account");
 }
 
@@ -429,22 +601,154 @@ async function waitingItem(link) {
   return li;
 }
 
-async function agentItem(link) {
+const SHOWN = 8; // past this many agents: a tally, a find field, and "Show N more"
+const RANK = { closed: 0, contacts: 1, open: 2 };
+
+/** policy.widens: would this setting let anyone in that's out now? */
+const widens = (link, policy, same) => RANK[policy] > RANK[link.policy] || (same && !link.sameOwner);
+
+function policyLine(link) {
+  if (link.policy === "open") return "Anyone can message it";
+  if (link.policy === "closed") return "No one can message it";
+  return link.sameOwner ? "Your contacts and your own agents can message it" : "Only your contacts can message it";
+}
+
+const fleetNamed = (id) => state.fleets.find((f) => f.id === id);
+
+async function agentItem(link, { flat = false } = {}) {
   const li = document.createElement("li");
   const words = await wordsFor(link.agentKey);
-  let meta = link.effective ? "Linked" : `Starts ${startsOn(link.effectiveAt)}`;
+  const pickable = state.picking && link.effective;
+  let name;
+  if (pickable) {
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = state.picked.has(link.id);
+    box.addEventListener("change", () => {
+      if (box.checked) state.picked.add(link.id); else state.picked.delete(link.id);
+      pickCount();
+    });
+    name = document.createElement("label");
+    name.className = "check";
+    name.append(box, text("span", "name", link.agent));
+  } else {
+    name = text("span", "name", link.agent);
+  }
+  const fleet = flat && link.fleet ? fleetNamed(link.fleet) : null;
+  let meta = link.effective ? policyLine(link) : `Starts ${startsOn(link.effectiveAt)}`;
+  if (fleet) meta = `${fleet.name} fleet · ${meta}`;
   if (link.private) meta += " · Private";
   const actions = document.createElement("div");
   actions.className = "actions";
-  if (link.effective) {
-    actions.append(quiet("Unlink", () => startUnlink(link)));
-  } else {
-    actions.append(quiet("Cancel", () => cancelLink(link)));
+  if (!state.picking) {
+    actions.append(link.effective
+      ? quiet("Manage", () => openAgent(link))
+      : quiet("Cancel", () => cancelLink(link)));
   }
-  if (!link.private) actions.append(quiet("Make private", () => makePrivate(link)));
-  li.append(text("span", "name", link.agent), text("span", "words", words.join(" ")),
-    foot(text("span", "meta", meta), actions));
+  li.append(name, text("span", "words", words.join(" ")), foot(text("span", "meta", meta), actions));
   return li;
+}
+
+/** One line for a fleet's agents: their shared setting, or how they differ. */
+function setLine(links) {
+  const kinds = new Set(links.map(policyLine));
+  if (!links.length) return "No agents yet. The agents that use its code join it.";
+  if (kinds.size === 1) return [...kinds][0].replace(/ it$/, " them");
+  const n = (f) => links.filter(f).length;
+  return "Set differently: " + [
+    [n((l) => l.policy === "contacts" && l.sameOwner), "contacts and own agents"],
+    [n((l) => l.policy === "contacts" && !l.sameOwner), "only contacts"],
+    [n((l) => l.policy === "open"), "anyone"],
+    [n((l) => l.policy === "closed"), "no one"],
+  ].filter(([c]) => c).map(([c, t]) => `${c} ${t}`).join(" · ");
+}
+
+const membersOf = (fleet) => state.links.filter((l) => l.state === "active" && fleet.links.includes(l.id));
+
+async function fleetItem(fleet) {
+  const li = document.createElement("li");
+  const members = membersOf(fleet);
+  const open = state.openFleet === fleet.id;
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  if (members.length) {
+    const toggle = quiet(open ? "Hide agents" : "Show agents", async () => {
+      state.openFleet = open ? null : fleet.id;
+      const at = state.fleets.indexOf(fleet);
+      await renderAgents();
+      // The row was drawn again: focus stays on its toggle.
+      $("fleet-list").children[at]?.querySelector(":scope > .foot button")?.focus();
+    });
+    toggle.setAttribute("aria-expanded", String(open));
+    actions.append(toggle);
+  }
+  actions.append(quiet("Manage", () => openMany({ fleet })));
+  const count = members.length === 1 ? "1 agent" : `${members.length} agents`;
+  li.append(text("span", "name", fleet.name), text("span", "meta", `Fleet · ${count}`),
+    foot(text("span", "meta", setLine(members)), actions));
+  if (open) {
+    const inner = document.createElement("ul");
+    inner.className = "items";
+    inner.setAttribute("aria-label", `Agents in the ${fleet.name} fleet`);
+    inner.append(...await Promise.all(members.map((l) => agentItem(l))));
+    li.append(inner);
+  }
+  return li;
+}
+
+function tally(live) {
+  const n = (f) => live.filter(f).length;
+  const el = $("agents-tally");
+  const inFleets = live.filter((l) => l.fleet && fleetNamed(l.fleet)).length;
+  const head = `${live.length} agents${state.fleets.length
+    ? `, ${inFleets} of them in ${state.fleets.length === 1 ? "1 fleet" : `${state.fleets.length} fleets`}` : ""}. Who can message them: `;
+  const parts = [
+    [n((l) => l.policy === "contacts" && l.sameOwner), "your contacts and your own agents"],
+    [n((l) => l.policy === "contacts" && !l.sameOwner), "only your contacts"],
+    [n((l) => l.policy === "open"), "anyone"],
+    [n((l) => l.policy === "closed"), "no one"],
+  ].filter(([c]) => c);
+  el.replaceChildren(head);
+  parts.forEach(([c, t], i) => {
+    if (i) el.append(" · ");
+    el.append(text("b", "", String(c)), ` ${t}`);
+  });
+  el.append(".");
+}
+
+function pickCount() {
+  const n = state.picked.size;
+  $("pick-count").textContent = n === 1 ? "1 chosen" : `${n} chosen`;
+  $("pick-set").disabled = n === 0;
+  $("pick-fleet").disabled = n === 0;
+}
+
+/** The live agents, from what's loaded: fleets first, then the rest. */
+async function renderAgents() {
+  const live = state.links.filter((l) => l.state === "active");
+  const effective = live.filter((l) => l.effective);
+  const many = live.length > SHOWN;
+  const flat = Boolean(state.find) || state.picking;
+  const grouped = !flat && state.fleets.length > 0;
+  $("agents-tally").hidden = !many;
+  if (many) tally(live);
+  $("find").hidden = effective.length < 2 && !state.fleets.length;
+  $("find-field").hidden = !many;
+  $("pick-start").hidden = state.picking || effective.length < 2;
+  $("fleets").hidden = !grouped;
+  if (grouped) $("fleet-list").replaceChildren(...await Promise.all(state.fleets.map(fleetItem)));
+  const loose = grouped ? live.filter((l) => !l.fleet || !fleetNamed(l.fleet)) : live;
+  const matching = state.find ? loose.filter((l) => l.agent.toLowerCase().includes(state.find)) : loose;
+  const shown = state.showAll || flat ? matching : matching.slice(0, SHOWN);
+  $("loose-title").hidden = !grouped || !loose.length;
+  $("agent-list").replaceChildren(...await Promise.all(shown.map((l) => agentItem(l, { flat }))));
+  $("agent-list").hidden = !shown.length;
+  $("agents-none").hidden = !state.find || matching.length > 0;
+  const more = matching.length - shown.length;
+  $("agents-more").hidden = more <= 0;
+  $("show-more").textContent = `Show ${more} more`;
+  $("pick-bar").hidden = !state.picking;
+  if (state.picking) pickCount();
 }
 
 function chosen() {
@@ -507,24 +811,37 @@ async function loadAgents() {
   const asking = asked.ok ? (asked.data.requests ?? []).filter((q) => q.state === "open") : [];
   $("asking-list").replaceChildren(...asking.map(askingItem));
   $("asking").hidden = !asking.length;
+  const fleets = await api("/api/owner/fleets");
+  state.fleets = fleets.ok ? fleets.data.fleets ?? [] : [];
   state.links = r.data.links ?? [];
   const waiting = state.links.filter((l) => l.state === "waiting");
   const live = state.links.filter((l) => l.state === "active");
   for (const id of [...state.skipped]) if (!waiting.some((l) => l.id === id)) state.skipped.delete(id);
+  for (const id of [...state.picked]) if (!live.some((l) => l.id === id && l.effective)) state.picked.delete(id);
+  if (state.openFleet && !fleetNamed(state.openFleet)) state.openFleet = null;
   $("waiting-list").replaceChildren(...await Promise.all(waiting.map(waitingItem)));
-  $("agent-list").replaceChildren(...await Promise.all(live.map(agentItem)));
   $("waiting").hidden = !waiting.length;
-  $("agent-list").hidden = !live.length;
+  await renderAgents();
   $("agents-empty").hidden = Boolean(waiting.length || live.length || asking.length || held.length);
-  // One main button: approving when something waits, else adding an agent.
-  $("add-agent").classList.toggle("btn-primary", !waiting.length);
-  $("add-agent").classList.toggle("btn-quiet", Boolean(waiting.length));
+  mainButton();
   approveLabel();
+}
+
+// One main button on the page: approving agents or confirming someone when
+// something waits, else adding an agent.
+function mainButton() {
+  const waiting = state.links.some((l) => l.state === "waiting");
+  const confirming = state.invites.some((i) => i.state === "redeemed");
+  $("add-agent").classList.toggle("btn-primary", !waiting && !confirming);
+  $("add-agent").classList.toggle("btn-quiet", waiting || confirming);
 }
 
 async function refreshAgents() {
   if ($("account").hidden || !$("scrim").hidden || $("agents").hidden || state.busy) return;
-  try { await loadAgents(); } catch (err) { if (!(err instanceof Stop)) console.error(err); }
+  if (document.activeElement?.closest(".items")) return; // someone is in a list: leave it be
+  try {
+    await Promise.all([loadAgents(), loadContacts()]);
+  } catch (err) { if (!(err instanceof Stop)) console.error(err); }
 }
 
 async function afterChange(message) {
@@ -572,11 +889,649 @@ function startUnlink(link) {
     { id: link.id, agent: link.agent });
 }
 
+// ---- approvals for contacts and settings (P2e-2)
+
+const STOPPED = "This page stopped: what your passkey would sign didn't match what it would show. Nothing was signed.";
+
+/**
+ * Asks the relay for an approval, checks it here (checkContactApproval) and
+ * opens the approval sheet. *how* = {finish, done(data), again()}. Returns the
+ * refused answer, or null once the sheet is open (or the check stopped it).
+ */
+async function startContact(kind, path, body, ctx, opener, statusEl, how) {
+  const r = await api(path, body);
+  if (!r.ok) return r;
+  let screen;
+  try {
+    screen = await checkContactApproval(kind, r.data, { ownerId: state.me.owner_id, ...ctx });
+  } catch (err) {
+    console.error(err);
+    say(statusEl, STOPPED);
+    return null;
+  }
+  state.pending = { kind: "contact", answer: r.data, ...how };
+  openApprove(screen, opener);
+  return null;
+}
+
+/** What the person picked in a who-can-message form ("agent" or "many"). */
+function picked(prefix) {
+  const policy = $(`${prefix}-open`).checked ? "open" : $(`${prefix}-contacts`).checked ? "contacts" : null;
+  return { policy, same: policy === "open" ? true : $(`${prefix}-same`).checked };
+}
+
+function setChoice(prefix, policy, same, it) {
+  $(`${prefix}-open`).checked = policy === "open";
+  $(`${prefix}-contacts`).checked = policy === "contacts";
+  $(`${prefix}-same`).checked = same;
+  $(`${prefix}-legend`).textContent = `Who can message ${it}?`;
+  $(`${prefix}-same-text`).textContent = `My other agents can message ${it} too`;
+}
+
+// ---- one agent: who can message it, keep carried-over contacts, unlink
+
+async function openAgent(link) {
+  const r = await api(`/api/owner/links/${link.id}/policy`);
+  if (!r.ok) return afterChange(r.data.detail ?? AGAIN);
+  state.agent = link;
+  state.agentView = r.data;
+  const v = r.data;
+  $("agent-title").textContent = link.agent;
+  const fleet = link.fleet ? fleetNamed(link.fleet) : null;
+  $("agent-about").textContent = fleet ? `In the ${fleet.name} fleet` : "";
+  $("agent-about").hidden = !fleet;
+  setChoice("agent", v.policy, v.sameOwner, "it");
+  const rows = v.carriedOver.filter((c) => !c.kept).map(carriedItem);
+  $("carried-list").replaceChildren(...rows);
+  $("agent-linked").textContent = `Linked ${addedOn(link.approvedAt ?? link.createdAt)}`;
+  $("agent-private").hidden = link.private;
+  say($("agent-problem"), "");
+  agentForm();
+  openSheet($("sheet-agent"), document.activeElement, $("agent-title"));
+}
+
+function carriedItem(c) {
+  const li = document.createElement("li");
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.value = c.address;
+  box.checked = !c.warn; // recent ones, and ones it never answered, start unticked
+  box.addEventListener("change", agentForm);
+  const label = document.createElement("label");
+  label.className = "check";
+  label.append(box, text("span", "name", c.address));
+  const short = state.agent.agent.split("::")[0];
+  const since = c.recent ? `Added ${addedOn(c.since)}` : `Allowed since ${addedOn(c.since)}`;
+  const talk = c.twoWay ? "they've written to each other" : `${short} never replied`;
+  li.append(label, text("span", "meta", `${since} · ${talk}`));
+  return li;
+}
+
+const keeping = () => [...$("carried-list").querySelectorAll("input:checked")].map((b) => b.value);
+
+function agentForm() {
+  const { policy } = picked("agent");
+  $("agent-same-row").hidden = policy !== "contacts";
+  $("carried").hidden = policy !== "contacts" || !$("carried-list").children.length;
+  const keep = $("carried").hidden ? 0 : keeping().length;
+  $("agent-save").textContent = keep ? `Save and keep ${keep}` : "Save";
+}
+
+async function saveAgent() {
+  const link = state.agent;
+  const { policy, same } = picked("agent");
+  if (!policy) return say($("agent-problem"), "Choose who can message it.");
+  const v = state.agentView;
+  const keep = policy === "contacts" ? keeping() : [];
+  const changed = policy !== v.policy || same !== v.sameOwner;
+  const done = async () => afterChange(`Saved who can message ${link.agent}.`);
+  const keepThen = async () => {
+    if (!keep.length) return done();
+    const refused = await startContact("keep", `/api/owner/links/${link.id}/keep/start`, { contacts: keep },
+      { agent: link.agent, addresses: keep }, $("agents-title"), $("agents-status"), {
+        finish: `/api/owner/links/${link.id}/keep`, done, again: () => openAgent(link),
+      });
+    if (refused) return afterChange(refused.data.detail ?? AGAIN);
+  };
+  if (changed && widens(v, policy, same)) {
+    const refused = await startContact("policies", `/api/owner/links/${link.id}/policy/approve/start`,
+      { policy, sameOwner: same }, { agents: [{ agent: link.agent, agentKey: link.agentKey }], policy, sameOwner: same },
+      $("agent-save"), $("agent-problem"), {
+        finish: `/api/owner/links/${link.id}/policy/approve`, done: keepThen, again: () => openAgent(link),
+      });
+    if (refused) say($("agent-problem"), refused.data.detail ?? AGAIN);
+    return;
+  }
+  if (changed) {
+    const r = await api(`/api/owner/links/${link.id}/policy`, { policy, sameOwner: same });
+    if (!r.ok) return say($("agent-problem"), r.data.detail ?? AGAIN);
+  }
+  closeSheet(false);
+  return keepThen();
+}
+
+// ---- several agents, or a fleet: one setting for all of them
+
+function openMany(target) {
+  const fleet = target.fleet ?? null;
+  const links = fleet ? membersOf(fleet).filter((l) => l.effective)
+    : state.links.filter((l) => target.ids.includes(l.id));
+  state.many = { fleet, links };
+  const n = links.length;
+  const short = links.map((l) => l.agent.split("::")[0]).join(", ");
+  $("many-title").textContent = fleet ? fleet.name : `${n} agents`;
+  $("many-names").textContent = fleet
+    ? (n ? `Fleet · ${n === 1 ? "1 agent" : `${n} agents`}: ${short}` : "Fleet · no agents yet. The agents that use its code join it.")
+    : short;
+  const kinds = new Set(links.map((l) => `${l.policy}/${l.sameOwner}`));
+  const [policy, same] = fleet?.policy ? [fleet.policy, fleet.sameOwner]
+    : kinds.size === 1 ? [links[0].policy, links[0].sameOwner] : [null, true];
+  setChoice("many", policy, same, "them");
+  $("many-form").hidden = !n;
+  $("many-fleet-foot").hidden = !fleet;
+  $("many-save").textContent = n === 1 ? "Save for 1 agent" : `Save for ${n} agents`;
+  say($("many-problem"), "");
+  manyForm();
+  openSheet($("sheet-many"), document.activeElement, $("many-title"));
+}
+
+function manyForm() {
+  const { policy, same } = picked("many");
+  const { fleet, links } = state.many;
+  $("many-same-row").hidden = policy !== "contacts";
+  const wider = policy && links.some((l) => widens(l, policy, same));
+  const lines = [wider
+    ? `Letting more in needs your passkey: one approval covers all ${links.length}.`
+    : "Letting fewer in doesn't need your passkey."];
+  if (fleet) lines.push("Agents that join this fleet later start with this setting.");
+  $("many-hint").textContent = lines.join(" ");
+}
+
+async function saveMany() {
+  const { fleet, links } = state.many;
+  const { policy, same } = picked("many");
+  if (!policy) return say($("many-problem"), "Choose who can message them.");
+  const body = fleet ? { fleet: fleet.id } : { links: links.map((l) => l.id) };
+  Object.assign(body, { policy, sameOwner: same });
+  const n = links.length;
+  const done = async () => {
+    state.picking = false;
+    state.picked.clear();
+    await afterChange(`Saved who can message ${fleet ? `the ${fleet.name} fleet` : n === 1 ? "1 agent" : `${n} agents`}.`);
+  };
+  if (links.some((l) => widens(l, policy, same))) {
+    const refused = await startContact("policies", "/api/owner/policy/approve/start", body, {
+      agents: links.map((l) => ({ agent: l.agent, agentKey: l.agentKey })), policy, sameOwner: same,
+      fleet: fleet?.name,
+    }, $("many-save"), $("many-problem"), {
+      finish: "/api/owner/policy/approve", done, again: () => openMany(fleet ? { fleet } : { ids: body.links }),
+    });
+    if (refused) say($("many-problem"), refused.data.detail ?? AGAIN);
+    return;
+  }
+  const r = await api("/api/owner/policy", body);
+  if (!r.ok) return say($("many-problem"), r.data.detail ?? AGAIN);
+  closeSheet(false);
+  await done();
+}
+
+// ---- fleets: grouping only, so no passkey
+
+const FLEET_NAME = "Use 1 to 40 characters on one line, without quotation marks.";
+
+function fleetNameProblem(name) {
+  const tidy = name.split(/\s+/).filter(Boolean).join(" ");
+  if (!tidy || tidy.length > 40 || name.includes('"') || /[\x00-\x1f\x7f]/.test(name)) return FLEET_NAME;
+  return "";
+}
+
+function openInto() {
+  const ids = [...state.picked];
+  const choice = $("into-choice");
+  for (const old of [...choice.querySelectorAll(".option")].slice(1)) old.remove();
+  for (const fleet of state.fleets) {
+    const input = document.createElement("input");
+    input.type = "radio";
+    input.name = "into";
+    input.value = String(fleet.id);
+    input.addEventListener("change", intoForm);
+    const span = document.createElement("span");
+    const n = membersOf(fleet).length;
+    span.append(fleet.name, text("span", "hint", n === 1 ? "1 agent" : `${n} agents`));
+    const label = document.createElement("label");
+    label.className = "option";
+    label.append(input, " ", span);
+    choice.append(label);
+  }
+  $("into-new").checked = true;
+  $("into-name").value = "";
+  problem($("into-name"), $("into-problem"), "");
+  $("into-title").textContent = ids.length === 1 ? "Put 1 agent in a fleet" : `Put ${ids.length} agents in a fleet`;
+  intoForm();
+  openSheet($("sheet-into"), $("pick-fleet"), $("into-title"));
+}
+
+function intoForm() {
+  const fresh = $("into-new").checked;
+  $("into-name-field").hidden = !fresh;
+  const n = state.picked.size;
+  $("into-go").textContent = fresh ? "Make the fleet" : n === 1 ? "Move 1 agent" : `Move ${n} agents`;
+}
+
+async function saveInto() {
+  const ids = [...state.picked];
+  const into = $("into-choice").querySelector("input:checked");
+  let r;
+  let message;
+  if (into.value === "new") {
+    const name = $("into-name").value;
+    const bad = fleetNameProblem(name);
+    if (bad) return problem($("into-name"), $("into-problem"), bad);
+    r = await api("/api/owner/fleets", { name, links: ids });
+    message = `Made the fleet ${r.data.name ?? name.trim()}.`;
+  } else {
+    const fleet = fleetNamed(Number(into.value));
+    r = await api("/api/owner/fleets/move", { links: ids, fleet: fleet.id });
+    message = `Moved ${ids.length === 1 ? "1 agent" : `${ids.length} agents`} to ${fleet.name}.`;
+  }
+  if (!r.ok) {
+    return problem($("into-name"), $("into-problem"), r.status === 422 ? FLEET_NAME : r.data.detail ?? AGAIN);
+  }
+  closeSheet(false);
+  state.picking = false;
+  state.picked.clear();
+  await afterChange(message);
+}
+
+function openRename() {
+  const { fleet } = state.many;
+  $("rename-input").value = fleet.name;
+  problem($("rename-input"), $("rename-problem"), "");
+  openSheet($("sheet-rename"), null, $("rename-input"));
+}
+
+async function saveRename() {
+  const { fleet } = state.many;
+  const name = $("rename-input").value;
+  const bad = fleetNameProblem(name);
+  if (bad) return problem($("rename-input"), $("rename-problem"), bad);
+  const r = await api(`/api/owner/fleets/${fleet.id}/rename`, { name });
+  if (!r.ok) {
+    return problem($("rename-input"), $("rename-problem"), r.status === 422 ? FLEET_NAME : r.data.detail ?? AGAIN);
+  }
+  closeSheet(false);
+  await afterChange(`Renamed the fleet ${r.data.name}.`);
+}
+
+async function ungroup() {
+  const { fleet } = state.many;
+  const r = await api(`/api/owner/fleets/${fleet.id}/ungroup`, {});
+  if (!r.ok) return say($("many-problem"), r.data.detail ?? AGAIN);
+  closeSheet(false);
+  await afterChange(`Ungrouped ${fleet.name}. Its agents keep their settings.`);
+}
+
+function choosing(on) {
+  state.picking = on;
+  state.picked.clear();
+  renderAgents().then(() => {
+    const first = $("agent-list").querySelector("input");
+    (on && first ? first : $("agents-title")).focus();
+  }).catch((err) => console.error(err));
+}
+
+// ---- contacts
+
+const MONTHS_LONG = ["January", "February", "March", "April", "May", "June", "July", "August",
+  "September", "October", "November", "December"];
+
+/** "March 2026" from the relay's UTC timestamp. */
+function monthOf(iso) {
+  const m = /^(\d{4})-(\d{2})-/.exec(iso ?? "");
+  return m ? `${MONTHS_LONG[Number(m[2]) - 1]} ${m[1]}` : "";
+}
+
+async function loadContacts() {
+  const [c, i] = await Promise.all([api("/api/owner/contacts"), api("/api/owner/invites")]);
+  state.contacts = c.ok ? c.data.contacts ?? [] : [];
+  state.invites = i.ok ? i.data.invites ?? [] : [];
+  const confirming = state.invites.filter((x) => x.state === "redeemed");
+  const open = state.invites.filter((x) => x.state === "open");
+  $("confirm-list").replaceChildren(...confirming.map(confirmItem));
+  $("confirming").hidden = !confirming.length;
+  const asked = new Set(confirming.map((x) => x.invitee?.ownerId));
+  // Someone waiting for you to confirm is shown once, under "Waiting for you".
+  state.contacts = state.contacts.filter((c) => c.youAllow || !asked.has(c.ownerId));
+  $("contact-list").replaceChildren(...state.contacts.map(contactItem));
+  $("connected").hidden = !state.contacts.length;
+  $("invite-list").replaceChildren(...open.map(inviteItem));
+  $("invites").hidden = !open.length;
+  $("contacts-empty").hidden = Boolean(confirming.length || state.contacts.length || open.length);
+  mainButton();
+}
+
+async function afterContacts(message) {
+  await loadContacts();
+  say($("contacts-status"), message);
+  $("contacts-title").focus();
+}
+
+function confirmItem(inv, i) {
+  const li = document.createElement("li");
+  const who = inv.invitee;
+  const go = text("button", i === 0 ? "btn btn-primary" : "btn btn-quiet", "Confirm");
+  go.type = "button";
+  on(go, "click", $("contacts-status"), () => startConfirm(inv, go));
+  const row = document.createElement("div");
+  row.className = "row";
+  row.append(go, quietIn($("contacts-status"), "Decline", () => cancelInvite(inv, `Declined ${who.email}.`)));
+  li.append(text("span", "name", who.email), text("span", "words", inv.words.join(" ")),
+    text("span", "meta", `Accepted your ${inv.how} · YouAM account since ${monthOf(who.since)}`), row);
+  return li;
+}
+
+function quietIn(statusEl, label, handler) {
+  const b = text("button", "btn btn-quiet", label);
+  b.type = "button";
+  on(b, "click", statusEl, handler);
+  return b;
+}
+
+async function startConfirm(inv, opener) {
+  const refused = await startContact("confirm", `/api/owner/invites/${inv.id}/confirm/start`, {},
+    { invitee: inv.invitee }, opener, $("contacts-status"), {
+      finish: `/api/owner/invites/${inv.id}/confirm`,
+      done: () => afterContacts(`Connected with ${inv.invitee.email}.`),
+      again: () => afterContacts(""),
+    });
+  if (refused) await afterContacts(refused.data.detail ?? AGAIN);
+}
+
+async function cancelInvite(inv, message) {
+  const r = await api(`/api/owner/invites/${inv.id}/cancel`, {});
+  await afterContacts(r.ok ? message : r.data.detail ?? AGAIN);
+}
+
+function contactItem(c) {
+  const li = document.createElement("li");
+  const agents = text("span", "meta", "");
+  if (!c.agents.length) {
+    agents.textContent = "No shared agents yet";
+  } else if (c.agents.length > 3 && !state.shownContacts.has(c.ownerId)) {
+    const all = text("button", "link", "Show them");
+    all.type = "button";
+    all.addEventListener("click", () => {
+      state.shownContacts.add(c.ownerId);
+      $("contact-list").replaceChildren(...state.contacts.map(contactItem));
+      $("contacts-title").focus();
+    });
+    agents.append(`${c.agents.length} shared agents · `, all);
+  } else {
+    agents.textContent = `Their shared agents: ${c.agents.map((a) => a.address).join(", ")}`;
+  }
+  const meta = c.youAllow && c.theyAllow ? `Connected ${addedOn(c.connectedAt)} · until ${addedOn(c.until)}`
+    : c.youAllow ? "You approved them · waiting for them to confirm"
+      : "You removed them · yours can still message theirs";
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  if (c.youAllow) actions.append(quietIn($("contacts-status"), "Remove", () => openRemove(c)));
+  li.append(text("span", "name", c.email), agents, foot(text("span", "meta", meta), actions));
+  return li;
+}
+
+function inviteItem(inv) {
+  const li = document.createElement("li");
+  let name;
+  let meta;
+  let undo = "Cancel";
+  if (inv.how === "code") {
+    name = "Code";
+    meta = `Works once, until ${startsOn(inv.redeemBy)}`;
+  } else if (inv.how === "link") {
+    name = "Link";
+    meta = `Made ${addedOn(inv.createdAt)} · works once, until ${addedOn(inv.redeemBy)}`;
+  } else {
+    name = `Email to ${inv.email}`;
+    meta = inv.sent ? `Sent · works once, until ${addedOn(inv.redeemBy)}` : `Sends at ${startsOn(inv.sendAt)}`;
+    if (!inv.sent) undo = "Undo";
+  }
+  const message = undo === "Undo" ? `Undone: we won't email ${inv.email}.` : "Cancelled the invite.";
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  actions.append(quietIn($("contacts-status"), undo, () => cancelInvite(inv, message)));
+  li.append(text("span", "name", name), text("span", "words", inv.words.join(" ")),
+    foot(text("span", "meta", meta), actions));
+  return li;
+}
+
+function openConnect() {
+  $("how-code").checked = true;
+  $("invite-email").value = "";
+  say($("connect-problem"), "");
+  connectForm();
+  openSheet($("sheet-connect"), $("connect"), $("connect-title"));
+}
+
+const HOW = { code: "Make a code", link: "Make a link", email: "Continue" };
+
+function connectForm() {
+  const how = $("how-email").checked ? "email" : $("how-link").checked ? "link" : "code";
+  $("invite-email-field").hidden = how !== "email";
+  $("connect-go").textContent = HOW[how];
+  return how;
+}
+
+async function connectGo() {
+  const how = connectForm();
+  if (how === "email") {
+    const input = $("invite-email");
+    const email = input.value.trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return problem(input, $("connect-problem"), "Enter their email address.");
+    }
+    problem(input, $("connect-problem"), "");
+    const refused = await startContact("invite", "/api/owner/invites/email/start", { email }, { email },
+      $("connect"), $("contacts-status"), {
+        finish: "/api/owner/invites/email",
+        done: (data) => afterContacts(`We'll email ${email} at ${startsOn(data.sendAt)}. Until then you can undo it below.`),
+        again: openConnect,
+      });
+    if (refused) problem(input, $("connect-problem"), refused.data.detail ?? AGAIN);
+    return;
+  }
+  const done = busy($("connect-go"), how === "code" ? "Making a code…" : "Making a link…");
+  let r;
+  try { r = await api("/api/owner/invites", { how }); } finally { done(); }
+  if (!r.ok) return say($("connect-problem"), r.data.detail ?? AGAIN);
+  const inv = r.data;
+  const code = how === "code";
+  $("invite-made-kicker").textContent = code ? "Code" : "Link";
+  $("invite-made-title").textContent = code ? "Read this to them" : "Send them this link";
+  $("invite-code").textContent = inv.code ?? "";
+  $("invite-code").hidden = !code;
+  $("invite-link").textContent = inv.link ?? "";
+  $("invite-link").hidden = code;
+  $("invite-made-how").textContent = code
+    ? `They sign in at ${location.host} and choose "Have a code from someone?". It works once, until ${startsOn(inv.redeemBy)}.`
+    : `It works once, until ${addedOn(inv.redeemBy)}. This is the only time you'll see it: YouAM doesn't keep a copy.`;
+  $("invite-words-hint").textContent = code
+    ? "You'll both see these words. Check they match before you confirm."
+    : "When they accept, you'll both see these words:";
+  $("invite-words").textContent = inv.words.join(" ");
+  say($("invite-copy-status"), "");
+  $("invite-copy").hidden = code;
+  $("invite-done").className = code ? "btn btn-primary" : "btn btn-quiet";
+  openSheet($("sheet-invite-made"), null, $("invite-made-title"));
+}
+
+async function copyLink() {
+  try {
+    await navigator.clipboard.writeText($("invite-link").textContent);
+    say($("invite-copy-status"), "Copied.");
+  } catch {
+    say($("invite-copy-status"), "Select the link and copy it.");
+  }
+}
+
+async function inviteDone() {
+  closeSheet(false);
+  await afterContacts("");
+}
+
+function openRemove(c) {
+  state.removing = c;
+  $("remove-title").textContent = `Remove ${c.email}?`;
+  $("remove-go").textContent = `Remove ${c.email}`;
+  say($("remove-problem"), "");
+  openSheet($("sheet-remove"), document.activeElement, $("remove-title"));
+}
+
+async function removeGo() {
+  const c = state.removing;
+  const r = await api(`/api/owner/contacts/${encodeURIComponent(c.ownerId)}/remove`, {});
+  if (!r.ok) return say($("remove-problem"), r.data.detail ?? AGAIN);
+  closeSheet(false);
+  await afterContacts(`Removed ${c.email}. Their agents can't message yours now.`);
+}
+
+function openHaveCode() {
+  $("their-code").value = "";
+  problem($("their-code"), $("their-code-problem"), "");
+  openSheet($("sheet-have-code"), $("have-code"), $("their-code"));
+}
+
+async function haveCodeGo() {
+  const input = $("their-code");
+  const code = input.value.trim();
+  if (!code) return problem(input, $("their-code-problem"), "Type the code they read you.");
+  const done = busy($("their-code-go"), "Finding it…");
+  let r;
+  try { r = await api("/api/owner/invites/find", { code }); } finally { done(); }
+  if (!r.ok) {
+    const why = r.status === 404 || r.status === 422 ? "That code didn't open an invite. Check it and try again."
+      : r.data.detail ?? AGAIN;
+    return problem(input, $("their-code-problem"), why);
+  }
+  closeSheet(false);
+  state.invite = { code };
+  showFound(r.data);
+}
+
+// ---- the accept page: /i/<id>#<secret>, or a code typed on the account page
+
+function acceptParts({ lede = "", facts = false, check = false, means = "", why = "", go = false, form = false }) {
+  $("accept-lede").textContent = lede;
+  $("accept-lede").hidden = !lede;
+  $("accept-facts").hidden = !facts;
+  $("accept-check").hidden = !check;
+  $("accept-means").textContent = means;
+  $("accept-means").hidden = !means;
+  say($("accept-problem"), why);
+  $("accept-form").hidden = !form;
+  $("accept-go").hidden = !go;
+  $("accept-home").className = go || form ? "btn btn-quiet" : "btn btn-primary";
+  $("accept-home").textContent = go ? "Not now" : "Go to your account";
+}
+
+function acceptEnded(title, why, lede = "Ask whoever sent it for a new one.") {
+  $("accept-kicker").textContent = "Invitation";
+  $("accept-title").textContent = title;
+  acceptParts({ why, lede });
+  show("accept");
+  $("accept-title").focus();
+}
+
+const UNUSABLE = {
+  no_invite: ["This invite can't be used", "That didn't open an invite. Check you opened the whole link."],
+  used: ["This invite can't be used", "It was already used. If that wasn't you, whoever sent it has been told."],
+  invite_ended: ["This invite can't be used", "It has ended."],
+  own_invite: ["This is your own invite", "Send it to the person you want to connect with."],
+  not_for_you: ["This invite is for someone else", "It was sent to another email address. Sign in with that one to accept it."],
+};
+
+function refusedInvite(r) {
+  const [title, why] = UNUSABLE[r.data.error] ?? ["This invite can't be used right now", r.data.detail ?? AGAIN];
+  acceptEnded(title, why, r.data.error === "own_invite" || r.data.error === "not_for_you" ? "" : undefined);
+}
+
+const inviteKey = () => (state.invite.code ? { code: state.invite.code }
+  : { link: state.invite.link, secret: state.invite.secret });
+
+async function openInvite() {
+  if (state.invite.link && !state.invite.secret) {
+    return acceptEnded("This invite can't be used", "The link is missing its end. Open the whole link again.");
+  }
+  if (!state.me.owner_id) {
+    $("accept-kicker").textContent = "Invitation";
+    $("accept-title").textContent = "Someone invited you to connect";
+    acceptParts({ lede: "Add a passkey first. It's how you approve things, and it lets YouAM show you who this is from.",
+      form: true });
+    show("accept");
+    return $("accept-name").focus();
+  }
+  const r = await api("/api/owner/invites/find", inviteKey());
+  if (!r.ok) return refusedInvite(r);
+  showFound(r.data);
+}
+
+function showFound(found) {
+  state.found = found;
+  const who = found.inviter;
+  $("accept-kicker").textContent = "Invitation";
+  $("accept-title").textContent = `${who.email} wants to connect`;
+  $("accept-since").textContent = monthOf(who.since);
+  $("accept-words").textContent = found.words.join(" ");
+  acceptParts({
+    facts: true, check: true, go: true,
+    means: found.mode === "preapproved"
+      ? "They've already approved you. If you connect, your shared agents and theirs can message each other for 90 days. You can remove them any time."
+      : "If you connect, their shared agents can message yours for 90 days, and yours can message theirs once they confirm. You can remove them any time.",
+  });
+  show("accept");
+  $("accept-title").focus();
+}
+
+async function acceptGo() {
+  const found = state.found;
+  const refused = await startContact("redeem", "/api/owner/invites/redeem/start", inviteKey(), {
+    inviter: found.inviter, words: found.words, secret: state.invite.secret ?? null,
+  }, $("accept-go"), $("accept-problem"), {
+    finish: "/api/owner/invites/redeem", done: accepted, again: () => showFound(found),
+  });
+  if (refused) refusedInvite(refused);
+}
+
+function accepted(data) {
+  const email = data.inviter.email;
+  const connected = data.state === "connected";
+  state.invite = null;
+  state.found = null;
+  $("accept-kicker").textContent = connected ? "Connected" : "Accepted";
+  $("accept-title").textContent = connected ? `You're connected with ${email}` : `Waiting for ${email}`;
+  acceptParts({ lede: connected
+    ? "Your shared agents and theirs can message each other. You can remove them from your account any time."
+    : "Their shared agents can message yours now. Yours can message theirs once they confirm on their YouAM page." });
+  show("accept");
+  $("accept-title").focus();
+}
+
+function acceptHome() {
+  state.invite = null;
+  state.found = null;
+  if (location.pathname !== "/") history.replaceState(null, "", "/");
+  return loadAccount().then(() => {
+    if (!$("contacts").hidden) $("contacts-title").focus();
+  });
+}
+
 // ---- codes for agents
 
 function openCodeSheet() {
   $("code-count").value = "1";
+  $("code-fleet").value = "";
+  $("code-fleet-field").hidden = true;
   problem($("code-count"), $("code-count-problem"), "");
+  problem($("code-fleet"), $("code-fleet-problem"), "");
   openSheet($("sheet-code"), $("add-agent"), $("code-sheet-title"));
 }
 
@@ -595,17 +1550,25 @@ async function makeCode() {
     return problem(input, $("code-count-problem"), "Choose from 1 to 25 agents.");
   }
   problem(input, $("code-count-problem"), "");
+  const fleet = count > 1 ? $("code-fleet").value.trim() : "";
+  const bad = fleet ? fleetNameProblem(fleet) : "";
+  if (bad) return problem($("code-fleet"), $("code-fleet-problem"), bad);
+  problem($("code-fleet"), $("code-fleet-problem"), "");
   const kind = $("kind-link").checked ? "link" : "setup";
   const done = busy($("code-make"), "Making a code…");
   let r;
-  try { r = await api("/api/owner/codes", { kind, count }); } finally { done(); }
-  if (!r.ok) return problem(input, $("code-count-problem"), r.data.detail ?? AGAIN);
+  try { r = await api("/api/owner/codes", { kind, count, ...(fleet ? { fleet } : {}) }); } finally { done(); }
+  if (!r.ok) {
+    if (r.status === 422 && fleet) return problem($("code-fleet"), $("code-fleet-problem"), FLEET_NAME);
+    return problem(input, $("code-count-problem"), r.data.detail ?? AGAIN);
+  }
   const [how, command] = COMMANDS[count > 1 ? `${kind}Many` : kind];
   $("made-code").textContent = r.data.code;
   $("made-how").textContent = how;
   $("made-command").textContent = command;
   $("made-when").textContent = count > 1
     ? `Works for ${count} agents until ${startsOn(r.data.expiresAt)}. Then approve them here together.`
+      + (r.data.fleet ? ` They join the ${r.data.fleet.name} fleet.` : "")
     : `Works once, until ${startsOn(r.data.expiresAt)}. Then approve the agent here.`;
   openSheet($("sheet-code-made"), null, $("made-title"));
 }
@@ -737,7 +1700,7 @@ async function approve() {
       if (err.name === "NotAllowedError" || err.name === "AbortError") return; // they can try again
       throw err;
     }
-    const path = {
+    const path = p.finish ?? {
       keys: "/api/owner/keys/sign",
       links: "/api/owner/link-sets/approve",
       unlink: `/api/owner/links/${p.id}/unlink`,
@@ -748,13 +1711,19 @@ async function approve() {
       clientDataJSON: b64u(got.response.clientDataJSON),
       signature: b64u(got.response.signature),
     });
-    if (r.ok) return p.kind ? approvedLinks(p) : added(p);
+    if (r.ok) return p.finish ? finished(p, r.data) : p.kind ? approvedLinks(p) : added(p);
     stopped(r.data.error === "bad_challenge" ? "slow" : r.data.error === "log_moved" ? "moved" : "refused",
       r.data.detail);
   } finally {
     state.busy = false;
     done();
   }
+}
+
+async function finished(p, data) {
+  state.pending = null;
+  closeSheet(false);
+  await p.done(data);
 }
 
 async function approvedLinks(p) {
@@ -772,6 +1741,11 @@ async function added(p) {
   state.pending = null;
   closeSheet(false);
   if (state.request) return acceptRequest(); // the first passkey was made to accept
+  if (state.invite) { // the first passkey was made to accept an invitation
+    const me = await api("/api/owner/me");
+    if (me.ok) state.me = me.data;
+    return openInvite();
+  }
   if (state.reservation) { // the first passkey was made to get a setup code
     const me = await api("/api/owner/me");
     if (me.ok) state.me = me.data;
@@ -797,6 +1771,12 @@ function stopped(why, detail) {
 }
 
 function restart() {
+  if (state.pending?.again) {
+    const again = state.pending.again;
+    state.pending = null;
+    closeSheet(false);
+    return again();
+  }
   const linking = Boolean(state.pending?.kind);
   const first = state.pending?.first ?? !state.me?.owner_id;
   state.pending = null;
@@ -823,12 +1803,12 @@ function cancelApproval() {
 // ---- sheets
 
 function openSheet(sheet, opener, focus) {
-  const sheets = [$("sheet-name"), $("sheet-approve"), $("sheet-stopped"), $("sheet-code"), $("sheet-code-made")];
-  for (const s of sheets) s.hidden = s !== sheet;
+  for (const s of $("scrim").children) s.hidden = s !== sheet;
   $("scrim").hidden = false;
   $("account").inert = true;
   $("request").inert = true;
   $("reserve").inert = true;
+  $("accept").inert = true;
   if (opener && !state.opener) state.opener = opener; // the first opener is where focus returns
   focus.focus();
 }
@@ -839,6 +1819,7 @@ function closeSheet(returnFocus) {
   $("account").inert = false;
   $("request").inert = false;
   $("reserve").inert = false;
+  $("accept").inert = false;
   const opener = state.opener;
   state.opener = null;
   if (!returnFocus) return;
@@ -848,6 +1829,8 @@ function closeSheet(returnFocus) {
     $("request-title").focus();
   } else if (!$("reserve").hidden) {
     $("reserve-title").focus();
+  } else if (!$("accept").hidden) {
+    $("accept-title").focus();
   } else {
     ($("keys").hidden ? $("first-title") : $("agents-title")).focus();
   }
@@ -865,6 +1848,7 @@ function escape(e) {
   e.preventDefault();
   if (!$("sheet-approve").hidden) return cancelApproval();
   if (!$("sheet-code-made").hidden) return codeDone();
+  if (!$("sheet-invite-made").hidden) return inviteDone();
   state.pending = null;
   closeSheet(true);
 }
@@ -1104,12 +2088,68 @@ function start() {
   on($("reserve-form"), "submit", $("reserve-problem"),
     () => createPasskey($("reserve-name"), $("reserve-problem"), $("reserve-create")));
   on($("reserve-go"), "click", $("reserve-status"), reserveGo);
+  // Contacts, many agents and fleets (P2e-2)
+  $("code-count").addEventListener("input", () => {
+    $("code-fleet-field").hidden = !(Number($("code-count").value) > 1);
+  });
+  $("find-agent").addEventListener("input", () => {
+    state.find = $("find-agent").value.trim().toLowerCase();
+    renderAgents().catch((err) => console.error(err));
+  });
+  on($("show-more"), "click", $("agents-status"), async () => {
+    state.showAll = true;
+    await renderAgents();
+    // Focus the first agent that was hidden.
+    $("agent-list").children[SHOWN]?.querySelector("button, input")?.focus();
+  });
+  on($("pick-start"), "click", $("agents-status"), () => choosing(true));
+  on($("pick-cancel"), "click", $("agents-status"), () => choosing(false));
+  on($("pick-set"), "click", $("agents-status"), () => openMany({ ids: [...state.picked] }));
+  on($("pick-fleet"), "click", $("agents-status"), openInto);
+  for (const id of ["agent-open", "agent-contacts", "agent-same"]) $(id).addEventListener("change", agentForm);
+  for (const id of ["many-open", "many-contacts", "many-same"]) $(id).addEventListener("change", manyForm);
+  on($("agent-form"), "submit", $("agent-problem"), saveAgent);
+  on($("agent-cancel"), "click", $("agent-problem"), () => closeSheet(true));
+  on($("agent-private"), "click", $("agent-problem"), () => { closeSheet(false); return makePrivate(state.agent); });
+  on($("agent-unlink"), "click", $("agent-problem"), () => { closeSheet(false); return startUnlink(state.agent); });
+  on($("many-form"), "submit", $("many-problem"), saveMany);
+  on($("many-cancel"), "click", $("many-problem"), () => closeSheet(true));
+  on($("fleet-rename"), "click", $("many-problem"), openRename);
+  on($("fleet-ungroup"), "click", $("many-problem"), ungroup);
+  $("into-new").addEventListener("change", intoForm);
+  on($("into-form"), "submit", $("into-problem"), saveInto);
+  on($("into-cancel"), "click", $("into-problem"), () => closeSheet(true));
+  on($("rename-form"), "submit", $("rename-problem"), saveRename);
+  on($("rename-cancel"), "click", $("rename-problem"), () => closeSheet(true));
+  on($("connect"), "click", $("contacts-status"), openConnect);
+  for (const id of ["how-code", "how-link", "how-email"]) $(id).addEventListener("change", connectForm);
+  on($("connect-form"), "submit", $("connect-problem"), connectGo);
+  on($("connect-cancel"), "click", $("connect-problem"), () => closeSheet(true));
+  on($("invite-copy"), "click", $("invite-copy-status"), copyLink);
+  on($("invite-done"), "click", $("contacts-status"), inviteDone);
+  on($("remove-go"), "click", $("remove-problem"), removeGo);
+  on($("remove-cancel"), "click", $("remove-problem"), () => closeSheet(true));
+  on($("have-code"), "click", $("contacts-status"), openHaveCode);
+  on($("have-code-form"), "submit", $("their-code-problem"), haveCodeGo);
+  on($("their-code-cancel"), "click", $("their-code-problem"), () => closeSheet(true));
+  on($("accept-form"), "submit", $("accept-name-problem"),
+    () => createPasskey($("accept-name"), $("accept-name-problem"), $("accept-create")));
+  on($("accept-go"), "click", $("accept-problem"), acceptGo);
+  on($("accept-home"), "click", $("accept-problem"), acceptHome);
   // Agents that redeem a code show up here without a reload.
   state.poll = setInterval(refreshAgents, 10_000);
   document.addEventListener("keydown", escape);
+  // An invite link carries its secret in the fragment, which never reaches
+  // the server; it leaves the address bar before anything else happens.
+  const invite = /^\/i\/([A-Za-z0-9_-]{16})$/.exec(location.pathname);
+  if (invite) {
+    const secret = location.hash.slice(1);
+    history.replaceState(null, "", location.pathname);
+    state.invite = { link: invite[1], secret: /^[A-Za-z0-9_-]{22}$/.test(secret) ? secret : null };
+  }
   // An email link carries its token in the fragment, which never reaches
   // the server; it leaves the address bar before anything else happens.
-  const from = new URLSearchParams(location.hash.slice(1));
+  const from = new URLSearchParams(invite ? "" : location.hash.slice(1));
   if (location.hash) history.replaceState(null, "", location.pathname);
   // A link pasted into this open tab only changes the fragment: start over.
   window.addEventListener("hashchange", () => location.reload());

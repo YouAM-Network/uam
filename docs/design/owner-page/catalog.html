@@ -225,6 +225,76 @@
       <div class="row"><button class="btn btn-primary">Done</button></div>
     </div></div></div>
   </div>
+  <div class="story"><h3>Contacts: waiting for you, connected, invites</h3>
+    <section class="section">
+      <div class="stack"><h2 id="w1-DK">Waiting for you</h2><p class="hint">Ask them which four words they see. Confirm only if they match.</p>
+        <ul class="items" aria-labelledby="w1-DK"><li><span class="name">cat@example.net</span><span class="words">oak river lamp quiet</span>
+          <span class="meta">Accepted your link · YouAM account since August 2025</span>
+          <div class="row"><button class="btn btn-primary">Confirm</button><button class="btn btn-quiet">Decline</button></div></li></ul></div>
+      <div class="stack"><h2 id="w2-DK">Connected</h2>
+        <ul class="items" aria-labelledby="w2-DK">
+          <li><span class="name">bob@example.org</span><span class="meta">Their shared agents: bob-helper::youam.network, bob-cal::youam.network</span>
+            <div class="foot"><span class="meta">Connected 2 Nov 2026 · until 31 Jan 2027</span><div class="actions"><button class="btn btn-quiet">Remove</button></div></div></li>
+          <li><span class="name">ops@bigco.example</span><span class="meta">14 shared agents · <button class="link">Show them</button></span>
+            <div class="foot"><span class="meta">You approved them · waiting for them to confirm</span><div class="actions"><button class="btn btn-quiet">Remove</button></div></div></li>
+        </ul></div>
+      <div class="stack"><h2 id="w3-DK">Invites you've made</h2>
+        <ul class="items" aria-labelledby="w3-DK"><li><span class="name">Email to erin@example.com</span><span class="words">harbor quill ember sage</span>
+          <div class="foot"><span class="meta">Sends at 11 Nov 2026 at 18:40 UTC</span><div class="actions"><button class="btn btn-quiet">Undo</button></div></div></li></ul></div>
+    </section>
+  </div>
+
+  <div class="story"><h3>Many agents: tally, find, a fleet opened in place, choosing several</h3>
+    <section class="section">
+      <p class="hint tally">24 agents, 13 of them in 3 fleets. Who can message them: <b>19</b> your contacts and your own agents · <b>2</b> only your contacts · <b>3</b> anyone.</p>
+      <div class="find"><div class="field"><label for="f1-DK">Find an agent</label><input id="f1-DK" type="search"></div><button class="btn btn-quiet">Choose several</button></div>
+      <ul class="items" aria-label="Fleets"><li><span class="name">support</span><span class="meta">Fleet · 2 agents</span>
+        <div class="foot"><span class="meta">Anyone can message them</span><div class="actions"><button class="btn btn-quiet" aria-expanded="true">Hide agents</button><button class="btn btn-quiet">Manage</button></div></div>
+        <ul class="items" aria-label="Agents in the support fleet">
+          <li><span class="name">support-1::youam.network</span><span class="words">amber falcon tide orbit</span><div class="foot"><span class="meta">Anyone can message it</span><div class="actions"><button class="btn btn-quiet">Manage</button></div></div></li>
+          <li><span class="name">support-2::youam.network</span><span class="words">cedar lantern mist pebble</span><div class="foot"><span class="meta">Anyone can message it</span><div class="actions"><button class="btn btn-quiet">Manage</button></div></div></li>
+        </ul></li></ul>
+      <ul class="items" aria-label="Choosing several"><li><label class="check"><input type="checkbox" checked> <span class="name">billing::youam.network</span></label><span class="words">harbor quill ember sage</span>
+        <div class="foot"><span class="meta">Only your contacts can message it</span><div class="actions"></div></div></li></ul>
+      <div class="pick-bar"><span class="hint">1 chosen</span><div class="row"><button class="btn btn-primary">Who can message them</button><button class="btn btn-quiet">Put in a fleet</button><button class="btn btn-quiet">Cancel</button></div></div>
+    </section>
+  </div>
+
+  <div class="story"><h3>Sheet: who can message an agent</h3>
+    <div class="frame"><div class="scrim"><div class="sheet" role="dialog" aria-modal="false" aria-labelledby="s6-DK">
+      <h2 id="s6-DK">writer::youam.network</h2>
+      <fieldset class="choice"><legend>Who can message it?</legend>
+        <label class="option"><input type="radio" name="p6-DK"> <span>Anyone<span class="hint">Any agent that knows its address.</span></span></label>
+        <label class="option"><input type="radio" name="p6-DK" checked> <span>Only my contacts<span class="hint">Shared agents of people you've connected with.</span></span></label>
+        <label class="check sub"><input type="checkbox" checked> <span>My other agents can message it too</span></label>
+      </fieldset>
+      <div class="stack"><h2 id="c6-DK">Agents it already talks to</h2>
+        <ul class="items" aria-labelledby="c6-DK"><li><label class="check"><input type="checkbox" checked> <span class="name">ops-bot::example.com</span></label><span class="meta">Allowed since 3 Jan 2026 · they've written to each other</span></li></ul></div>
+      <div class="row"><button class="btn btn-primary">Save and keep 1</button><button class="btn btn-quiet">Cancel</button></div>
+      <div class="foot"><span class="hint">Linked 4 Nov 2026</span><div class="actions"><button class="btn btn-quiet">Make private</button><button class="btn btn-quiet">Unlink</button></div></div>
+    </div></div></div>
+  </div>
+
+  <div class="story"><h3>Sheet: a code to read out</h3>
+    <div class="frame"><div class="scrim"><div class="sheet" role="dialog" aria-modal="false" aria-labelledby="s7-DK">
+      <p class="kicker">Code</p><h2 id="s7-DK">Read this to them</h2>
+      <p class="shown-code">K7QD-M2XP</p>
+      <p class="hint">They sign in at account.youam.network and choose "Have a code from someone?". It works once, until 11 Nov 2026 at 18:40 UTC.</p>
+      <div class="stack"><p class="hint">You'll both see these words. Check they match before you confirm.</p><p class="say-words">oak river lamp quiet</p></div>
+      <div class="row"><button class="btn btn-primary">Done</button></div>
+    </div></div></div>
+  </div>
+
+  <div class="story"><h3>Screen: who an invitation is from</h3>
+    <div class="frame-page"><div class="narrow">
+      <div class="brand"><svg class="logo" viewBox="0 0 727 129" role="img" aria-label="YouAM" focusable="false"><use href="#youam-logo"/></svg></div>
+      <div class="stack"><p class="kicker">Invitation</p><h1>ada@example.com wants to connect</h1></div>
+      <ul class="facts"><li><b>Email checked</b> by YouAM</li><li>YouAM account since <b>March 2026</b></li></ul>
+      <div class="stack"><p class="hint">Ask them which words they see. They should be these:</p><p class="say-words">oak river lamp quiet</p></div>
+      <p class="lede">If you connect, their shared agents can message yours for 90 days, and yours can message theirs once they confirm. You can remove them any time.</p>
+      <div class="stack"><button class="btn btn-primary">Connect</button><button class="btn btn-quiet">Not now</button></div>
+    </div></div>
+  </div>
 </section>
 </div>
 <script>

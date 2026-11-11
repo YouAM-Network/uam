@@ -136,6 +136,8 @@ class SignEntry(BaseModel):
 def _fleet_name(name: str) -> str:
     if any(ord(c) < 32 or ord(c) == 127 for c in name):
         raise ValueError("one line")
+    if '"' in name:  # it's quoted in the sentence a passkey signs
+        raise ValueError('no "')
     tidy = fleets.tidy(name)
     if not 1 <= len(tidy) <= fleets.MAX_NAME:
         raise ValueError(f"1 to {fleets.MAX_NAME} characters")

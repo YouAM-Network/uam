@@ -58,6 +58,22 @@ def test_the_page_is_served_at_the_root_of_the_owner_origin(owner):
     assert "<title>YouAM account</title>" in resp.text
 
 
+def test_an_invite_link_opens_the_same_page(owner):
+    """``/i/<id>#<secret>``: the secret stays in the fragment, so the server
+    only ever sees the id, and answers with the page itself."""
+    resp = owner.get("/i/" + "Ab-_" * 4)
+    assert resp.status_code == 200
+    assert resp.text == owner.get("/").text
+    assert "default-src 'self'" in resp.headers["content-security-policy"]
+    assert resp.headers.get("referrer-policy", "no-referrer") == "no-referrer"
+
+
+@pytest.mark.parametrize("path", ["/i/", "/i/short", "/i/" + "a" * 17, "/i/" + "a" * 15 + "!",
+                                  "/i/" + "a" * 16 + "/x"])
+def test_only_an_invite_id_opens_it(owner, path):
+    assert owner.get(path).status_code == 404
+
+
 def test_every_asset_is_pinned_by_its_hash(owner):
     tags = ASSET.findall(owner.get("/").text)
     assets = [t for t in tags if _attr(t, "src") or _attr(t, "rel") == "stylesheet"]

@@ -145,6 +145,10 @@ def policies_screen(bodies: list[dict[str, Any]], fleet: str | None = None) -> s
         raise ContactError("each agent once")
     if len({(body["policy"], body["sameOwner"]) for body in bodies}) != 1:
         raise ContactError("one setting for all of them")
+    if fleet is not None and (
+        not fleet or '"' in fleet or any(ord(c) < 32 or ord(c) == 127 for c in fleet)
+    ):
+        raise ContactError("a fleet's name is one line without quotes")
     if len(bodies) == 1 and fleet is None:
         return policy_screen(bodies[0])
     first = bodies[0]

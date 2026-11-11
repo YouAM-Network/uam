@@ -24,6 +24,7 @@ from typing import Any
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from uam.db.crud import inbound as inbound_crud
 from uam.db.crud import owner_links as crud
 from uam.db.crud import owners as owner_crud
 from uam.db.models import Agent, Owner, OwnerLink, OwnerPasskey, OwnerUnlink, Reservation
@@ -346,8 +347,17 @@ async def agent_status(session: AsyncSession, vault: EmailVault, agent: Agent) -
 
 
 async def list_links(session: AsyncSession, owner: Owner) -> list[dict[str, Any]]:
+    """The owner's links, each with who may message its agent (an agent
+    with no setting yet lets anyone in, its own owner's agents too)."""
     now = service.utcnow()
-    return [view(link, now) for link in await crud.links_for_owner(session, owner.id)]
+    rows = await crud.links_for_owner(session, owner.id)
+    policies = await inbound_crud.policies_for(session, [link.agent_address for link in rows])
+    out = []
+    for link in rows:
+        row = policies.get(link.agent_address)
+        out.append({**view(link, now), "policy": row.policy if row else "open",
+                    "sameOwner": row.same_owner if row else True})
+    return out
 
 
 async def _owned(session: AsyncSession, owner: Owner, link_id: int) -> OwnerLink:

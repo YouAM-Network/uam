@@ -166,3 +166,27 @@ h2 { font-size: var(--text-m); font-weight: 600; letter-spacing: -0.006em; margi
 .sheet .row { margin-top: var(--space-2); }
 .row { display: flex; gap: var(--space-2); }
 .row .btn-quiet { flex: none; }
+
+/* Contacts (P2e-2). A few checked facts about a person, one per line */
+.facts { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-1); }
+.facts li { font-size: var(--text-s); color: var(--ink-soft); }
+.facts b { font-weight: 500; color: var(--ink); }
+/* The four words two people compare, big enough to read aloud */
+.say-words { font: 500 var(--text-l) / 1.4 var(--mono); letter-spacing: 0.02em; margin: 0; overflow-wrap: anywhere; }
+
+/* Many agents: a count of each setting, the find field with "Choose several" beside it */
+.tally b { font-weight: 500; color: var(--ink); }
+.find { display: flex; align-items: end; gap: var(--space-3); flex-wrap: wrap; }
+.find .field { flex: 1 1 var(--width-find); }
+.find .btn { width: auto; }
+/* What's chosen, and the one thing to do with it, kept in view */
+.pick-bar {
+  position: sticky; bottom: 0; background: var(--page);
+  border-top: var(--rule-width) solid var(--rule); padding: var(--space-3) 0;
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2);
+}
+/* An option's own setting, indented under it */
+.check.sub { padding-left: calc(var(--space-4) + var(--space-3)); }
+/* A fleet's agents, opened in place under its row */
+.items .items { margin-left: var(--space-4); }
+.items .items li:last-child { border-bottom: 0; padding-bottom: 0; }

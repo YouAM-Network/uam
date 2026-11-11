@@ -204,6 +204,12 @@ def test_a_sentence_for_several_needs_one_setting_and_distinct_agents(bodies):
     with pytest.raises(ContactError):
         policies_screen(bodies)
 
+
+@pytest.mark.parametrize("fleet", ['say "hi"', "", "a\nb"])
+def test_a_fleet_name_is_one_line_without_quotes(fleet):
+    with pytest.raises(ContactError):
+        policies_screen(_several("a", "b"), fleet=fleet)
+
 # ---------------------------------------------------------------- the policy object
 
 

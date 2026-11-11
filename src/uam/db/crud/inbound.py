@@ -27,6 +27,14 @@ async def get_policy(session: AsyncSession, agent: str) -> InboundPolicy | None:
     return await session.get(InboundPolicy, agent)
 
 
+async def policies_for(session: AsyncSession, agents: list[str]) -> dict[str, InboundPolicy]:
+    """The policy rows these agents have (an agent with none isn't in it)."""
+    if not agents:
+        return {}
+    rows = await session.execute(select(InboundPolicy).where(InboundPolicy.agent_address.in_(agents)))
+    return {row.agent_address: row for row in rows.scalars()}
+
+
 async def list_contacts(
     session: AsyncSession, agent: str, *, limit: int = 500, offset: int = 0
 ) -> list[InboundContact]:

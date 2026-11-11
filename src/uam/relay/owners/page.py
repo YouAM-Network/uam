@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import re
 from dataclasses import dataclass
 from importlib import resources
 
@@ -20,6 +21,9 @@ _ASSETS = {
     "owner.css": "text/css; charset=utf-8",
     "owner.js": "text/javascript; charset=utf-8",
 }
+
+#: contacts.invite_id: the first 16 characters of the invite's hash.
+_INVITE_ID = re.compile(r"[A-Za-z0-9_-]{16}")
 
 
 @dataclass(frozen=True)
@@ -55,6 +59,14 @@ def page_router() -> APIRouter:
 
     @router.get("/", response_class=HTMLResponse, include_in_schema=False)
     async def index() -> HTMLResponse:
+        return HTMLResponse(html)
+
+    # An invite link (/i/<id>#<secret>, P2e): the same page, which reads the
+    # id from the path and the secret from the fragment the server never sees.
+    @router.get("/i/{invite_id}", response_class=HTMLResponse, include_in_schema=False)
+    async def invite(invite_id: str) -> HTMLResponse:
+        if not _INVITE_ID.fullmatch(invite_id):
+            raise HTTPException(status_code=404, detail="Not Found")
         return HTMLResponse(html)
 
     @router.get("/static/{name}", include_in_schema=False)

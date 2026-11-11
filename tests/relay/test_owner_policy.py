@@ -86,6 +86,17 @@ def test_a_new_link_takes_anyone(bob, bea):
     assert got["carriedOver"] == [] and got["kept"] == []
 
 
+def test_the_agent_list_says_who_can_message_each(bob, bea):
+    """The page's list shows every agent's setting without asking for each."""
+    def listed():
+        [link] = [x for x in bob.get("/api/owner/links").json()["links"] if x["id"] == bea["link"]]
+        return link["policy"], link["sameOwner"]
+
+    assert listed() == ("open", True)
+    assert _narrow(bob, bea, "contacts", False).status_code == 200
+    assert listed() == ("contacts", False)
+
+
 def test_only_the_owner_sees_an_agents_policy(ada, bea):
     assert ada.get(f"/api/owner/links/{bea['link']}/policy").status_code == 404
 

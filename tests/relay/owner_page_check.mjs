@@ -24,6 +24,16 @@ for (const c of cases.links ?? []) {
     out.links.push({ name: c.name, ok: false, error: String(e.message) });
   }
 }
+out.contacts = [];
+for (const c of cases.contacts ?? []) {
+  try {
+    out.contacts.push({ name: c.name, ok: true, screen: await page.checkContactApproval(c.kind, c.answer, c.ctx) });
+  } catch (e) {
+    out.contacts.push({ name: c.name, ok: false, error: String(e.message) });
+  }
+}
+out.inviteWords = {};
+for (const h of cases.inviteHashes ?? []) out.inviteWords[h] = await page.inviteWords(h);
 out.words = {};
 for (const key of cases.agentKeys ?? []) out.words[key] = await page.wordsFor(key);
 out.wordList = page.WORDS?.length === 2048 ? page.WORDS.join(" ") : null;

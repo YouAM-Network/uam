@@ -36,7 +36,9 @@ Files:
 10. **Dark is the brand default, and light follows the system.** Both themes define the same meanings. `[data-theme]` forces one, for the catalogue.
 11. **Every control can be reached and used from the keyboard**, with a visible focus ring, and is at least 44 px tall (`--touch`). Text and controls meet WCAG AA contrast in both themes.
 12. **Buttons say what happens:** "Email me a code", "Create passkey", "Approve with passkey". Never "OK" or "Submit". Use sentence case and plain words.
-13. **The brand is the YouAM lockup, never typed.** The mark and the wordmark are one shape, traced from youam.network's logo (`/youam-logo.png`), drawn in the text colour. Never set "YouAM" in type next to the mark, change its proportions, or use the mark alone in the header.
+13. **Letting more in takes a passkey; letting fewer in never does.** A form that changes who can message agents says which it is before Save, and widening several agents at once is one approval whose sentence names every one of them.
+14. **A person is named by what YouAM checked**: the email they signed in with and how old their account is, never anything they typed about themselves. The four words that both people compare are big enough to read aloud.
+15. **The brand is the YouAM lockup, never typed.** The mark and the wordmark are one shape, traced from youam.network's logo (`/youam-logo.png`), drawn in the text colour. Never set "YouAM" in type next to the mark, change its proportions, or use the mark alone in the header.
 
 ## Components
 
@@ -58,7 +60,14 @@ Files:
 | Include box | `.check` | ticked, not ticked |
 | Choice of one | `.choice`, `.option` | one picked |
 | Code and command | `.shown-code`, `.command` | one each |
-| Sheet | `.scrim`, `.sheet`, `.kicker`, `.row` | approve, name a passkey, expired, add an agent, code made |
+| Sheet | `.scrim`, `.sheet`, `.kicker`, `.row` | approve, name a passkey, expired, add an agent, code made, an agent's setting, several agents or a fleet, put in a fleet, rename a fleet, connect, code or link made, remove, type a code |
+| Checked facts | `.facts` | one per line, the fact in ink |
+| Words to read aloud | `.say-words` | one |
+| Tally | `.tally` | counts in ink |
+| Find | `.find` | with "Choose several", field hidden with 8 agents or fewer |
+| Choosing several | `.pick-bar` | none chosen (buttons off), some chosen |
+| An option's own setting | `.check.sub` | under "Only my contacts" only |
+| A fleet's agents | `.items .items` | closed, opened in place |
 
 ## States of the page
 
@@ -90,6 +99,24 @@ Files:
 | 24 | Reserved name, code made | What to do with the code | Open your account |
 | 25 | Reserved name link that ended | Why: expired, taken, or not the whole link | none |
 | 26 | Account, names reserved for you | "Reserved for you" list with "Make a setup code" on each, above the agents | Add an agent |
+| 27 | Account, no contacts | Contacts: an empty line, "Have a code from someone?" | Add an agent |
+| 28 | Connect: choose how | Sheet: a code, a link or an email | Make a code · Make a link · Continue |
+| 29 | Code or link made | Sheet: the code or link (shown once), the four words | Done · Copy link |
+| 30 | Approve an email invite | Sheet with the sentence | Approve with passkey |
+| 31 | Someone accepted your code or link | "Waiting for you": their checked email, account age, the words | Confirm ("Add an agent" turns quiet) |
+| 32 | Approve confirming | Sheet with the sentence | Approve with passkey |
+| 33 | Remove a contact | Sheet: what stops, and that it's one-way; no passkey | Remove (their email) |
+| 34 | Type a code | Sheet: the code field | Find the invite |
+| 35 | An agent's setting | Sheet: Anyone / Only my contacts, own agents under it, carried-over contacts to keep, Make private, Unlink | Save · Save and keep N |
+| 36 | More than 8 agents | A tally of each setting, find, fleets first, 8 others and "Show N more" | Add an agent |
+| 37 | Choosing several | Ticks on each agent, a bar that stays in view | Who can message them |
+| 38 | Several agents or a fleet | Sheet: the names, the same choice; for a fleet Rename and Ungroup | Save for N agents |
+| 39 | Put in a fleet | Sheet: a new fleet (name) or one you have | Make the fleet · Move N agents |
+| 40 | Invite link, signed out (`/i/<id>#<secret>`) | Sign-in, titled as an invitation | Email me a code |
+| 41 | Invite, no passkey yet | Name a passkey | Create passkey |
+| 42 | Who it's from | Their checked email, account age, the four words, what connecting means | Connect |
+| 43 | Accepted, or connected | What happens next | Go to your account |
+| 44 | Invite used, ended, yours or someone else's | Why, in a problem line | Go to your account |
 
 "Add a passkey" is a quiet button once the account has a passkey: agents are what the page is for.
 Agents that redeem a code appear without a reload (the page checks every 10 seconds while no sheet is open).

@@ -38,7 +38,7 @@ def test_the_account_page_says_youam():
 
 
 def test_the_header_is_the_youam_lockup_not_typed():
-    """docs/design/owner-page/DESIGN.md rule 13: one lockup shape, never the name set in type."""
+    """docs/design/owner-page/DESIGN.md rule 15: one lockup shape, never the name set in type."""
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     assert html.count('<symbol id="youam-logo"') == 1
     brands = html.split('<div class="brand">')[1:]

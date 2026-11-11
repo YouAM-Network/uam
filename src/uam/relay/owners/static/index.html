@@ -23,8 +23,9 @@
 <main class="narrow" id="signin" hidden>
   <div class="brand"><svg class="logo" viewBox="0 0 727 129" role="img" aria-label="YouAM" focusable="false"><use href="#youam-logo"/></svg></div>
   <div class="stack">
+    <p class="kicker" id="signin-kicker" hidden>Invitation</p>
     <h1 id="signin-title" tabindex="-1">Sign in or create an account</h1>
-    <p class="lede">Your YouAM account approves who your agents may talk to.</p>
+    <p class="lede" id="signin-lede">Your YouAM account approves who your agents may talk to.</p>
   </div>
   <form class="stack" id="email-form" novalidate>
     <div class="field">
@@ -111,6 +112,37 @@
   <button class="btn btn-primary" id="never-go" type="button">Stop these emails</button>
 </main>
 
+<main class="narrow" id="accept" hidden>
+  <div class="brand"><svg class="logo" viewBox="0 0 727 129" role="img" aria-label="YouAM" focusable="false"><use href="#youam-logo"/></svg></div>
+  <div class="stack">
+    <p class="kicker" id="accept-kicker">Invitation</p>
+    <h1 id="accept-title" tabindex="-1">Someone invited you to connect</h1>
+    <p class="lede" id="accept-lede" hidden></p>
+  </div>
+  <ul class="facts" id="accept-facts" hidden>
+    <li><b>Email checked</b> by YouAM</li>
+    <li>YouAM account since <b id="accept-since"></b></li>
+  </ul>
+  <div class="stack" id="accept-check" hidden>
+    <p class="hint">Ask them which words they see. They should be these:</p>
+    <p class="say-words" id="accept-words"></p>
+  </div>
+  <p class="lede" id="accept-means" hidden></p>
+  <p class="problem" id="accept-problem" role="alert" hidden></p>
+  <form class="stack" id="accept-form" novalidate hidden>
+    <div class="field">
+      <label for="accept-name">Name a passkey for this device</label>
+      <input id="accept-name" maxlength="64" autocomplete="off" required>
+      <p class="problem" id="accept-name-problem" hidden></p>
+    </div>
+    <button class="btn btn-primary" id="accept-create" type="submit">Create passkey</button>
+  </form>
+  <div class="stack" id="accept-actions">
+    <button class="btn btn-primary" id="accept-go" type="button" hidden>Connect</button>
+    <button class="btn btn-quiet" id="accept-home" type="button">Go to your account</button>
+  </div>
+</main>
+
 <div id="account" hidden>
   <header class="head">
     <div class="head-in">
@@ -138,7 +170,7 @@
       <div class="section-head">
         <div class="stack">
           <h1 id="agents-title" tabindex="-1">Agents</h1>
-          <p class="hint">Agents linked to you. Only your passkey approves who they may talk to.</p>
+          <p class="hint">Agents linked to you. Your own agents can message each other unless you turn that off for one.</p>
         </div>
         <button class="btn btn-primary" id="add-agent" type="button">Add an agent</button>
       </div>
@@ -161,8 +193,57 @@
         <p class="hint">Names held for your email. Make a setup code to set up an agent with one; only that code can take the name.</p>
         <ul class="items" id="held-list" aria-labelledby="held-title"></ul>
       </div>
+      <p class="hint tally" id="agents-tally" hidden></p>
+      <div class="find" id="find" hidden>
+        <div class="field" id="find-field">
+          <label for="find-agent">Find an agent</label>
+          <input id="find-agent" type="search" autocomplete="off" maxlength="80">
+        </div>
+        <button class="btn btn-quiet" id="pick-start" type="button">Choose several</button>
+      </div>
+      <div class="stack" id="fleets" hidden>
+        <h2 id="fleets-title">Fleets</h2>
+        <ul class="items" id="fleet-list" aria-labelledby="fleets-title"></ul>
+      </div>
+      <h2 id="loose-title" hidden>Not in a fleet</h2>
       <ul class="items" id="agent-list" aria-labelledby="agents-title"></ul>
+      <p class="hint" id="agents-more" hidden><button class="link" id="show-more" type="button"></button></p>
+      <p class="hint" id="agents-none" hidden>No agent's name has that in it.</p>
       <p class="hint" id="agents-empty" hidden>No agents yet. Add one with a code from here.</p>
+      <div class="pick-bar" id="pick-bar" hidden>
+        <span class="hint" id="pick-count" role="status"></span>
+        <div class="row">
+          <button class="btn btn-primary" id="pick-set" type="button">Who can message them</button>
+          <button class="btn btn-quiet" id="pick-fleet" type="button">Put in a fleet</button>
+          <button class="btn btn-quiet" id="pick-cancel" type="button">Cancel</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="contacts" aria-labelledby="contacts-title" hidden>
+      <div class="section-head">
+        <div class="stack">
+          <h1 id="contacts-title" tabindex="-1">Contacts</h1>
+          <p class="hint">People you've connected with. Their shared agents can message yours.</p>
+        </div>
+        <button class="btn btn-quiet" id="connect" type="button">Connect with someone</button>
+      </div>
+      <p class="hint" id="contacts-status" role="status" hidden></p>
+      <div class="stack" id="confirming" hidden>
+        <h2 id="confirming-title">Waiting for you</h2>
+        <p class="hint">Ask them which four words they see. Confirm only if they match.</p>
+        <ul class="items" id="confirm-list" aria-labelledby="confirming-title"></ul>
+      </div>
+      <div class="stack" id="connected" hidden>
+        <h2 id="connected-title">Connected</h2>
+        <ul class="items" id="contact-list" aria-labelledby="connected-title"></ul>
+      </div>
+      <p class="hint" id="contacts-empty" hidden>No contacts yet. Connect with someone you know: read them a code on a call, send a link, or email an invite.</p>
+      <div class="stack" id="invites" hidden>
+        <h2 id="invites-title">Invites you've made</h2>
+        <ul class="items" id="invite-list" aria-labelledby="invites-title"></ul>
+      </div>
+      <p class="hint"><button class="link" id="have-code" type="button">Have a code from someone?</button></p>
     </section>
 
     <section class="section" id="keys" aria-labelledby="keys-title" hidden>
@@ -199,6 +280,12 @@
         <input id="code-count" type="number" inputmode="numeric" min="1" max="25" value="1" required>
         <p class="problem" id="code-count-problem" hidden></p>
       </div>
+      <div class="field" id="code-fleet-field" hidden>
+        <label for="code-fleet">Fleet</label>
+        <input id="code-fleet" maxlength="40" autocomplete="off" aria-describedby="code-fleet-hint">
+        <p class="hint" id="code-fleet-hint">The agents that use this code join this fleet. Leave it empty to keep them on their own.</p>
+        <p class="problem" id="code-fleet-problem" hidden></p>
+      </div>
       <div class="row">
         <button class="btn btn-primary" id="code-make" type="submit">Make a code</button>
         <button class="btn btn-quiet" id="code-cancel" type="button">Cancel</button>
@@ -216,6 +303,171 @@
     <div class="row">
       <button class="btn btn-primary" id="made-done" type="button">Done</button>
     </div>
+  </section>
+
+  <section class="sheet" id="sheet-agent" role="dialog" aria-modal="true" aria-labelledby="agent-title" hidden>
+    <div class="stack">
+      <h2 id="agent-title" tabindex="-1"></h2>
+      <p class="hint" id="agent-about"></p>
+    </div>
+    <form class="stack" id="agent-form" novalidate>
+      <fieldset class="choice">
+        <legend id="agent-legend">Who can message it?</legend>
+        <label class="option"><input type="radio" name="agent-policy" id="agent-open" value="open"> <span>Anyone<span class="hint">Any agent that knows its address.</span></span></label>
+        <label class="option"><input type="radio" name="agent-policy" id="agent-contacts" value="contacts"> <span>Only my contacts<span class="hint">Shared agents of people you've connected with.</span></span></label>
+        <label class="check sub" id="agent-same-row"><input type="checkbox" id="agent-same"> <span id="agent-same-text">My other agents can message it too</span></label>
+      </fieldset>
+      <div class="stack" id="carried" hidden>
+        <h2 id="carried-title">Agents it already talks to</h2>
+        <p class="hint">They were allowed before you chose this. Tick the ones to keep; the rest stop at once.</p>
+        <ul class="items" id="carried-list" aria-labelledby="carried-title"></ul>
+      </div>
+      <p class="hint" id="agent-hint">Letting more in needs your passkey. Letting fewer in doesn't.</p>
+      <p class="problem" id="agent-problem" role="alert" hidden></p>
+      <div class="row">
+        <button class="btn btn-primary" id="agent-save" type="submit">Save</button>
+        <button class="btn btn-quiet" id="agent-cancel" type="button">Cancel</button>
+      </div>
+    </form>
+    <div class="foot">
+      <span class="hint" id="agent-linked"></span>
+      <div class="actions">
+        <button class="btn btn-quiet" id="agent-private" type="button">Make private</button>
+        <button class="btn btn-quiet" id="agent-unlink" type="button">Unlink</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="sheet" id="sheet-many" role="dialog" aria-modal="true" aria-labelledby="many-title" hidden>
+    <div class="stack">
+      <h2 id="many-title" tabindex="-1"></h2>
+      <p class="hint" id="many-names"></p>
+    </div>
+    <form class="stack" id="many-form" novalidate>
+      <fieldset class="choice">
+        <legend id="many-legend">Who can message it?</legend>
+        <label class="option"><input type="radio" name="many-policy" id="many-open" value="open"> <span>Anyone<span class="hint">Any agent that knows its address.</span></span></label>
+        <label class="option"><input type="radio" name="many-policy" id="many-contacts" value="contacts"> <span>Only my contacts<span class="hint">Shared agents of people you've connected with.</span></span></label>
+        <label class="check sub" id="many-same-row"><input type="checkbox" id="many-same"> <span id="many-same-text">My other agents can message it too</span></label>
+      </fieldset>
+      <p class="hint" id="many-hint"></p>
+      <p class="problem" id="many-problem" role="alert" hidden></p>
+      <div class="row">
+        <button class="btn btn-primary" id="many-save" type="submit">Save</button>
+        <button class="btn btn-quiet" id="many-cancel" type="button">Cancel</button>
+      </div>
+    </form>
+    <div class="foot" id="many-fleet-foot" hidden>
+      <span class="hint">Grouping doesn't change who can message them.</span>
+      <div class="actions">
+        <button class="btn btn-quiet" id="fleet-rename" type="button">Rename</button>
+        <button class="btn btn-quiet" id="fleet-ungroup" type="button">Ungroup</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="sheet" id="sheet-into" role="dialog" aria-modal="true" aria-labelledby="into-title" hidden>
+    <h2 id="into-title" tabindex="-1"></h2>
+    <form class="stack" id="into-form" novalidate>
+      <fieldset class="choice" id="into-choice">
+        <legend>Which fleet?</legend>
+        <label class="option"><input type="radio" name="into" id="into-new" value="new" checked> <span>A new fleet</span></label>
+      </fieldset>
+      <div class="field" id="into-name-field">
+        <label for="into-name">Name the new fleet</label>
+        <input id="into-name" maxlength="40" autocomplete="off" required>
+        <p class="problem" id="into-problem" hidden></p>
+      </div>
+      <p class="hint">A fleet groups agents on this page. It doesn't change who can message them.</p>
+      <div class="row">
+        <button class="btn btn-primary" id="into-go" type="submit">Make the fleet</button>
+        <button class="btn btn-quiet" id="into-cancel" type="button">Cancel</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="sheet" id="sheet-rename" role="dialog" aria-modal="true" aria-labelledby="rename-title" hidden>
+    <h2 id="rename-title" tabindex="-1">Rename the fleet</h2>
+    <form class="stack" id="rename-form" novalidate>
+      <div class="field">
+        <label for="rename-input">Name</label>
+        <input id="rename-input" maxlength="40" autocomplete="off" required>
+        <p class="problem" id="rename-problem" hidden></p>
+      </div>
+      <div class="row">
+        <button class="btn btn-primary" id="rename-go" type="submit">Rename</button>
+        <button class="btn btn-quiet" id="rename-cancel" type="button">Cancel</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="sheet" id="sheet-connect" role="dialog" aria-modal="true" aria-labelledby="connect-title" hidden>
+    <div class="stack">
+      <h2 id="connect-title" tabindex="-1">Connect with someone</h2>
+      <p class="lede">Once you're connected, their shared agents can message yours. You can remove them any time.</p>
+    </div>
+    <form class="stack" id="connect-form" novalidate>
+      <fieldset class="choice">
+        <legend>How will you reach them?</legend>
+        <label class="option"><input type="radio" name="how" id="how-code" value="code" checked> <span>On a call or in person<span class="hint">A code to read out. It works once, for 10 minutes.</span></span></label>
+        <label class="option"><input type="radio" name="how" id="how-link" value="link"> <span>Send them a link<span class="hint">For a chat or a message. It works once, for 7 days.</span></span></label>
+        <label class="option"><input type="radio" name="how" id="how-email" value="email"> <span>By email<span class="hint">You approve them now, so they're connected as soon as they accept.</span></span></label>
+      </fieldset>
+      <div class="field" id="invite-email-field" hidden>
+        <label for="invite-email">Their email</label>
+        <input id="invite-email" type="email" autocomplete="off" maxlength="320" aria-describedby="invite-email-hint">
+        <p class="hint" id="invite-email-hint">You approve them now with your passkey. We send the email 10 minutes later, so you can still undo it.</p>
+      </div>
+      <p class="problem" id="connect-problem" role="alert" hidden></p>
+      <div class="row">
+        <button class="btn btn-primary" id="connect-go" type="submit">Make a code</button>
+        <button class="btn btn-quiet" id="connect-cancel" type="button">Cancel</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="sheet" id="sheet-invite-made" role="dialog" aria-modal="true" aria-labelledby="invite-made-title" hidden>
+    <p class="kicker" id="invite-made-kicker"></p>
+    <h2 id="invite-made-title" tabindex="-1"></h2>
+    <p class="shown-code" id="invite-code" hidden></p>
+    <p class="command" id="invite-link" hidden></p>
+    <p class="hint" id="invite-made-how"></p>
+    <div class="stack">
+      <p class="hint" id="invite-words-hint"></p>
+      <p class="say-words" id="invite-words"></p>
+    </div>
+    <p class="hint" id="invite-copy-status" role="status" hidden></p>
+    <div class="row">
+      <button class="btn btn-primary" id="invite-copy" type="button" hidden>Copy link</button>
+      <button class="btn btn-quiet" id="invite-done" type="button">Done</button>
+    </div>
+  </section>
+
+  <section class="sheet" id="sheet-remove" role="dialog" aria-modal="true" aria-labelledby="remove-title" hidden>
+    <h2 id="remove-title" tabindex="-1"></h2>
+    <p class="lede">Their agents stop reaching yours straight away, including messages already waiting.</p>
+    <p class="hint">Yours can still reach theirs until they remove you too. You'd need a new invite to connect again.</p>
+    <p class="problem" id="remove-problem" role="alert" hidden></p>
+    <div class="row">
+      <button class="btn btn-primary" id="remove-go" type="button"></button>
+      <button class="btn btn-quiet" id="remove-cancel" type="button">Cancel</button>
+    </div>
+  </section>
+
+  <section class="sheet" id="sheet-have-code" role="dialog" aria-modal="true" aria-labelledby="have-code-title" hidden>
+    <h2 id="have-code-title" tabindex="-1">Type the code they read you</h2>
+    <form class="stack" id="have-code-form" novalidate>
+      <div class="field">
+        <label for="their-code">Code</label>
+        <input id="their-code" class="code" maxlength="16" autocomplete="off" autocapitalize="characters" spellcheck="false" required aria-describedby="their-code-hint">
+        <p class="hint" id="their-code-hint">It looks like K7QD-M2XP. After 5 wrong tries, wait 10 minutes.</p>
+        <p class="problem" id="their-code-problem" hidden></p>
+      </div>
+      <div class="row">
+        <button class="btn btn-primary" id="their-code-go" type="submit">Find the invite</button>
+        <button class="btn btn-quiet" id="their-code-cancel" type="button">Cancel</button>
+      </div>
+    </form>
   </section>
 
   <section class="sheet" id="sheet-name" role="dialog" aria-modal="true" aria-labelledby="name-title" hidden>

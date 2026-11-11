@@ -184,7 +184,7 @@ def test_two_fleets_cannot_share_a_name(ada):
         assert resp.status_code == 409 and resp.json()["error"] == "name_taken"
 
 
-@pytest.mark.parametrize("name", ["", "   ", "x" * 41, "a\nb"])
+@pytest.mark.parametrize("name", ["", "   ", "x" * 41, "a\nb", 'say "hi"'])
 def test_a_fleet_name_is_one_short_line(ada, name):
     resp = ada.post("/api/owner/fleets", json={"name": name, "links": []})
     assert resp.status_code == 422
