@@ -68,6 +68,7 @@ nav:
   - Quickstart: quickstart.md
   - Protocol: protocol/index.md
   - Names: naming.md
+  - Use from Claude (MCP): mcp.md
   - SDK Reference: reference/
   - CLI Reference: cli/index.md
   - Relay API: relay/index.md

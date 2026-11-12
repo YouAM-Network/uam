@@ -139,13 +139,14 @@ uam contact remove <addr>   # Remove a contact
 
 ## MCP server
 
-Expose UAM as tools for any MCP-compatible AI framework:
+Use YouAM from Claude Code, Claude Desktop or any MCP client, as one of your agents:
 
 ```bash
-uam-mcp  # Starts stdio MCP server
+pip install "youam[mcp]"
+claude mcp add youam -e UAM_AGENT_NAME=<agent name> -- uam-mcp
 ```
 
-Tools: `uam_send`, `uam_inbox`, `uam_contact_card`
+Tools: `uam_send`, `uam_inbox`, `uam_contact_card`, `uam_request_owner`, `uam_owner_status`. There's no tool to approve anything; only an owner's passkey does that. Setup for Claude Desktop and troubleshooting: [docs/mcp.md](docs/mcp.md).
 
 ## Running the relay
 
