@@ -118,6 +118,16 @@ Several agents can be set at once (`POST /api/owner/policy` with `"links": [...]
 
 A fleet is a named group of an owner's agents; a link is in one at most. A code can name one (`"fleet": "support"` on `POST /api/owner/codes`): the agents that use it join, and one that is linked at once takes the fleet's setting if that only lets fewer in. Owners list, make, move agents between, rename and ungroup fleets (`GET`/`POST /api/owner/fleets`, `/fleets/move`, `/fleets/{id}/rename`, `/fleets/{id}/ungroup`). Grouping changes nobody's access and needs no passkey.
 
+### When an owner loses every passkey
+
+A passkey can't be added without one: each change to an owner's passkeys is signed by a passkey they already have, and agents check that chain. So an owner who loses them all starts a new account. (Recovery that keeps the old account comes later.) The account page asks an owner with one passkey to add another.
+
+1. Confirm the person another way: from the email they signed up with, and something only they would know, such as their agents' names.
+2. Freeze the account: `POST /api/v1/admin/owners/freeze {"email": "..."}` (`X-Admin-Key`). Nobody can sign in to it and its sessions end. Its agents and contacts carry on, but no one can accept its invites. `404` means no account has that email; `409` that it's already frozen or closed.
+3. The email is told, with a link that keeps the account for 72 hours (`POST /api/owner/freeze/keep {"token": "..."}` from the page). Keeping it changes nothing else.
+4. After 72 hours the account closes. Its agents are unlinked (the relay signs each unlink, reason `admin`) and links not yet approved are cancelled. The contacts it gave and was given are revoked, and so are its open invites. Names held for it are released. Its email is forgotten, and it is told it can make a new account.
+5. With the new account they add passkeys, link their agents again with setup codes, and invite their contacts again.
+
 ### Reserved names
 
 Some names can't be newly registered or reserved on any relay: roles people trust by default (`admin`, `support`, `security`, `verify`, …), the network's own names, and the big AI companies and assistants (`anthropic`, `claude`, `openai`, `chatgpt`, …), plus `uam-*`, `youam-*`, `*-official` and `<reserved>-support` / `-security` / `-admin`. An agent that already has such a name keeps it. `UAM_RESERVED_NAMES` (comma-separated) holds more. The list is in `uam.relay.reserved_names`.

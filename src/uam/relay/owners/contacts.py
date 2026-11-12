@@ -487,6 +487,9 @@ async def _locate(
         raise _used()
     if _state(invite, now) != "open":
         raise _ended()
+    inviter = await session.get(Owner, invite.owner_pk)
+    if inviter is None or inviter.status != "active":  # frozen (DEC-010)
+        raise _ended()
     if invite.mode == "preapproved":
         body = parse_body(invite.body)
         mine = await _emails(session, vault, owner.id)
@@ -559,6 +562,9 @@ async def redeem(
         return _ended()
 
     if _state(invite, now) != "open":
+        raise await lost()
+    inviter = await session.get(Owner, inviter_pk)
+    if inviter is None or inviter.status != "active":  # frozen since redeem_start (DEC-010)
         raise await lost()
     redemption = parse_body(held["redemption"])
     grant = parse_body(held["grant"])

@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from uam.db.models import (
     InviteRedemption,
+    Owner,
     OwnerGrant,
     OwnerInvite,
     OwnerInviteTry,
@@ -77,9 +78,11 @@ async def move_invite(
 
 
 async def emails_due(session: AsyncSession, now: datetime) -> list[OwnerInvite]:
-    """Pre-approved invites whose undo time has passed and whose email hasn't gone."""
+    """Pre-approved invites whose undo time has passed and whose email hasn't
+    gone, from accounts that aren't frozen (DEC-010)."""
     return list((await session.execute(
-        select(OwnerInvite).where(
+        select(OwnerInvite).join(Owner, Owner.id == OwnerInvite.owner_pk).where(
+            Owner.status == "active",
             OwnerInvite.how == "email", OwnerInvite.state == "open",
             OwnerInvite.sent_at.is_(None), OwnerInvite.send_at <= now,
             OwnerInvite.redeem_by > now,

@@ -30,7 +30,17 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from uam.db.crud import owners as crud
 from uam.db.session import get_session
-from uam.relay.owners import contacts, fleets, links, names, passkeys, policy, requests, service
+from uam.relay.owners import (
+    contacts,
+    fleets,
+    freeze,
+    links,
+    names,
+    passkeys,
+    policy,
+    requests,
+    service,
+)
 from uam.relay.rate_limit import SlidingWindowCounter
 from uam.relay.owners.crypto import EmailVault, normalise_email
 from uam.relay.owners.page import page_router
@@ -678,6 +688,16 @@ def build_owner_app(settings, parent: FastAPI) -> FastAPI:
         except passkeys.PasskeyError as exc:
             return _refused(exc)
         return JSONResponse({"detail": "We won't email you about agents or reserved names again."})
+
+    # --- a frozen account's keep link (DEC-010) --------------------------------
+
+    @app.post("/api/owner/freeze/keep")
+    async def keep_account(body: TokenRequest, session: AsyncSession = Depends(get_session)) -> Response:
+        """The page calls this with the token from the frozen-account email."""
+        try:
+            return JSONResponse(await freeze.keep(session, body.token))
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
 
     @app.get("/api/owner/requests")
     async def list_requests(

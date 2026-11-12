@@ -370,6 +370,7 @@ const state = {
   me: null, email: "", pending: null, opener: null, busy: false, timer: 0,
   links: [], skipped: new Set(), poll: 0,
   request: null, requestId: null, requestTimer: 0, never: "", // an agent asking by email (P2s-3)
+  keep: "", // a frozen account's keep link (DEC-010)
   reservation: null, reservationId: null, made: false, // a name reserved with an email (P2s-2)
   // Contacts and many agents (P2e-2)
   contacts: [], invites: [], fleets: [], shownContacts: new Set(),
@@ -433,6 +434,7 @@ function show(screen) {
   const screens = {
     loading: $("loading"), signin: $("signin"), code: $("code"), account: $("account"),
     request: $("request"), never: $("never"), reserve: $("reserve"), accept: $("accept"),
+    keep: $("keep"),
   };
   for (const [name, el] of Object.entries(screens)) el.hidden = name !== screen;
 }
@@ -550,6 +552,8 @@ async function loadAccount() {
   $("owner-section").hidden = first;
   $("owner-id").textContent = me.data.owner_id ?? "";
   $("key-list").replaceChildren(...keys.map(passkeyItem));
+  // One passkey: losing it means a new account (DEC-010), so ask for a second.
+  $("one-key").hidden = first || keys.length !== 1;
   if (!first) await Promise.all([loadAgents(), loadContacts()]);
   show("account");
 }
@@ -1836,11 +1840,11 @@ function closeSheet(returnFocus) {
   }
 }
 
-function openName() {
+function openName(opener = $("add")) {
   const input = $("name-input");
   input.value = "";
   problem(input, $("name-problem"), "");
-  openSheet($("sheet-name"), $("add"), input);
+  openSheet($("sheet-name"), opener, input);
 }
 
 function escape(e) {
@@ -2056,6 +2060,19 @@ async function stopEmails() {
   $("never-title").focus();
 }
 
+async function keepAccount() {
+  if (!state.keep) return location.assign("/"); // kept: the button signs in
+  const r = await api("/api/owner/freeze/keep", { token: state.keep });
+  if (!r.ok) return say($("keep-problem"), r.status === 404
+    ? "This link has ended or was already used. If your account closed, you can make a new one with the same email." : AGAIN);
+  say($("keep-problem"), "");
+  $("keep-title").textContent = "Your account is back";
+  $("keep-lede").textContent = r.data.detail;
+  $("keep-go").textContent = "Sign in";
+  state.keep = "";
+  $("keep-title").focus();
+}
+
 // ---- start
 
 function start() {
@@ -2067,6 +2084,8 @@ function start() {
   on($("first-form"), "submit", $("first-problem"),
     () => createPasskey($("first-name"), $("first-problem"), $("first-create")));
   on($("add"), "click", $("keys-status"), openName);
+  on($("one-key-add"), "click", $("keys-status"), () => openName($("one-key-add")));
+  on($("keep-go"), "click", $("keep-problem"), keepAccount);
   on($("name-form"), "submit", $("name-problem"),
     () => createPasskey($("name-input"), $("name-problem"), $("name-create")));
   on($("name-cancel"), "click", $("name-problem"), () => closeSheet(true));
@@ -2153,6 +2172,11 @@ function start() {
   if (location.hash) history.replaceState(null, "", location.pathname);
   // A link pasted into this open tab only changes the fragment: start over.
   window.addEventListener("hashchange", () => location.reload());
+  if (from.get("keep")) {
+    state.keep = from.get("keep");
+    show("keep");
+    return $("keep-title").focus();
+  }
   if (from.get("never")) {
     state.never = from.get("never");
     show("never");

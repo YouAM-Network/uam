@@ -1,5 +1,5 @@
-"""Admin routes for owner accounts: create one (P2c-1), and give one a
-name (P2s-2).
+"""Admin routes for owner accounts: create one (P2c-1), give one a name
+(P2s-2), and freeze one whose owner lost every passkey (DEC-010).
 
 People can also make their own account (``POST /api/owner/sign-up`` on the
 owner origin, P2s); these routes are for the relay admin. They are 404
@@ -19,8 +19,9 @@ from uam.db.crud.reservations import AddressAlreadyReserved
 from uam.db.session import get_session
 from uam.protocol import InvalidAddressError, parse_address
 from uam.relay.models import _AGENT_NAME_PATTERN
-from uam.relay.owners import links, names
+from uam.relay.owners import freeze, links, names
 from uam.relay.owners.crypto import normalise_email
+from uam.relay.owners.passkeys import PasskeyError
 from uam.relay.routes.admin import verify_admin_key
 
 
@@ -66,6 +67,27 @@ async def create(
     return OwnerView(
         id=owner.id, status=owner.status, owner_id=owner.owner_id, created_via=owner.created_via
     )
+
+
+class FreezeRequest(BaseModel):
+    email: Annotated[str, Field(max_length=320)]
+
+
+@router.post("/freeze")
+async def freeze_account(
+    body: FreezeRequest, request: Request, session: AsyncSession = Depends(get_session)
+) -> dict:
+    """Freeze the account of someone who lost every passkey (DEC-010).
+
+    Confirm who they are another way first. Their email can keep the account
+    for 72 hours; after that it closes and they can make a new one."""
+    email = normalise_email(body.email)
+    if email is None:
+        raise HTTPException(status_code=422, detail="not an email address")
+    try:
+        return await freeze.freeze(session, request.app, email)
+    except PasskeyError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail) from None
 
 
 class GiveNameRequest(BaseModel):

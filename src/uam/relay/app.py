@@ -250,23 +250,26 @@ async def _reservation_expiry_loop(app: FastAPI) -> None:
 
 
 async def _owner_invite_email_loop(app: FastAPI) -> None:
-    """Send pre-approved invites once their 10-minute undo has passed (P2e)."""
+    """Send pre-approved invites once their 10-minute undo has passed (P2e),
+    and close frozen accounts once their 72 hours have passed (DEC-010)."""
     from uam.db.engine import get_engine
     from uam.db.retry import is_transient_error
     from uam.db.session import async_session_factory
     from uam.relay.owners.contacts import send_due
+    from uam.relay.owners.freeze import finish_due
 
     while True:
         await asyncio.sleep(_OWNER_INVITE_EMAIL_INTERVAL)
-        try:
-            factory = async_session_factory(get_engine())
-            async with factory() as session:
-                await send_due(session, app)
-        except Exception as exc:
-            if is_transient_error(exc):
-                logger.warning("Transient DB error sending invites, will retry next cycle: %s", exc)
-            else:
-                logger.exception("Error sending invites")
+        for job, what in ((send_due, "sending invites"), (finish_due, "closing frozen accounts")):
+            try:
+                factory = async_session_factory(get_engine())
+                async with factory() as session:
+                    await job(session, app)
+            except Exception as exc:
+                if is_transient_error(exc):
+                    logger.warning("Transient DB error %s, will retry next cycle: %s", what, exc)
+                else:
+                    logger.exception("Error %s", what)
 
 
 def _start_owner_mail(app: FastAPI, settings) -> asyncio.Task | None:

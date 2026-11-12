@@ -2,9 +2,9 @@
 
 The owner code calls a *sink* when something should be emailed: a sign-in
 code, an agent asking for an owner or to be linked, a reserved name, an
-invitation, or news about a contact. Sinks are plain functions called right after a commit, so
-they must not write to the database themselves (on SQLite the caller may
-still hold a read). The :class:`Mailer`'s sinks only put the email on an
+invitation, news about a contact, or a frozen or closed account. Sinks
+are plain functions called right after a commit, so they must not write
+to the database themselves (on SQLite the caller may still hold a read). The :class:`Mailer`'s sinks only put the email on an
 in-memory queue; its task writes each one to ``owner_mail`` within moments,
 then sends what is due.
 
@@ -152,6 +152,23 @@ def render(kind: str, data: dict[str, Any], origin: str) -> tuple[str, str]:
             "YouAM account. Nothing else changed.\n\n"
             f"Your agents:\n{page}"
         ) + _footer(origin))
+    if kind == "account_frozen":
+        until = _day(data.get("closesAt"))
+        return ("Your YouAM account is frozen", (
+            "Your YouAM account was frozen because you lost your passkeys and asked "
+            "to start again. Nobody can sign in to it now.\n\n"
+            f"{f'On {until}' if until else 'In 72 hours'} it closes: your agents are "
+            "unlinked and your contacts end. Then you can make a new account with this "
+            "email and link your agents again with setup codes.\n\n"
+            f"If you didn't ask for this, keep your account:\n{data['keepUrl']}"
+        ) + _footer(origin))
+    if kind == "account_closed":
+        return ("Your old YouAM account is closed", (
+            "Your old YouAM account is closed. You can make a new one with this "
+            f"email:\n{data['url']}\n\n"
+            "Then add a passkey on each device you use, link your agents with a "
+            "setup code from your account page, and invite your contacts again."
+        ) + _footer(origin))
     raise KeyError(kind)
 
 
@@ -242,7 +259,8 @@ class Mailer:
     def add(self, session: AsyncSession, kind: str, to: str, owner_pk: int | None,
             data: dict[str, Any]) -> None:
         """Add an email to *session*, to be committed with the caller's change.
-        For background work only: a request's sink must not write (see above)."""
+        For background work, or a change the caller is already writing (a
+        frozen account); a sink must not write (see above)."""
         render(kind, data, self._origin)  # KeyError now, not at send time
         session.add(OwnerMail(
             kind=kind, owner_pk=owner_pk, to_enc=self._vault.encrypt(to),

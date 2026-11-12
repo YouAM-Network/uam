@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 from tests.relay._owner_fixtures import (  # noqa: F401  (fixtures)
     EMAIL,
     OWNER_ORIGIN,
+    _admin,
     _create,
     _exec,
     _on_owner_host,
@@ -335,3 +336,41 @@ def test_a_bad_sender_is_refused(owner_env, monkeypatch, sender):  # noqa: F811
     monkeypatch.setenv("UAM_EMAIL_FROM", sender)
     with pytest.raises(RuntimeError, match="UAM_EMAIL_FROM"):
         Settings()
+
+
+# ---------------------------------------------------------------- a frozen account (DEC-010)
+
+
+def _no_memory_queue(app):
+    """Fail if an email goes on the in-memory queue: a restart would lose it."""
+    def refuse(item):
+        raise AssertionError(f"{item.kind} was queued in memory, not stored with its change")
+
+    app.state.owner_mailer._put = refuse
+
+
+def test_the_frozen_email_is_stored_with_the_freeze(relay, app):
+    assert _create(relay).status_code == 201
+    _no_memory_queue(app)
+    resp = relay.post("/api/v1/admin/owners/freeze", json={"email": EMAIL}, headers=_admin())
+    assert resp.status_code == 200, resp.text
+    assert [r["kind"] for r in _rows(relay, "SELECT kind FROM owner_mail")] == ["account_frozen"]
+
+
+def test_the_closed_email_is_stored_with_the_close(relay, app, monkeypatch):
+    import uam.db.session as sess
+    from uam.relay.owners import freeze, service
+
+    assert _create(relay).status_code == 201
+    _no_memory_queue(app)
+    relay.post("/api/v1/admin/owners/freeze", json={"email": EMAIL}, headers=_admin())
+    later = service.utcnow() + timedelta(hours=73)
+    monkeypatch.setattr(service, "utcnow", lambda: later)
+
+    async def run():
+        async with sess._session_factory() as s:
+            return await freeze.finish_due(s, app)
+
+    assert relay.portal.call(run) == 1
+    kinds = [r["kind"] for r in _rows(relay, "SELECT kind FROM owner_mail ORDER BY id")]
+    assert kinds == ["account_frozen", "account_closed"]

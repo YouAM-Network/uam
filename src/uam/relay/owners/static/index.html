@@ -112,6 +112,16 @@
   <button class="btn btn-primary" id="never-go" type="button">Stop these emails</button>
 </main>
 
+<main class="narrow" id="keep" hidden>
+  <div class="brand"><svg class="logo" viewBox="0 0 727 129" role="img" aria-label="YouAM" focusable="false"><use href="#youam-logo"/></svg></div>
+  <div class="stack">
+    <h1 id="keep-title" tabindex="-1">Keep your account?</h1>
+    <p class="lede" id="keep-lede">Your account was frozen so you could start again without your passkeys. If you didn't ask for that, keep it: it works as before and nothing is lost.</p>
+  </div>
+  <p class="problem" id="keep-problem" role="alert" hidden></p>
+  <button class="btn btn-primary" id="keep-go" type="button">Keep my account</button>
+</main>
+
 <main class="narrow" id="accept" hidden>
   <div class="brand"><svg class="logo" viewBox="0 0 727 129" role="img" aria-label="YouAM" focusable="false"><use href="#youam-logo"/></svg></div>
   <div class="stack">
@@ -165,6 +175,8 @@
         <button class="btn btn-primary" id="first-create" type="submit">Create passkey</button>
       </form>
     </section>
+
+    <p class="hint" id="one-key" hidden>You have one passkey. If you lose it, you'll have to start a new account. <button class="link" id="one-key-add" type="button">Add another passkey</button></p>
 
     <section class="section" id="agents" aria-labelledby="agents-title" hidden>
       <div class="section-head">

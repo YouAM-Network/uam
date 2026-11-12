@@ -410,7 +410,9 @@ class Owner(SQLModel, table=True):
     """A person who approves contacts for their agents (P2c-1, migration 0013).
 
     ``owner_id`` is filled once the owner's key log has an entry 0 (P2c-2).
-    ``status`` is ``active`` or ``frozen``; ``created_via`` is ``admin``,
+    ``status`` is ``active``, ``frozen`` (the admin froze it; it can be kept
+    for 72 hours) or ``closed`` (it has no email left; DEC-010);
+    ``created_via`` is ``admin``,
     ``signup``, ``request`` (an agent's request email) or ``reservation``
     (a reservation email).
     """
@@ -521,6 +523,37 @@ class OwnerAudit(SQLModel, table=True):
         default="{}", sa_column=Column(Text, nullable=False, server_default="{}")
     )
     at: datetime = Field(default_factory=_now, sa_column=_created_at())
+
+
+class OwnerFreeze(SQLModel, table=True):
+    """An account the admin froze because its owner lost every passkey
+    (DEC-010, migration 0022). The email gets a link (only its hash is kept)
+    that keeps the account until ``closes_at``; after that the account closes
+    and its email is free for a new one."""
+
+    __tablename__ = "owner_freezes"
+    __table_args__ = (UniqueConstraint("token_hash", name="uq_owner_freezes_token_hash"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    owner_pk: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("owners.id", ondelete="CASCADE", name="fk_owner_freezes_owner"),
+            nullable=False,
+            index=True,
+        )
+    )
+    token_hash: str = Field(sa_column=Column(String, nullable=False))
+    frozen_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    closes_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False, index=True)
+    )
+    kept_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    closed_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
 
 
 class OwnerPasskey(SQLModel, table=True):

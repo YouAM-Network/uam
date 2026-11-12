@@ -112,6 +112,10 @@ DATETIME_COLUMNS = [
     ("owner_mail", "sent_at", True),
     ("owner_mail", "failed_at", True),
     ("owner_mail", "created_at", False),
+    ("owner_freezes", "frozen_at", False),
+    ("owner_freezes", "closes_at", False),
+    ("owner_freezes", "kept_at", True),
+    ("owner_freezes", "closed_at", True),
     ("owner_revocations", "at", False),
     ("owner_invite_tries", "at", False),
 ]
