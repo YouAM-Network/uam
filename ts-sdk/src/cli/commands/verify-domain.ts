@@ -54,7 +54,7 @@ export async function verifyDomainCommand(
 
     if (verified) {
       console.log(
-        `Verified! ${agent.address} is now Tier 2 via ${domain}.`
+        `Domain checked by ${agent.address.split("::")[1] ?? "your relay"}: ${agent.address} is now Tier 2 via ${domain}.`
       );
     } else {
       console.log(

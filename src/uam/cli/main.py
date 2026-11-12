@@ -1152,8 +1152,10 @@ def verify_domain(ctx: click.Context, domain: str, timeout: int, poll_interval: 
         agent.close_sync()
 
         if verified:
+            # DEC-006: say who checked it, never a bare "verified".
+            checker = agent.address.split("::", 1)[-1]
             click.echo(
-                f"Verified! {agent.address} is now Tier 2 via {domain}."
+                f"Domain checked by {checker}: {agent.address} is now Tier 2 via {domain}."
             )
         else:
             click.echo(

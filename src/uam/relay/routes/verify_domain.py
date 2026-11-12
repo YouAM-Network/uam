@@ -14,9 +14,15 @@ from uam.db.crud.domain_verification import get_verification, upsert_verificatio
 from uam.db.session import get_session
 from uam.relay.auth import verify_token_http
 from uam.relay.models import VerifyDomainRequest, VerifyDomainResponse
+from uam.relay.rate_limit import SlidingWindowCounter
 from uam.relay.verification import verify_domain_ownership
 
 router = APIRouter()
+
+#: Each check makes the relay look up DNS and fetch a URL (DEC-006). The
+#: SDKs poll every 10 s for up to 5 minutes (30 checks), so this allows one
+#: full run and a retry.
+CHECKS_PER_AGENT_HOUR = 40
 
 
 @router.post("/verify-domain", response_model=VerifyDomainResponse)
@@ -33,6 +39,14 @@ async def verify_domain(
     TXT record or HTTPS ``.well-known/uam.json`` file.
     """
     settings = request.app.state.settings
+    state = request.app.state
+    limiter = getattr(state, "domain_check_limiter", None)
+    if limiter is None:
+        limiter = state.domain_check_limiter = SlidingWindowCounter(
+            limit=CHECKS_PER_AGENT_HOUR, window_seconds=3600.0
+        )
+    if not await limiter.check(agent["address"]):
+        raise HTTPException(status_code=429, detail="Too many domain checks. Try again in an hour.")
 
     success, method, detail = await verify_domain_ownership(
         body.domain, agent["public_key"], agent["address"]

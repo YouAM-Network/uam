@@ -220,45 +220,62 @@ async def verify_domain_ownership(
 # ---------------------------------------------------------------------------
 
 
-async def reverification_loop(app: object) -> None:
-    """Periodically re-verify domains that have exceeded their TTL.
+#: Failed rechecks in a row before a badge drops (DEC-006): one bad DNS
+#: lookup shouldn't cost an agent its Tier 2.
+RECHECK_FAILURES_TO_DROP = 3
 
-    Runs every hour.  On failure, downgrades the verification to
-    ``expired`` status (Tier 1).
-    """
+
+async def recheck_expired(app: object, factory, failures: dict[int, int]) -> None:
+    """Recheck each verification past its TTL once. *failures* counts failed
+    rechecks in a row by verification id; it lives in memory, so a restart
+    only delays a drop."""
+    async with factory() as session:
+        expired = await list_expired(session)
+    for v in expired:
+        try:
+            success, _method, detail = await verify_domain_ownership(
+                v.domain,
+                v.public_key,
+                v.agent_address,
+            )
+        except Exception:
+            # Our error, not the domain's: skip it this hour, don't count it.
+            logger.exception("Re-verification of %s on %s raised", v.agent_address, v.domain)
+            continue
+        if success:
+            failures.pop(v.id, None)
+            async with factory() as session:
+                await update_verification_timestamp(session, v.id)
+            logger.info("Re-verification succeeded for %s on %s", v.agent_address, v.domain)
+            continue
+        failures[v.id] = failures.get(v.id, 0) + 1
+        if failures[v.id] < RECHECK_FAILURES_TO_DROP:
+            logger.warning(
+                "Re-verification failed for %s on %s (%s), %d of %d",
+                v.agent_address, v.domain, detail, failures[v.id], RECHECK_FAILURES_TO_DROP,
+            )
+            continue
+        failures.pop(v.id, None)
+        async with factory() as session:
+            await downgrade_verification(session, v.id)
+        # Downgrade reputation back to default (SPAM-02)
+        reputation_manager = app.state.reputation_manager  # type: ignore[union-attr]
+        await reputation_manager.set_score(v.agent_address, 30)
+        logger.warning(
+            "Re-verification failed for %s on %s (%s), downgraded to Tier 1",
+            v.agent_address,
+            v.domain,
+            detail,
+        )
+
+
+async def reverification_loop(app: object) -> None:
+    """Every hour, recheck domains past their TTL (DNS-08). A badge drops to
+    Tier 1 after RECHECK_FAILURES_TO_DROP failed rechecks in a row."""
+    failures: dict[int, int] = {}
     try:
         while True:
             await asyncio.sleep(3600)  # check every hour
-            factory = async_session_factory(get_engine())
-            async with factory() as session:
-                expired = await list_expired(session)
-            for v in expired:
-                success, _method, detail = await verify_domain_ownership(
-                    v.domain,
-                    v.public_key,
-                    v.agent_address,
-                )
-                if success:
-                    async with factory() as session:
-                        await update_verification_timestamp(session, v.id)
-                    logger.info(
-                        "Re-verification succeeded for %s on %s",
-                        v.agent_address,
-                        v.domain,
-                    )
-                else:
-                    async with factory() as session:
-                        await downgrade_verification(session, v.id)
-                    # Downgrade reputation back to default (SPAM-02)
-                    reputation_manager = app.state.reputation_manager  # type: ignore[union-attr]
-                    await reputation_manager.set_score(
-                        v.agent_address, 30
-                    )
-                    logger.warning(
-                        "Re-verification failed for %s on %s (%s), downgraded to Tier 1",
-                        v.agent_address,
-                        v.domain,
-                        detail,
-                    )
+            await recheck_expired(app, async_session_factory(get_engine()), failures)
     except asyncio.CancelledError:
         logger.debug("Reverification loop cancelled")

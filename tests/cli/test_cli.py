@@ -631,7 +631,7 @@ def test_unblock_success(runner: CliRunner, uam_home: Path):
 
 
 def test_verify_domain_success(runner: CliRunner, uam_home: Path):
-    """verify-domain with successful verification prints 'Verified!'."""
+    """verify-domain says who checked the domain, never a bare "Verified!"."""
     key_dir = uam_home / "keys"
     key_dir.mkdir(parents=True)
     km = KeyManager(key_dir)
@@ -657,8 +657,8 @@ def test_verify_domain_success(runner: CliRunner, uam_home: Path):
     assert "TESTPUBKEY123" in result.output
     assert ".well-known/uam.json" in result.output
     assert "Polling for verification" in result.output
-    assert "Verified!" in result.output
-    assert "Tier 2" in result.output
+    assert "Domain checked by relay.test: testagent::relay.test is now Tier 2" in result.output
+    assert "Verified" not in result.output
     instance.connect_sync.assert_called_once()
     instance.close_sync.assert_called_once()
 

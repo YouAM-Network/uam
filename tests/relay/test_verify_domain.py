@@ -505,3 +505,132 @@ class TestDatabaseHelpers:
         result = await downgrade_verification(db_session, record.id)
         assert result is not None
         assert result.status == "expired"
+
+
+# ---------------------------------------------------------------------------
+# DEC-006: how often an agent can ask, and when a badge drops
+# ---------------------------------------------------------------------------
+
+
+class TestDomainCheckLimits:
+    """An agent can ask for a check 40 times an hour (one SDK polling run of
+    30, and a retry); a badge drops only
+    after 3 failed rechecks in a row (council 3, DEC-006)."""
+
+    def test_an_agent_asking_too_often_is_refused(self, client, registered_agent):
+        from uam.relay.routes.verify_domain import CHECKS_PER_AGENT_HOUR
+
+        assert CHECKS_PER_AGENT_HOUR >= 30  # the SDKs' polling run fits
+
+        with patch(
+            "uam.relay.routes.verify_domain.verify_domain_ownership",
+            new_callable=AsyncMock, return_value=(False, "", "no record"),
+        ) as check:
+            codes = [
+                client.post(
+                    "/api/v1/verify-domain", json={"domain": "example.com"},
+                    headers={"Authorization": f"Bearer {registered_agent['token']}"},
+                ).status_code
+                for _ in range(CHECKS_PER_AGENT_HOUR + 1)
+            ]
+        assert codes == [200] * CHECKS_PER_AGENT_HOUR + [429]
+        assert check.await_count == CHECKS_PER_AGENT_HOUR
+
+    @pytest.mark.asyncio
+    async def test_a_badge_drops_after_three_failed_rechecks(self, db_session):
+        from types import SimpleNamespace
+
+        from uam.relay.verification import recheck_expired
+
+        await create_agent(db_session, "bot::test.local", "PUBKEY", "token123")
+        now = datetime.now(timezone.utc)
+        db_session.add(DomainVerification(
+            agent_address="bot::test.local", domain="old.com", public_key="PUBKEY",
+            method="dns", ttl_hours=24, verified_at=now - timedelta(hours=48),
+            last_checked=now - timedelta(hours=48), status="verified",
+        ))
+        await db_session.commit()
+        reputation = SimpleNamespace(set_score=AsyncMock())
+        app = SimpleNamespace(state=SimpleNamespace(reputation_manager=reputation))
+        failures: dict[int, int] = {}
+
+        def factory():
+            return _Shared(db_session)
+
+        with patch("uam.relay.verification.verify_domain_ownership", new_callable=AsyncMock,
+                   return_value=(False, "", "DNS TXT record not found")):
+            for _ in range(2):
+                await recheck_expired(app, factory, failures)
+                assert await get_verification(db_session, "bot::test.local") is not None
+            reputation.set_score.assert_not_awaited()
+            await recheck_expired(app, factory, failures)
+        assert await get_verification(db_session, "bot::test.local") is None  # Tier 1 now
+        reputation.set_score.assert_awaited_once_with("bot::test.local", 30)
+        assert failures == {}
+
+    @pytest.mark.asyncio
+    async def test_a_recheck_that_passes_clears_the_count(self, db_session):
+        from types import SimpleNamespace
+
+        from uam.relay.verification import recheck_expired
+
+        await create_agent(db_session, "bot::test.local", "PUBKEY", "token123")
+        now = datetime.now(timezone.utc)
+        row = DomainVerification(
+            agent_address="bot::test.local", domain="old.com", public_key="PUBKEY",
+            method="dns", ttl_hours=24, verified_at=now - timedelta(hours=48),
+            last_checked=now - timedelta(hours=48), status="verified",
+        )
+        db_session.add(row)
+        await db_session.commit()
+        app = SimpleNamespace(state=SimpleNamespace(reputation_manager=AsyncMock()))
+        failures = {row.id: 2}
+        with patch("uam.relay.verification.verify_domain_ownership", new_callable=AsyncMock,
+                   return_value=(True, "dns", "")):
+            await recheck_expired(app, lambda: _Shared(db_session), failures)
+        assert failures == {}
+
+    @pytest.mark.asyncio
+    async def test_a_check_that_raises_skips_only_that_domain(self, db_session):
+        """One domain whose check raises doesn't stop the hour's pass, and
+        isn't counted as a failed recheck: the error is ours, not the domain's."""
+        from types import SimpleNamespace
+
+        from uam.relay.verification import recheck_expired
+
+        now = datetime.now(timezone.utc)
+        rows = {}
+        for name, domain in (("bad", "bad.com"), ("good", "good.com")):
+            await create_agent(db_session, f"{name}::test.local", f"PK-{name}", f"token-{name}")
+            rows[domain] = DomainVerification(
+                agent_address=f"{name}::test.local", domain=domain, public_key=f"PK-{name}",
+                method="dns", ttl_hours=24, verified_at=now - timedelta(hours=48),
+                last_checked=now - timedelta(hours=48), status="verified",
+            )
+            db_session.add(rows[domain])
+        await db_session.commit()
+        app = SimpleNamespace(state=SimpleNamespace(reputation_manager=AsyncMock()))
+        failures = {rows["good.com"].id: 2}
+
+        async def check(domain, *_):
+            if domain == "bad.com":
+                raise RuntimeError("resolver blew up")
+            return True, "dns", ""
+
+        with patch("uam.relay.verification.verify_domain_ownership", side_effect=check) as c:
+            await recheck_expired(app, lambda: _Shared(db_session), failures)
+        assert c.await_count == 2
+        assert failures == {}  # good.com cleared; bad.com not counted
+
+
+class _Shared:
+    """A session factory's context manager that hands out one test session."""
+
+    def __init__(self, session):
+        self._session = session
+
+    async def __aenter__(self):
+        return self._session
+
+    async def __aexit__(self, *exc):
+        return False
