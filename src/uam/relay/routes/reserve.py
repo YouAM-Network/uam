@@ -161,6 +161,9 @@ def _reservation_sink(state) -> names.ReservationSink:
     sink = getattr(state, "owner_reservation_sink", None)
     if sink is not None:
         return sink
+    mailer = getattr(state, "owner_mailer", None)
+    if mailer is not None:
+        return mailer.reservation
     return names.log_sink if state.settings.owner_codes_to_log else names.drop_sink
 
 

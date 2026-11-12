@@ -108,6 +108,10 @@ DATETIME_COLUMNS = [
     ("owner_grants", "revoked_at", True),
     ("owner_grants", "created_at", False),
     ("agent_policy_approvals", "created_at", False),
+    ("owner_mail", "next_try_at", False),
+    ("owner_mail", "sent_at", True),
+    ("owner_mail", "failed_at", True),
+    ("owner_mail", "created_at", False),
     ("owner_revocations", "at", False),
     ("owner_invite_tries", "at", False),
 ]

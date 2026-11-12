@@ -1509,3 +1509,37 @@ class OwnerRequestOptOut(SQLModel, table=True):
     email_hmac: str = Field(sa_column=Column(String, nullable=False, index=True))
     agent_address: str | None = Field(default=None, sa_column=Column(String, nullable=True))
     created_at: datetime = Field(default_factory=_now, sa_column=_created_at())
+
+
+class OwnerMail(SQLModel, table=True):
+    """An email to an owner or someone invited (P2g-1, migration 0021).
+
+    ``to_enc`` and ``data_enc`` are encrypted with the email key: they hold
+    sign-in codes and secret links. Due when ``next_try_at`` has passed and
+    it is neither sent nor given up; deleted 7 days after either.
+    ``owner_pk`` is null for someone without an account."""
+
+    __tablename__ = "owner_mail"
+
+    id: int | None = Field(default=None, primary_key=True)
+    kind: str = Field(sa_column=Column(String, nullable=False))
+    owner_pk: int | None = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey("owners.id", ondelete="CASCADE", name="fk_owner_mail_owner"),
+            nullable=True,
+            index=True,
+        ),
+    )
+    to_enc: str = Field(sa_column=Column(Text, nullable=False))
+    data_enc: str = Field(sa_column=Column(Text, nullable=False))
+    attempts: int = Field(default=0, sa_column=Column(Integer, nullable=False, server_default="0"))
+    next_try_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False, index=True)
+    )
+    sent_at: datetime | None = Field(default=None, sa_column=_maybe_time())
+    failed_at: datetime | None = Field(default=None, sa_column=_maybe_time())
+    provider_id: str | None = Field(default=None, sa_column=Column(String, nullable=True))
+    last_error: str | None = Field(default=None, sa_column=Column(String, nullable=True))
+    created_at: datetime = Field(default_factory=_now, sa_column=_created_at())

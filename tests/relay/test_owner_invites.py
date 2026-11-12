@@ -545,6 +545,26 @@ def test_the_email_goes_out_after_ten_minutes(ada, relay, app, emails, clock):
     assert made["sendAt"]
 
 
+def test_an_email_invite_is_stored_for_sending_as_it_is_marked_sent(ada, relay, app, clock):
+    """With owner mail on, the invite is marked sent and its email stored in
+    one commit, so a restart can't lose an invite already listed as sent."""
+    from tests.relay.test_owner_mail import FakeTransport
+    from uam.relay.owners.mail import Mailer
+
+    fake = FakeTransport()
+    app.state.owner_mailer = Mailer(app.state.owner_vault, fake, OWNER_ORIGIN)
+    _email_invite(ada)
+    clock(minutes=10, seconds=1)
+    _send_due(relay, app)
+    [invite] = _rows(ada, "SELECT sent_at FROM owner_invites")
+    [mail] = _rows(ada, "SELECT kind, sent_at FROM owner_mail")
+    assert invite["sent_at"] and mail == {"kind": "invite", "sent_at": None}
+    relay.portal.call(app.state.owner_mailer.once)
+    [sent] = fake.sent
+    assert sent["to"] == BOB and sent["subject"] == f"{EMAIL.lower()} invited you to connect on YouAM"
+    assert f"{OWNER_ORIGIN}/i/" in sent["text"]
+
+
 def test_undoing_within_ten_minutes_sends_nothing(ada, relay, app, emails, clock):
     made = _email_invite(ada)
     ada.post(f"/api/owner/invites/{made['id']}/cancel")

@@ -335,10 +335,17 @@ def build_owner_app(settings, parent: FastAPI) -> FastAPI:
         sink = getattr(parent.state, "owner_code_sink", None)
         if sink is not None:
             return sink
+        mailer = getattr(parent.state, "owner_mailer", None)
+        if mailer is not None:
+            return mailer.code
         return service.log_sink if settings.owner_codes_to_log else service.drop_sink
 
     def contact_sink() -> contacts.ContactNotice:
-        return getattr(parent.state, "owner_contact_sink", None) or contacts.log_notice
+        sink = getattr(parent.state, "owner_contact_sink", None)
+        if sink is not None:
+            return sink
+        mailer = getattr(parent.state, "owner_mailer", None)
+        return mailer.notice if mailer is not None else contacts.log_notice
 
     @app.exception_handler(HTTPException)
     async def _http_error(request: Request, exc: HTTPException) -> JSONResponse:

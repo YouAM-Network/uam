@@ -30,7 +30,7 @@ SESSION_MAX = timedelta(days=7)
 #: last_seen is written at most this often, so reads don't all write.
 TOUCH_EVERY = timedelta(minutes=1)
 
-#: Where a new code goes: (owner_pk, email, code). P2g replaces it with email.
+#: Where a new code goes: (owner_pk, email, code); with mail on, an email.
 CodeSink = Callable[[int, str, str], None]
 
 
@@ -49,7 +49,7 @@ def log_sink(owner_pk: int, email: str, code: str) -> None:
 
 
 def drop_sink(owner_pk: int, email: str, code: str) -> None:
-    log.debug("owner %d: no code mailed, owner email arrives in P2g", owner_pk)
+    log.debug("owner %d: no code mailed (owner mail is off)", owner_pk)
 
 
 async def start_sign_in(

@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 import os
+import re
+
+#: A sender: an address, or "Name <address>" (no quotes or angle brackets in the name).
+_ADDRESS = r"[^@\s<>\"]+@[^@\s<>\"]+\.[^@\s<>\"]+"
+_EMAIL_FROM_RE = re.compile(rf"(?:[^<>\"\r\n]{{1,64}} <{_ADDRESS}>|{_ADDRESS})")
 
 
 class Settings:
@@ -158,11 +163,18 @@ class Settings:
         self.rp_id: str = os.getenv("UAM_RP_ID", "").strip().lower()
         self.email_pepper: str = os.getenv("UAM_EMAIL_PEPPER", "")
         self.email_key: str = os.getenv("UAM_EMAIL_KEY", "")
-        # Until owner email is wired (P2g), sign-in codes can go to the log,
+        # Without owner mail (local runs), sign-in codes can go to the log,
         # but never on a production RP ID.
         self.owner_codes_to_log: bool = os.getenv(
             "UAM_OWNER_CODES_TO_LOG", ""
         ).lower() in ("1", "true", "yes")
+        # Owner email (P2g-1): sent through Resend from an address on the
+        # sending domain. Without a key, emails go to the log (local runs,
+        # UAM_OWNER_CODES_TO_LOG) or nowhere.
+        self.resend_api_key: str = os.getenv("UAM_RESEND_API_KEY", "").strip()
+        self.email_from: str = os.getenv(
+            "UAM_EMAIL_FROM", "YouAM <account@notify.youam.network>"
+        ).strip()
         # Emails sent for agents asking for an owner (P2s-3), across the
         # whole relay, in any 24 hours. Over it, requests are still recorded.
         self.owner_request_emails_per_day: int = int(
@@ -237,6 +249,10 @@ class Settings:
             refuse("UAM_RP_ID", f"must be {host!r} or a parent domain of it")
         if self.owner_codes_to_log and self.rp_id in self.PRODUCTION_RP_IDS:
             refuse("UAM_OWNER_CODES_TO_LOG", "refused with a production RP ID")
+        if self.rp_id in self.PRODUCTION_RP_IDS and not self.resend_api_key:
+            refuse("UAM_RESEND_API_KEY", "must be set with a production RP ID (sign-in is by email)")
+        if self.resend_api_key and not _EMAIL_FROM_RE.fullmatch(self.email_from):
+            refuse("UAM_EMAIL_FROM", "must be 'Name <address@domain>' or an address")
 
     @staticmethod
     def _require(name: str) -> str:

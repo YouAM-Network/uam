@@ -17,6 +17,7 @@ import secrets
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 _EMAIL_AAD = b"UAM-EMAIL-v1"
+_MAIL_AAD = b"UAM-OWNER-MAIL-v1"
 _ENC_PREFIX = "v1."
 # One @, a dot in the domain, no spaces; length per RFC 5321.
 _EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s]+\.[^@\s]+$")
@@ -71,6 +72,18 @@ class EmailVault:
             raise ValueError("unknown email ciphertext version")
         raw = _b64d(stored[len(_ENC_PREFIX):])
         return self._aead.decrypt(raw[:12], raw[12:], _EMAIL_AAD).decode()
+
+    def seal(self, text: str) -> str:
+        """An outgoing email's contents (codes, secret links), encrypted under
+        its own label so they can never be read back as an email address."""
+        nonce = os.urandom(12)
+        return _ENC_PREFIX + _b64e(nonce + self._aead.encrypt(nonce, text.encode(), _MAIL_AAD))
+
+    def unseal(self, stored: str) -> str:
+        if not stored.startswith(_ENC_PREFIX):
+            raise ValueError("unknown mail ciphertext version")
+        raw = _b64d(stored[len(_ENC_PREFIX):])
+        return self._aead.decrypt(raw[:12], raw[12:], _MAIL_AAD).decode()
 
     def user_handle(self, owner_pk: int) -> str:
         """The WebAuthn user.id for an owner: stable, opaque, 16 bytes."""

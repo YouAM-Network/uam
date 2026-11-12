@@ -47,9 +47,9 @@ REPLY = "If that address can take it, a confirmation is on its way."
 GIVE_DAYS = 30
 MAX_GIVE_DAYS = 365
 
-#: Where a reservation email goes: (email, message). P2g sends a real
-#: email; the message has ``name``, ``address``, ``expiresAt``,
-#: ``hasAccount``, ``url`` and ``neverUrl``.
+#: Where a reservation email goes: (email, message); with mail on, the
+#: mailer sends it (owners/mail.py). The message has ``name``, ``address``,
+#: ``expiresAt``, ``hasAccount``, ``url`` and ``neverUrl``.
 ReservationSink = Callable[[str, dict[str, Any]], None]
 
 
@@ -59,7 +59,7 @@ def log_sink(email: str, message: dict[str, Any]) -> None:
 
 
 def drop_sink(email: str, message: dict[str, Any]) -> None:
-    log.debug("name %s reserved: no email sent, owner email arrives in P2g", message["address"])
+    log.debug("name %s reserved: no email sent (owner mail is off)", message["address"])
 
 
 def _token_hash(token: str) -> str:

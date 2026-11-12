@@ -81,7 +81,8 @@ EXPECTED_TABLES = sorted([
     "owner_invites", "invite_redemptions", "owner_grants",  # +6 from 0019
     "agent_policy_approvals", "owner_revocations", "owner_invite_tries",
     "owner_fleets",  # +1 from 0020
-])  # 37 tables
+    "owner_mail",  # +1 from 0021
+])  # 38 tables
 
 
 class TestMigrationUpgrade:

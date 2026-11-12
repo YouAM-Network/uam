@@ -73,10 +73,21 @@ async def start(
         return _refused(exc)
 
 
+def _link_notice(state) -> links.LinkNotice:
+    sink = getattr(state, "owner_link_notice", None)
+    if sink is not None:
+        return sink
+    mailer = getattr(state, "owner_mailer", None)
+    return mailer.link if mailer is not None else links.log_notice
+
+
 def _request_sink(state) -> requests.RequestSink:
     sink = getattr(state, "owner_request_sink", None)
     if sink is not None:
         return sink
+    mailer = getattr(state, "owner_mailer", None)
+    if mailer is not None:
+        return mailer.request
     return requests.log_sink if state.settings.owner_codes_to_log else requests.drop_sink
 
 
@@ -115,7 +126,7 @@ async def sign(
     body: SignLink, request: Request,
     who: dict = Depends(verify_token_http), session: AsyncSession = Depends(get_session),
 ) -> Response:
-    notice = getattr(request.app.state, "owner_link_notice", None) or links.log_notice
+    notice = _link_notice(request.app.state)
     try:
         return JSONResponse(await links.agent_sign(
             session, await _agent(session, who), body.hash, body.signature, notice,
@@ -130,7 +141,7 @@ async def cancel(
     who: dict = Depends(verify_token_http), session: AsyncSession = Depends(get_session),
 ) -> Response:
     """End this agent's link before it starts (it never unlinks itself)."""
-    notice = getattr(request.app.state, "owner_link_notice", None) or links.log_notice
+    notice = _link_notice(request.app.state)
     try:
         return JSONResponse(await links.agent_cancel(session, await _agent(session, who), notice))
     except PasskeyError as exc:

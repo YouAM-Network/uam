@@ -56,8 +56,8 @@ OFFER_FRESH = timedelta(minutes=5)
 
 REPLY = "If that address can take requests, a confirmation is on its way."
 
-#: Where a request email goes: (email, message). P2g sends a real email;
-#: the message has ``agent``, ``words``, ``via``, ``expiresAt``,
+#: Where a request email goes: (email, message); with mail on, the mailer
+#: sends it (owners/mail.py). The message has ``agent``, ``words``, ``via``, ``expiresAt``,
 #: ``hasAccount``, ``url`` and ``neverUrl``, and never text the agent wrote.
 RequestSink = Callable[[str, dict[str, Any]], None]
 
@@ -73,7 +73,7 @@ def log_sink(email: str, message: dict[str, Any]) -> None:
 
 
 def drop_sink(email: str, message: dict[str, Any]) -> None:
-    log.debug("owner request from %s: no email sent, owner email arrives in P2g",
+    log.debug("owner request from %s: no email sent (owner mail is off)",
               message["agent"])
 
 

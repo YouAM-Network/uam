@@ -269,6 +269,22 @@ async def _owner_invite_email_loop(app: FastAPI) -> None:
                 logger.exception("Error sending invites")
 
 
+def _start_owner_mail(app: FastAPI, settings) -> asyncio.Task | None:
+    """Owner email (P2g-1): Resend when a key is set (tests put a transport on
+    ``app.state.owner_mail_transport``). Without either, sinks log or drop."""
+    from uam.relay.owners.mail import Mailer, ResendTransport
+
+    transport = getattr(app.state, "owner_mail_transport", None)
+    if transport is None and settings.resend_api_key:
+        transport = ResendTransport(settings.resend_api_key, settings.email_from)
+    if transport is None:
+        app.state.owner_mailer = None
+        return None
+    mailer = Mailer(app.state.owner_vault, transport, settings.owner_origin)
+    app.state.owner_mailer = mailer
+    return asyncio.create_task(mailer.run())
+
+
 async def _federation_retry_loop(app: FastAPI) -> None:
     """Process the federation_queue: retry failed/pending federation deliveries (FED-10).
 
@@ -501,6 +517,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     invite_email_task = (
         asyncio.create_task(_owner_invite_email_loop(app)) if settings.owners_enabled else None
     )
+    owner_mail_task = _start_owner_mail(app, settings) if settings.owners_enabled else None
 
     # Record startup time for uptime calculation (RES-03)
     app.state.startup_time = time.monotonic()
@@ -547,6 +564,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         invite_email_task.cancel()
         try:
             await invite_email_task
+        except asyncio.CancelledError:
+            pass
+    if owner_mail_task:
+        owner_mail_task.cancel()
+        try:
+            await owner_mail_task
         except asyncio.CancelledError:
             pass
 

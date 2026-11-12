@@ -70,8 +70,8 @@ TRY_WINDOW = timedelta(minutes=10)
 LINK_DELAY = timedelta(hours=72)
 
 #: Told when an existing agent asks to be linked, and when an agent
-#: cancels its own link: (owner_pk, link view). P2g sends the owner an
-#: email instead (with a cancel link for the first).
+#: cancels its own link: (owner_pk, link view). With mail on, the owner
+#: gets an email (the first one points at the page to cancel it).
 LinkNotice = Callable[[int, dict[str, Any]], None]
 
 

@@ -73,7 +73,7 @@ _SHARED = {"actions": ["message"], "locations": ["shared"]}
 
 #: Told about an owner's contacts: (owner_pk, event, details). Events:
 #: ``invite_redeemed`` and ``invite_reused`` (to the inviter),
-#: ``contact_confirmed`` (to the invitee). P2g sends these as email.
+#: ``contact_confirmed`` (to the invitee). With mail on, each is an email.
 ContactNotice = Callable[[int, str, dict[str, Any]], None]
 #: Sends a pre-approved invite: (to, link, inviter's email).
 InviteEmail = Callable[[str, str, str], None]
@@ -89,7 +89,7 @@ def log_invite_email(to: str, link: str, inviter: str) -> None:
 
 
 def drop_invite_email(to: str, link: str, inviter: str) -> None:
-    """No mail transport yet (P2g): the invite is listed, nothing is sent."""
+    """Owner mail is off: the invite is listed, nothing is sent."""
 
 
 def _refused(status: int, code: str, detail: str) -> PasskeyError:
@@ -371,12 +371,24 @@ async def send_due(session: AsyncSession, app) -> int:
     settings = app.state.settings
     vault = app.state.owner_vault
     sink: InviteEmail | None = getattr(app.state, "owner_invite_email_sink", None)
-    if sink is None:
+    mailer = getattr(app.state, "owner_mailer", None) if sink is None else None
+    if sink is None and mailer is None:
         sink = log_invite_email if settings.owner_codes_to_log else drop_invite_email
     now = service.utcnow()
     sent = 0
     for invite in await crud.emails_due(session, now):
         if not await crud.mark_sent(session, invite.id, now):
+            continue
+        if mailer is not None:
+            # Marked sent and stored in the outbox in one commit: a restart
+            # can't leave an invite listed as sent with no email behind it.
+            mailer.add(session, "invite", vault.decrypt(invite.email_enc), None, {
+                "link": _link(settings, invite, invite.secret),
+                "inviter": await _email_of(session, vault, invite.owner_pk),
+            })
+            await session.commit()
+            mailer.poke()
+            sent += 1
             continue
         await session.commit()
         try:
