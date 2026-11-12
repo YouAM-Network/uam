@@ -272,6 +272,10 @@ class PolicyRequest(BaseModel):
     credentialId: _CREDENTIAL = None
 
 
+class DefaultRequest(BaseModel):
+    policy: Literal["open", "contacts"]
+
+
 class KeepRequest(BaseModel):
     contacts: Annotated[
         list[Annotated[str, Field(min_length=3, max_length=320)]],
@@ -319,6 +323,10 @@ class MeResponse(BaseModel):
     request: int | None = None
     #: Set when this session came from a reservation email.
     reservation: int | None = None
+    #: Who may message the agents this owner links from now on, and
+    #: whether they chose it (the page asks once, after the first passkey).
+    agent_policy: str = "contacts"
+    agent_policy_chosen: bool = False
 
 
 #: Sign-ups one client address can start in an hour.
@@ -477,6 +485,8 @@ def build_owner_app(settings, parent: FastAPI) -> FastAPI:
             owner_id=who.owner.owner_id,
             request=who.request_id,
             reservation=who.reservation_id,
+            agent_policy=policy.owner_default(who.owner),
+            agent_policy_chosen=who.owner.agent_policy is not None,
         )
 
     @app.post("/api/owner/passkeys/register/start")
@@ -970,6 +980,45 @@ def build_owner_app(settings, parent: FastAPI) -> FastAPI:
         try:
             return JSONResponse(
                 await policy.widen(session, settings, who.owner, link_id, body.model_dump())
+            )
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    # --- who may message agents linked from now on ------------------------------
+
+    @app.post("/api/owner/agent-policy")
+    async def choose_default(
+        body: DefaultRequest,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(await policy.choose_default(session, who.owner, body.policy))
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.post("/api/owner/agent-policy/approve/start")
+    async def widen_default_start(
+        body: CredentialChoice,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(
+                await policy.default_start(session, settings, who.owner, body.credentialId)
+            )
+        except passkeys.PasskeyError as exc:
+            return _refused(exc)
+
+    @app.post("/api/owner/agent-policy/approve")
+    async def widen_default(
+        body: SignEntry,
+        who: service.SignedIn = Depends(signed_in),
+        session: AsyncSession = Depends(get_session),
+    ) -> Response:
+        try:
+            return JSONResponse(
+                await policy.default_widen(session, settings, who.owner, body.model_dump())
             )
         except passkeys.PasskeyError as exc:
             return _refused(exc)

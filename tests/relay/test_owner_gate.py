@@ -58,11 +58,20 @@ def _db(relay, fn, *args, **kw):
     return relay.portal.call(run)
 
 
+def _set_owner_policy(relay, agent, policy, same_owner=True):
+    """Set *agent*'s policy as its owner would, whatever it was (a linked
+    agent already takes only contacts and its owner's agents)."""
+    from uam.db.crud.inbound import set_owner_policy
+
+    async def run(session):
+        await set_owner_policy(session, agent["address"], policy, same_owner)
+        await session.commit()
+
+    _db(relay, run)
+
+
 def _only_contacts(relay, agent, same_owner=True):
-    _db(relay, set_policy, agent["address"], "contacts", expected_revision=0, set_by="owner")
-    if not same_owner:
-        _exec(relay, "UPDATE inbound_policies SET same_owner = false WHERE agent_address = :a",
-              a=agent["address"])
+    _set_owner_policy(relay, agent, "contacts", same_owner)
 
 
 def _private(relay, agent):
@@ -181,9 +190,11 @@ def test_a_closed_agent_takes_nothing_from_contacts(relay, pair):
     assert _send(relay, amy, bea) == "pending"
 
 
-def test_an_open_agent_takes_anyone(relay, ada, bob):
+def test_a_new_agent_takes_no_strangers_until_its_owner_lets_anyone_in(relay, ada, bob):
     bea, _, _ = _linked(relay, bob, "bea")
-    assert _send(relay, _agent(relay, "zed"), bea) == "stored"
+    assert _send(relay, _agent(relay, "zed"), bea) == "pending"
+    _set_owner_policy(relay, bea, "open")
+    assert _send(relay, _agent(relay, "zoe"), bea) == "stored"
 
 
 # ---------------------------------------------------------------- the same owner

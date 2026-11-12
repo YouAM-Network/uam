@@ -206,6 +206,7 @@ const INVITE = "UamInvite";
 const REDEMPTION = "UamRedemption";
 const GRANT = "UamContactGrant";
 const POLICY = "UamAgentPolicy";
+const DEFAULT = "UamAgentDefault"; // the relay's own record: who may message new agents
 const SETTINGS = { open: "Let anyone message", contacts: "Let only your contacts message" };
 
 /** Four words both owners read to each other to check one invite (contacts.invite_words). */
@@ -249,7 +250,8 @@ function settingWords(body) {
  *   redeem:   {inviter: {ownerId, email}, words} shown, {secret} from a link (null for a code);
  *   confirm:  {invitee: {ownerId, email}} shown;
  *   keep:     {agent, addresses} chosen;
- *   policies: {agents: [{agent, agentKey}], policy, sameOwner, fleet?} chosen.
+ *   policies: {agents: [{agent, agentKey}], policy, sameOwner, fleet?} chosen;
+ *   default:  {} (Anyone, for agents linked from now on).
  * Returns the sentence to show, worked out here; throws if anything differs.
  */
 export async function checkContactApproval(kind, answer, ctx) {
@@ -260,8 +262,8 @@ export async function checkContactApproval(kind, answer, ctx) {
   const items = Array.isArray(answer?.items) ? answer.items : refuse("no bodies");
   if (!items.length) refuse("no bodies");
   if (want && !sameList(items.map((x) => x.type), want)) refuse("not the bodies this needs");
-  if (!want && !["keep", "policies"].includes(kind)) refuse("not a kind of approval");
-  const each = kind === "keep" ? GRANT : POLICY;
+  if (!want && !["keep", "policies", "default"].includes(kind)) refuse("not a kind of approval");
+  const each = kind === "keep" ? GRANT : kind === "default" ? DEFAULT : POLICY;
   if (!want && items.some((x) => x.type !== each)) refuse("not the bodies this needs");
   const bodies = [];
   for (const { type, body: text, hash } of items) {
@@ -307,6 +309,11 @@ export async function checkContactApproval(kind, answer, ctx) {
       if (ctx.secret && r.secret !== ctx.secret) refuse("not the invite you opened");
     }
     screen = `Connect with ${other.email} on YouAM. Their shared agents can message yours until ${until}.`;
+  } else if (kind === "default") {
+    if (bodies.length !== 1) refuse("one setting");
+    mine(bodies[0].owner);
+    if (bodies[0].policy !== "open") refuse("not the setting you chose");
+    screen = "Let anyone message the agents you link from now on.";
   } else if (kind === "keep") {
     if (!ADDRESS.test(ctx.agent)) refuse("not an agent address");
     const days = new Set();
@@ -543,19 +550,68 @@ async function loadAccount() {
   $("who-email").textContent = me.data.email;
   $("who-email").title = me.data.email; // the header may shorten a long one
   const first = !me.data.owner_id;
+  // Then, once, who can message their agents (Amir, 2026-11-12).
+  const choose = !first && !me.data.agent_policy_chosen;
+  const setUp = !first && !choose;
   let keys = [];
   if (!first) keys = (await api("/api/owner/passkeys")).data.passkeys ?? [];
   $("first").hidden = !first;
-  $("keys").hidden = first;
-  $("agents").hidden = first;
-  $("contacts").hidden = first;
-  $("owner-section").hidden = first;
+  $("choose").hidden = !choose;
+  $("keys").hidden = !setUp;
+  $("agents").hidden = !setUp;
+  $("contacts").hidden = !setUp;
+  $("owner-section").hidden = !setUp;
+  $("default-now").textContent = DEFAULT_NOW[me.data.agent_policy] ?? "";
   $("owner-id").textContent = me.data.owner_id ?? "";
   $("key-list").replaceChildren(...keys.map(passkeyItem));
   // One passkey: losing it means a new account (DEC-010), so ask for a second.
-  $("one-key").hidden = first || keys.length !== 1;
-  if (!first) await Promise.all([loadAgents(), loadContacts()]);
+  $("one-key").hidden = !setUp || keys.length !== 1;
+  if (setUp) await Promise.all([loadAgents(), loadContacts()]);
   show("account");
+  if (choose) $("choose-title").focus();
+}
+
+// ---- who can message the agents linked from now on
+
+const DEFAULT_NOW = {
+  contacts: "New agents take messages only from your contacts and your own agents.",
+  open: "New agents take messages from anyone.",
+};
+
+/** Save the choice in the *prefix* form ("choose" or "default"); Anyone may need a passkey. */
+async function saveDefault(prefix, done, again) {
+  const policy = $(`${prefix}-open`).checked ? "open" : $(`${prefix}-contacts`).checked ? "contacts" : null;
+  const problemEl = $(`${prefix}-problem`);
+  if (!policy) return say(problemEl, "Choose who can message your agents.");
+  say(problemEl, "");
+  const r = await api("/api/owner/agent-policy", { policy });
+  if (r.ok) return done(r.data);
+  if (r.data.error !== "needs_passkey") return say(problemEl, r.data.detail ?? AGAIN);
+  const refused = await startContact("default", "/api/owner/agent-policy/approve/start", {}, {},
+    $(`${prefix}-save`), problemEl, { finish: "/api/owner/agent-policy/approve", done, again });
+  if (refused) say(problemEl, refused.data.detail ?? AGAIN);
+}
+
+async function choseDefault() {
+  closeSheet(false);
+  await loadAccount();
+  $("agents-title").focus();
+}
+
+function openDefault() {
+  const now = state.me.agent_policy;
+  $("default-open").checked = now === "open";
+  $("default-contacts").checked = now !== "open";
+  say($("default-problem"), "");
+  openSheet($("sheet-default"), $("default-change"), $("default-title"));
+}
+
+async function savedDefault(data) {
+  closeSheet(false);
+  state.me.agent_policy = data.policy;
+  $("default-now").textContent = DEFAULT_NOW[data.policy] ?? "";
+  say($("agents-status"), "Saved who can message new agents.");
+  $("default-change").focus();
 }
 
 // ---- agents (P2d-3)
@@ -1846,7 +1902,7 @@ function closeSheet(returnFocus) {
   } else if (!$("accept").hidden) {
     $("accept-title").focus();
   } else {
-    ($("keys").hidden ? $("first-title") : $("agents-title")).focus();
+    (!$("keys").hidden ? $("agents-title") : !$("choose").hidden ? $("choose-title") : $("first-title")).focus();
   }
 }
 
@@ -2138,6 +2194,10 @@ function start() {
   for (const id of ["agent-open", "agent-contacts", "agent-same"]) $(id).addEventListener("change", agentForm);
   for (const id of ["many-open", "many-contacts", "many-same"]) $(id).addEventListener("change", manyForm);
   on($("agent-form"), "submit", $("agent-problem"), saveAgent);
+  on($("choose-form"), "submit", $("choose-problem"), () => saveDefault("choose", choseDefault, loadAccount));
+  on($("default-change"), "click", $("agents-status"), openDefault);
+  on($("default-form"), "submit", $("default-problem"), () => saveDefault("default", savedDefault, openDefault));
+  on($("default-cancel"), "click", $("default-problem"), () => closeSheet(true));
   on($("agent-cancel"), "click", $("agent-problem"), () => closeSheet(true));
   on($("agent-private"), "click", $("agent-problem"), () => { closeSheet(false); return makePrivate(state.agent); });
   on($("agent-unlink"), "click", $("agent-problem"), () => { closeSheet(false); return startUnlink(state.agent); });

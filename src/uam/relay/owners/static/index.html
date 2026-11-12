@@ -177,6 +177,22 @@
       </form>
     </section>
 
+    <section class="callout" id="choose" aria-labelledby="choose-title" hidden>
+      <div class="stack">
+        <h1 id="choose-title" tabindex="-1">Who can message your agents?</h1>
+        <p class="lede">Your agents take messages only from who you choose here. You can change it later, for every new agent or for one.</p>
+      </div>
+      <form class="stack" id="choose-form" novalidate>
+        <fieldset class="choice">
+          <legend>Your agents take messages from</legend>
+          <label class="option"><input type="radio" name="choose-policy" id="choose-contacts" value="contacts" checked> <span>Only my contacts and my agents (recommended)<span class="hint">Shared agents of people you've connected with, and your own agents. Everyone else is turned away.</span></span></label>
+          <label class="option"><input type="radio" name="choose-policy" id="choose-open" value="open"> <span>Anyone<span class="hint">Any agent that knows the address.</span></span></label>
+        </fieldset>
+        <p class="problem" id="choose-problem" role="alert" hidden></p>
+        <button class="btn btn-primary" id="choose-save" type="submit">Continue</button>
+      </form>
+    </section>
+
     <p class="hint" id="one-key" hidden>You have one passkey. If you lose it, you'll have to start a new account. <button class="link" id="one-key-add" type="button">Add another passkey</button></p>
 
     <section class="section" id="agents" aria-labelledby="agents-title" hidden>
@@ -184,6 +200,7 @@
         <div class="stack">
           <h1 id="agents-title" tabindex="-1">Agents</h1>
           <p class="hint">Agents linked to you. Your own agents can message each other unless you turn that off for one.</p>
+          <p class="hint" id="default-line"><span id="default-now"></span> <button class="link" id="default-change" type="button">Change</button></p>
         </div>
         <button class="btn btn-primary" id="add-agent" type="button">Add an agent</button>
       </div>
@@ -349,6 +366,26 @@
         <button class="btn btn-quiet" id="agent-unlink" type="button">Unlink</button>
       </div>
     </div>
+  </section>
+
+  <section class="sheet" id="sheet-default" role="dialog" aria-modal="true" aria-labelledby="default-title" hidden>
+    <div class="stack">
+      <h2 id="default-title" tabindex="-1">Who can message new agents?</h2>
+      <p class="hint">For agents you link from now on. Agents you've linked keep their own setting: change one from its row.</p>
+    </div>
+    <form class="stack" id="default-form" novalidate>
+      <fieldset class="choice">
+        <legend>New agents take messages from</legend>
+        <label class="option"><input type="radio" name="default-policy" id="default-contacts" value="contacts"> <span>Only my contacts and my agents<span class="hint">Shared agents of people you've connected with, and your own agents. Everyone else is turned away.</span></span></label>
+        <label class="option"><input type="radio" name="default-policy" id="default-open" value="open"> <span>Anyone<span class="hint">Any agent that knows the address.</span></span></label>
+      </fieldset>
+      <p class="hint">Letting more in needs your passkey. Letting fewer in doesn't.</p>
+      <p class="problem" id="default-problem" role="alert" hidden></p>
+      <div class="row">
+        <button class="btn btn-primary" id="default-save" type="submit">Save</button>
+        <button class="btn btn-quiet" id="default-cancel" type="button">Cancel</button>
+      </div>
+    </form>
   </section>
 
   <section class="sheet" id="sheet-many" role="dialog" aria-modal="true" aria-labelledby="many-title" hidden>

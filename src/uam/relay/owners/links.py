@@ -473,17 +473,17 @@ async def approve(
     ):
         await session.rollback()
         raise PasskeyError(409, "not_waiting", "This link isn't waiting for you.")
-    await _join_fleet(session, link, now)
+    await _settle(session, link, now)
     await owner_crud.audit(session, owner.id, "link_approved", {"link": link.id})
     await session.commit()
     await session.refresh(link)
     return view(link, now)
 
 
-async def _join_fleet(session: AsyncSession, link: OwnerLink, now: datetime) -> None:
+async def _settle(session: AsyncSession, link: OwnerLink, now: datetime) -> None:
     from uam.relay.owners import policy  # policy imports this module
 
-    await policy.join_fleet(session, link, now)
+    await policy.settle(session, link, now)
 
 
 # --- a set of links, one passkey (P2d-4) ---------------------------------------
@@ -551,7 +551,7 @@ async def approve_set(
         ):
             await session.rollback()
             raise PasskeyError(409, "not_waiting", "One of these links isn't waiting for you.")
-        await _join_fleet(session, link, now)
+        await _settle(session, link, now)
         await owner_crud.audit(session, owner.id, "link_approved",
                                {"link": link.id, "set": len(found)})
     await session.commit()

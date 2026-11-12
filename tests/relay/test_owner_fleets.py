@@ -23,6 +23,7 @@ import pytest
 
 from tests.relay._owner_fixtures import (  # noqa: F401  (fixtures are used by name)
     OWNER_ORIGIN,
+    _exec,
     _on_owner_host,
     _rows,
     clock,
@@ -249,6 +250,8 @@ def test_narrowing_several_needs_no_passkey(relay, ada):
 def test_a_request_that_would_widen_any_of_them_changes_none(relay, ada):
     one, two = _one(relay, ada, "w1"), _one(relay, ada, "w2")
     _set(ada, links=_ids(one), same_owner=False)
+    _exec(relay, "UPDATE inbound_policies SET policy = 'open' WHERE agent_address = :a",
+          a=two["address"])
     resp = _set(ada, links=_ids(one, two))
     assert resp.status_code == 409 and resp.json()["error"] == "needs_passkey"
     assert _policy(ada, one) == ("contacts", False) and _policy(ada, two) == ("open", True)

@@ -34,8 +34,9 @@ from uam.protocol.contacts import (
     secret_hash,
 )
 from uam.protocol.didkey import ED25519, P256, encode_did_key
-from uam.protocol.signed import canonical, object_hash
+from uam.protocol.signed import _hash_canonical, canonical, object_hash
 from uam.protocol.webauthn import approval_challenge
+from uam.relay.owners.policy import DEFAULT, DEFAULT_SCREEN
 
 ME = "A" * 22
 THEM = "C" * 22
@@ -100,13 +101,25 @@ def _policy(n, agent, policy="open", same=True, **over):
     return body
 
 
+def _hash(kind, body):
+    # The owner's default is the relay's own record, outside the protocol's types.
+    return _hash_canonical(body) if kind == DEFAULT else object_hash(body)
+
+
+def _default(**over):
+    body = {"type": DEFAULT, "v": 1, "owner": ME_REF, "policy": "open",
+            "validFrom": "2026-11-12T15:04:59Z", "nonce": "d" * 22}
+    body.update(over)
+    return body
+
+
 def _answer(signed, screen, **lie):
     """What the relay's start routes answer (contacts._ask)."""
     answer = {
-        "items": [{"type": t, "body": canonical(b).decode(), "hash": object_hash(b)}
+        "items": [{"type": t, "body": canonical(b).decode(), "hash": _hash(t, b)}
                   for t, b in signed],
         "screen": screen,
-        "challenge": b64u(approval_challenge([(t, object_hash(b)) for t, b in signed], screen)),
+        "challenge": b64u(approval_challenge([(t, _hash(t, b)) for t, b in signed], screen)),
     }
     answer.update(lie)
     return answer
@@ -165,6 +178,7 @@ GOOD = {
     "policy_fleet_of_one": ("policies", _answer([(POLICY, pol_one[0])],
                                                 policies_screen(pol_one, "Solo")),
                             {**ONE_CTX, "fleet": "Solo"}),
+    "default": ("default", _answer([(DEFAULT, _default())], DEFAULT_SCREEN), {"ownerId": ME}),
 }
 EXPECTED = {
     "invite": invite_screen(invite_grant, BOB),
@@ -177,6 +191,7 @@ EXPECTED = {
     "policy_three": policies_screen(pol_three),
     "policy_fleet": policies_screen(pol_three, "Support"),
     "policy_fleet_of_one": policies_screen(pol_one, "Solo"),
+    "default": DEFAULT_SCREEN,
 }
 
 
@@ -185,7 +200,7 @@ def _bad(name, signed, screen, ctx, **lie):
 
 
 GOOD_KIND = {"invite": "invite", "redeem": "redeem", "confirm": "confirm", "keep": "keep",
-             "policy": "policies"}
+             "policy": "policies", "default": "default"}
 other_grant = _grant({"kind": "owner", "owner": {**THEM_REF, "ownerId": "E" * 22}})
 BAD = dict([
     # A relay that shows one sentence and asks for another to be signed.
@@ -264,6 +279,16 @@ BAD = dict([
          {**THREE_CTX, "fleet": 'a" fleet: "x'}),
     _bad("policy:a_kept_grant_as_policy", [(GRANT, kept[0])], keep_screen(kept[:1], AGENT),
          ONE_CTX),
+    _bad("default:only_contacts_signed_as_anyone", [(DEFAULT, _default(policy="contacts"))],
+         DEFAULT_SCREEN, {"ownerId": ME}),
+    _bad("default:another_owner", [(DEFAULT, _default(owner=THEM_REF))], DEFAULT_SCREEN,
+         {"ownerId": ME}),
+    _bad("default:lying_screen", [(DEFAULT, _default())],
+         "Let only your contacts message the agents you link from now on.", {"ownerId": ME}),
+    _bad("default:two_settings", [(DEFAULT, _default()), (DEFAULT, _default(nonce="e" * 22))],
+         DEFAULT_SCREEN, {"ownerId": ME}),
+    _bad("default:an_agent_policy_instead", [(POLICY, pol_one[0])], DEFAULT_SCREEN,
+         {"ownerId": ME}),
 ])
 
 

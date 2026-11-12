@@ -92,6 +92,7 @@ DATETIME_COLUMNS = [
     ("owner_links", "effective_at", False),
     ("owner_links", "created_at", False),
     ("owner_links", "approved_at", True),
+    ("owner_links", "settled_at", True),
     ("owner_links", "ended_at", True),
     ("owner_unlinks", "created_at", False),
     ("owner_requests", "created_at", False),

@@ -80,9 +80,9 @@ def _with_public_key(agent):
 # ---------------------------------------------------------------- reading
 
 
-def test_a_new_link_takes_anyone(bob, bea):
+def test_a_new_link_takes_only_contacts_and_the_owners_agents(bob, bea):
     got = _policy(bob, bea)
-    assert got["policy"] == "open" and got["sameOwner"] is True
+    assert got["policy"] == "contacts" and got["sameOwner"] is True
     assert got["carriedOver"] == [] and got["kept"] == []
 
 
@@ -92,7 +92,7 @@ def test_the_agent_list_says_who_can_message_each(bob, bea):
         [link] = [x for x in bob.get("/api/owner/links").json()["links"] if x["id"] == bea["link"]]
         return link["policy"], link["sameOwner"]
 
-    assert listed() == ("open", True)
+    assert listed() == ("contacts", True)
     assert _narrow(bob, bea, "contacts", False).status_code == 200
     assert listed() == ("contacts", False)
 
@@ -203,8 +203,10 @@ def test_a_policy_approval_is_for_its_own_agent(relay, bob, bea):
 def test_narrowing_sets_carried_over_contacts_aside(relay, bob, bea):
     old = _with_public_key(_agent(relay, "old"))
     _carry(relay, bea, old)
+    [now] = _rows(relay, "SELECT revision FROM inbound_policies WHERE agent_address = :a",
+                  a=bea["address"])
     _db(relay, lambda s: __import__("uam.db.crud.inbound", fromlist=["x"]).set_policy(
-        s, bea["address"], "open", expected_revision=1, set_by="admin"))
+        s, bea["address"], "open", expected_revision=now["revision"], set_by="admin"))
     assert _send(relay, old, bea) == "stored"
     got = _narrow(bob, bea).json()
     assert [c["address"] for c in got["carriedOver"]] == [old["address"]]

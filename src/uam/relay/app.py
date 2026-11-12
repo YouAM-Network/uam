@@ -251,16 +251,24 @@ async def _reservation_expiry_loop(app: FastAPI) -> None:
 
 async def _owner_invite_email_loop(app: FastAPI) -> None:
     """Send pre-approved invites once their 10-minute undo has passed (P2e),
-    and close frozen accounts once their 72 hours have passed (DEC-010)."""
+    close frozen accounts once their 72 hours have passed (DEC-010), and give
+    agents whose link just took effect their owner's setting for who may
+    message them."""
     from uam.db.engine import get_engine
     from uam.db.retry import is_transient_error
     from uam.db.session import async_session_factory
     from uam.relay.owners.contacts import send_due
     from uam.relay.owners.freeze import finish_due
+    from uam.relay.owners.policy import settle_due
 
+    async def settle(session, app):
+        await settle_due(session)
+
+    jobs = ((send_due, "sending invites"), (finish_due, "closing frozen accounts"),
+            (settle, "settling linked agents"))
     while True:
         await asyncio.sleep(_OWNER_INVITE_EMAIL_INTERVAL)
-        for job, what in ((send_due, "sending invites"), (finish_due, "closing frozen accounts")):
+        for job, what in jobs:
             try:
                 factory = async_session_factory(get_engine())
                 async with factory() as session:

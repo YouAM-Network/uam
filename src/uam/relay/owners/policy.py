@@ -38,7 +38,7 @@ from uam.db.models import (
     RoutedMessage,
 )
 from uam.protocol.contacts import GRANT, POLICY, keep_screen, policies_screen, policy_screen
-from uam.protocol.signed import canonical, object_hash, parse_body
+from uam.protocol.signed import _hash_canonical, canonical, object_hash, parse_body
 from uam.relay.gate import _did
 from uam.relay.owners import contacts, fleets, service
 from uam.relay.owners.links import _nonce, _stamp
@@ -351,14 +351,105 @@ async def widen_many(
     return {"policies": [await view(session, link) for link in links]}
 
 
-async def join_fleet(session: AsyncSession, link: OwnerLink, now) -> None:
-    """A link just approved takes its fleet's setting, if it's in effect now
-    and the setting only lets fewer in. Called before the approval commits."""
-    if link.fleet_id is None or service._aware(link.effective_at) > now:
+# --- the owner's default (Amir, chat 2026-11-12) --------------------------------
+
+#: Who may message an agent its owner links, until the owner chooses.
+DEFAULT_POLICY = "contacts"
+#: Links the sweep settles per run.
+SETTLE_BATCH = 50
+#: What a passkey signs to let anyone message the agents linked from now on.
+#: The relay's own record, not a protocol object: no agent checks it.
+DEFAULT = "UamAgentDefault"
+DEFAULT_SCREEN = "Let anyone message the agents you link from now on."
+
+
+def owner_default(owner: Owner) -> str:
+    return owner.agent_policy or DEFAULT_POLICY
+
+
+async def settle(session: AsyncSession, link: OwnerLink, now) -> None:
+    """A link in effect takes its owner's setting, once: its fleet's if the
+    fleet has one, else the owner's default with their own agents let in.
+    Only a setting that lets fewer in is applied. Called before an approval
+    commits, and by :func:`settle_due` for links that start later."""
+    if link.settled_at is not None or service._aware(link.effective_at) > now:
         return
-    fleet = await session.get(OwnerFleet, link.fleet_id)
-    if fleet is None or fleet.policy is None:
-        return
-    same = bool(fleet.same_owner)
-    if not _widens(await _current(session, link.agent_address), fleet.policy, same):
-        await _apply(session, link.agent_address, fleet.policy, same)
+    fleet = await session.get(OwnerFleet, link.fleet_id) if link.fleet_id else None
+    if fleet is not None and fleet.policy is not None:
+        target = (fleet.policy, bool(fleet.same_owner))
+    else:
+        owner = await session.get(Owner, link.owner_pk)
+        target = (owner_default(owner), True)
+    current = await _current(session, link.agent_address)
+    if target != current and not _widens(current, *target):
+        await _apply(session, link.agent_address, *target)
+    link.settled_at = now
+
+
+async def settle_due(session: AsyncSession) -> int:
+    """Settle the links now in effect that haven't been: links of agents that
+    were already running (they start 72 hours after approval), and links made
+    before the owner's default existed. Commits; returns how many."""
+    now = service.utcnow()
+    links = (await session.execute(
+        select(OwnerLink).where(
+            OwnerLink.state == "active", OwnerLink.settled_at.is_(None),
+            OwnerLink.effective_at <= now,
+        ).order_by(OwnerLink.id).limit(SETTLE_BATCH)
+    )).scalars().all()
+    for link in links:
+        await settle(session, link, now)
+    await session.commit()
+    return len(links)
+
+
+async def _has_links(session: AsyncSession, owner: Owner) -> bool:
+    return (await session.execute(
+        select(exists().where(OwnerLink.owner_pk == owner.id))
+    )).scalar_one()
+
+
+def _default_view(owner: Owner) -> dict[str, Any]:
+    return {"policy": owner_default(owner), "chosen": owner.agent_policy is not None}
+
+
+async def choose_default(session: AsyncSession, owner: Owner, policy: str) -> dict[str, Any]:
+    """Only my contacts and my agents, or Anyone, for agents linked from now
+    on. Anyone needs a passkey once the owner has linked an agent; before
+    that (at sign-up) the choice is all there is."""
+    if policy == "open" and owner.agent_policy != "open" and await _has_links(session, owner):
+        await session.rollback()
+        raise PasskeyError(409, "needs_passkey", "Letting anyone in needs your passkey.")
+    owner.agent_policy = policy
+    session.add(owner)
+    await contacts.owner_crud.audit(session, owner.id, "agent_default", {"policy": policy})
+    await session.commit()
+    return _default_view(owner)
+
+
+async def default_start(
+    session: AsyncSession, settings, owner: Owner, credential_id: str | None
+) -> dict[str, Any]:
+    keys_hash = await contacts._head(session, owner)
+    signer = await contacts._signer(session, owner, keys_hash, credential_id)
+    body = {
+        "type": DEFAULT, "v": 1, "owner": contacts._owner_ref(settings, owner, keys_hash),
+        "policy": "open", "validFrom": _stamp(service.utcnow()), "nonce": _nonce(),
+    }
+    held = {"owner": {"keysHash": keys_hash}, "body": canonical(body).decode()}
+    return await contacts._ask(session, settings, owner, "default", held, [(DEFAULT, body)],
+                               DEFAULT_SCREEN, signer, hash_of=_hash_canonical)
+
+
+async def default_widen(
+    session: AsyncSession, settings, owner: Owner, assertion: dict[str, str]
+) -> dict[str, Any]:
+    row, held, signer = await contacts._approved(session, settings, owner, "default", assertion)
+    owner.agent_policy = "open"
+    session.add(owner)
+    await contacts.owner_crud.audit(session, owner.id, "agent_default", {
+        "policy": "open", "hash": _hash_canonical(json.loads(held["body"])),
+        **contacts._proof(row, signer, assertion),
+    })
+    await session.commit()
+    return _default_view(owner)

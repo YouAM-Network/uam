@@ -169,15 +169,17 @@ def _grant_body(
 async def _ask(
     session: AsyncSession, settings, owner: Owner, purpose: str, held: dict[str, Any],
     items: list[tuple[str, dict[str, Any]]], screen: str, signer: OwnerPasskey,
+    *, hash_of=object_hash,
 ) -> dict[str, Any]:
     """Store a challenge over *items* as *screen* shows them, for *signer*.
 
     *held* is what the finish route needs back; it names the key log entry
-    whose passkeys may sign and the one that will.
+    whose passkeys may sign and the one that will. *hash_of* hashes each
+    item: the protocol's, unless the item is the relay's own.
     """
     held = {**held, "signer": signer.did}
     challenge = _b64u(approval_challenge(
-        [(kind, object_hash(body)) for kind, body in items], screen
+        [(kind, hash_of(body)) for kind, body in items], screen
     ))
     now = service.utcnow()
     await owner_crud.add_challenge(
@@ -187,7 +189,7 @@ async def _ask(
     await session.commit()
     return {
         "items": [
-            {"type": kind, "body": canonical(body).decode(), "hash": object_hash(body)}
+            {"type": kind, "body": canonical(body).decode(), "hash": hash_of(body)}
             for kind, body in items
         ],
         "screen": screen, "challenge": challenge,

@@ -415,6 +415,11 @@ class Owner(SQLModel, table=True):
     ``created_via`` is ``admin``,
     ``signup``, ``request`` (an agent's request email) or ``reservation``
     (a reservation email).
+
+    ``agent_policy`` is who may message the agents the owner links from now
+    on: ``contacts`` (their contacts and their own agents) or ``open``
+    (anyone). Null until they choose, which counts as ``contacts``
+    (migration 0023).
     """
 
     __tablename__ = "owners"
@@ -427,6 +432,7 @@ class Owner(SQLModel, table=True):
     )
     created_via: str = Field(sa_column=Column(String, nullable=False))
     created_at: datetime = Field(default_factory=_now, sa_column=_created_at())
+    agent_policy: str | None = Field(default=None, sa_column=Column(String, nullable=True))
 
 
 class OwnerEmail(SQLModel, table=True):
@@ -810,6 +816,10 @@ class OwnerLink(SQLModel, table=True):
             index=True,
         ),
     )
+    # When the agent took its owner's setting for who may message it: its
+    # fleet's, or the owner's default (migration 0023). Null until the link
+    # is in effect.
+    settled_at: datetime | None = Field(default=None, sa_column=_maybe_time())
 
 
 class OwnerUnlink(SQLModel, table=True):

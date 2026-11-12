@@ -107,7 +107,7 @@ Owners connect with each other, and each decides who reaches their agents:
 
 Each approval (a `UamContactGrant`) lasts 90 days. `GET /api/owner/contacts` lists the people on both sides with their shared agents. Removing someone (`POST /api/owner/contacts/{owner_id}/remove`) withdraws your approval at once. Cancelling an invite withdraws what was signed for it. Both go on the relay's revocation list, which anyone can read: `GET /api/v1/owner/revocations?since=<n>` returns `{t, h, at}` entries, signed by the relay's key when it has one.
 
-Each linked agent takes messages from Anyone (the default) or Only my contacts (`GET`/`POST /api/owner/links/{id}/policy`). Under Only my contacts the relay delivers from:
+Each linked agent takes messages from Only my contacts (the default) or Anyone (`GET`/`POST /api/owner/links/{id}/policy`). Under Only my contacts the relay delivers from:
 - a shared agent, linked and started, of an owner this agent's owner approved, signing with the key on its link (the receiving agent must be shared too);
 - the owner's other agents, unless the owner turns that off;
 - receipts for the agent's own mail.
@@ -116,7 +116,11 @@ Narrowing needs no passkey. Widening (back to Anyone, or letting the owner's own
 
 Several agents can be set at once (`POST /api/owner/policy` with `"links": [...]` or `"fleet": id`, at most 50): narrowing needs no passkey, and a request that would widen any of them changes none. Widening them is one passkey approval over one sentence naming every agent (`/api/owner/policy/approve/start`, then `/approve`); each agent keeps its own signed `UamAgentPolicy` and the hashes signed with it.
 
-A fleet is a named group of an owner's agents; a link is in one at most. A code can name one (`"fleet": "support"` on `POST /api/owner/codes`): the agents that use it join, and one that is linked at once takes the fleet's setting if that only lets fewer in. Owners list, make, move agents between, rename and ungroup fleets (`GET`/`POST /api/owner/fleets`, `/fleets/move`, `/fleets/{id}/rename`, `/fleets/{id}/ungroup`). Grouping changes nobody's access and needs no passkey.
+Owners choose once, right after their first passkey, who the agents they link take messages from: Only my contacts and my agents (preselected) or Anyone (`POST /api/owner/agent-policy` with `{"policy": "contacts" | "open"}`; `GET /api/owner/me` returns `agent_policy` and `agent_policy_chosen`). Until they choose it counts as Only my contacts. Anyone is free before they link an agent; after that it needs a passkey (`/api/owner/agent-policy/approve/start`, then `/approve`, over a relay-only `UamAgentDefault`). Choosing fewer is always free. The choice is for agents linked from then on; each linked agent keeps its own setting.
+
+An agent takes its owner's setting once, when its link is in effect: its fleet's setting if the fleet has one, otherwise the owner's choice with their own agents let in, and only if that lets fewer in. A link that starts later (a `link` code, 72 hours on) takes it on the relay's background sweep, which also narrows agents linked before migration 0023, except those whose owner had already set them.
+
+A fleet is a named group of an owner's agents; a link is in one at most. A code can name one (`"fleet": "support"` on `POST /api/owner/codes`): the agents that use it join, and take the fleet's setting as above. Owners list, make, move agents between, rename and ungroup fleets (`GET`/`POST /api/owner/fleets`, `/fleets/move`, `/fleets/{id}/rename`, `/fleets/{id}/ungroup`). Grouping changes nobody's access and needs no passkey.
 
 ### When an owner loses every passkey
 
