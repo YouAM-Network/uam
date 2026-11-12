@@ -8,6 +8,7 @@ sends real email.
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import re
 import time
@@ -27,7 +28,7 @@ from tests.relay._owner_fixtures import (  # noqa: F401  (fixtures)
     _rows,
     owner_env,
 )
-from uam.relay.owners.mail import GiveUp, ResendTransport, Retry, render
+from uam.relay.owners.mail import GiveUp, ResendTransport, Retry, render, render_html
 
 
 class FakeTransport:
@@ -38,11 +39,11 @@ class FakeTransport:
         self.fail: list[Exception] = []
         self.keys: list[str] = []
 
-    async def send(self, *, to, subject, text, key):
+    async def send(self, *, to, subject, text, key, html=None):
         self.keys.append(key)
         if self.fail:
             raise self.fail.pop(0)
-        self.sent.append({"to": to, "subject": subject, "text": text, "key": key})
+        self.sent.append({"to": to, "subject": subject, "text": text, "html": html, "key": key})
         return f"resend-{len(self.sent)}"
 
 
@@ -102,6 +103,7 @@ def test_a_sign_in_code_arrives_by_email_and_signs_in(relay, owner, transport):
     assert mail["to"] == EMAIL.lower()
     assert mail["subject"] == "Your YouAM sign-in code"
     code = re.search(r"Your code is (\d{6})\.", mail["text"]).group(1)
+    assert mail["html"].startswith("<!doctype html>") and code in mail["html"]
     resp = owner.post("/api/owner/sign-in/finish", json={"email": EMAIL, "code": code})
     assert resp.status_code == 200, resp.text
 
@@ -259,6 +261,76 @@ def test_each_email_says_who_and_what(kind, data, subject, contains):
     assert text.endswith("--\nYouAM · account.x")
 
 
+# Every kind, with what a person would see in it.
+ALL_KINDS = {
+    "sign_in_code": {"code": "042517"},
+    "owner_request": {"agent": "bob::youam.network", "words": ["apple", "river", "stone", "lamp"],
+                      "expiresAt": "2026-11-18T09:00:00Z", "url": "https://account.x/#request=T",
+                      "neverUrl": "https://account.x/#never=T"},
+    "name_reserved": {"address": "ada::youam.network", "expiresAt": "2026-11-12T09:00:00Z",
+                      "url": "https://account.x/#reserve=T", "neverUrl": "https://account.x/#never=T"},
+    "invite": {"link": "https://account.x/i/abc#s", "inviter": "ada@x.io"},
+    "invite_redeemed": {"email": "bob@x.io", "connected": False},
+    "invite_reused": {},
+    "contact_confirmed": {"email": "ada@x.io"},
+    "link_requested": {"agent": "bob::x.io", "effectiveAt": "2026-11-14T09:00:00Z"},
+    "link_cancelled": {"agent": "bob::x.io"},
+    "account_frozen": {"closesAt": "2026-11-15T09:00:00Z", "keepUrl": "https://account.x/#keep=K"},
+    "account_closed": {"url": "https://account.x/"},
+}
+
+
+@pytest.mark.parametrize("kind", sorted(ALL_KINDS))
+def test_the_html_says_what_the_text_says(kind):
+    """Each line of the plain text (but the footer) is in the HTML, so the two can't drift."""
+    data = ALL_KINDS[kind]
+    _, text = render(kind, data, "https://account.x")
+    page = render_html(kind, data, "https://account.x")
+    assert page.startswith("<!doctype html>")
+    for line in text.split("\n--\n")[0].splitlines():
+        line = line.strip().rstrip(":")
+        if line.startswith("Your code is "):  # drawn large, on its own
+            code, note = line.removeprefix("Your code is ").split(". ", 1)
+            assert f">{code}<" in page and note in page
+        elif line.startswith("It shows these four words"):  # each word on its own
+            assert all(f">{w}<" in page for w in data["words"])
+        elif line:
+            assert html.escape(line, quote=True) in page, line
+    assert "YouAM · account.x" in page
+
+
+@pytest.mark.parametrize("kind", ["owner_request", "link_requested", "link_cancelled"])
+def test_the_html_escapes_an_agent_name(kind):
+    data = dict(ALL_KINDS[kind], agent='<img src=x onerror="alert(1)">::x.io')
+    page = render_html(kind, data, "https://account.x")
+    assert "<img" not in page
+    assert "&lt;img src=x onerror=&quot;alert(1)&quot;&gt;" in page
+
+
+def test_the_html_escapes_an_email_and_a_link():
+    page = render_html("invite", {"inviter": "a<b>@x.io", "link": 'https://x/"><script>'},
+                       "https://account.x")
+    assert "<script>" not in page and "<b>" not in page
+    assert 'href="https://x/&quot;&gt;&lt;script&gt;"' in page
+
+
+def test_the_button_link_is_also_written_out():
+    """Some mail apps hide buttons: the link is spelled out under the card."""
+    page = render_html("account_frozen", ALL_KINDS["account_frozen"], "https://account.x")
+    assert page.count('href="https://account.x/#keep=K"') == 2
+    assert "Button not working?" in page
+
+
+def test_the_code_email_has_no_button():
+    page = render_html("sign_in_code", {"code": "042517"}, "https://account.x")
+    assert "042517" in page and "Button not working?" not in page
+
+
+def test_an_unknown_kind_has_no_html():
+    with pytest.raises(KeyError):
+        render_html("nope", {}, "https://account.x")
+
+
 def test_an_unknown_kind_has_no_text():
     with pytest.raises(KeyError):
         render("nope", {}, "https://account.x")
@@ -289,6 +361,19 @@ def test_resend_gets_the_email_with_the_key_and_idempotency_key():
     assert seen["key"] == "uam-1"
     assert seen["body"] == {"from": "YouAM <account@notify.youam.network>", "to": ["ada@x.io"],
                             "subject": "S", "text": "T"}
+
+
+def test_resend_gets_the_html_when_there_is_some():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"id": "abc-123"})
+
+    asyncio.run(_resend(handler).send(to="ada@x.io", subject="S", text="T", html="<p>H</p>",
+                                      key="uam-1"))
+    assert seen["body"]["text"] == "T"
+    assert seen["body"]["html"] == "<p>H</p>"
 
 
 @pytest.mark.parametrize("status, outcome", [

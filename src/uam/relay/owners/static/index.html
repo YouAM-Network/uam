@@ -165,6 +165,7 @@
       <div class="stack">
         <h1 id="first-title" tabindex="-1">Add your first passkey</h1>
         <p class="lede">A passkey is how you approve things. There's no password: your device asks for Face ID, a fingerprint or your PIN. Until you add one, your account can't approve anything.</p>
+        <p class="hint">Your device asks twice: once to make the passkey, then once more to approve adding it to your account.</p>
       </div>
       <form class="stack" id="first-form" novalidate>
         <div class="field">
@@ -501,7 +502,7 @@
     <p class="kicker">Approval</p>
     <h2 id="approve-title" tabindex="-1">Your passkey will sign exactly this</h2>
     <blockquote class="quote" id="approve-text"></blockquote>
-    <p class="hint">Your device will then ask for Face ID, a fingerprint or your PIN.</p>
+    <p class="hint" id="approve-hint">Your device will then ask for Face ID, a fingerprint or your PIN.</p>
     <p class="problem" id="approve-problem" role="alert" hidden></p>
     <div class="row">
       <button class="btn btn-primary" id="approve" type="button">Approve with passkey</button>

@@ -1610,6 +1610,8 @@ async function previousEntry(answer) {
   return entry ? { body: entry.body, hash: entry.hash } : null;
 }
 
+const NO_PASSKEY_HERE = "No passkey was made. No passkey on this computer? Choose “Use a phone or tablet” and scan the code with your phone, or open this page on your phone.";
+
 async function createPasskey(input, problemEl, button) {
   const label = input.value.trim();
   if (!label) return problem(input, problemEl, "Give it a name, like the device it's on.");
@@ -1642,7 +1644,10 @@ async function createPasskey(input, problemEl, button) {
       if (err.name === "InvalidStateError") {
         return problem(input, problemEl, "This device already has a passkey for your account.");
       }
-      if (err.name === "NotAllowedError" || err.name === "AbortError") return; // they said no
+      if (err.name === "NotAllowedError" || err.name === "AbortError") {
+        // They said no, or this computer couldn't make one: say where else it can live.
+        return problem(input, problemEl, NO_PASSKEY_HERE);
+      }
       throw err;
     }
     const finish = await api("/api/owner/passkeys/register/finish", {
@@ -1661,7 +1666,9 @@ async function createPasskey(input, problemEl, button) {
         "This page stopped: what your passkey would sign didn't match what it would show. Nothing was signed.");
     }
     state.pending = { answer: finish.data, created: made.rawId, label, first: !state.me.owner_id };
-    openApprove(screen, button);
+    openApprove(screen, button, state.pending.first
+      ? "Your passkey is made. Your device asks once more, to approve adding it to your account."
+      : "Your passkey is made. Approve adding it with a passkey you already have.");
   } finally {
     done();
   }
@@ -1677,8 +1684,11 @@ function forget(pending) {
   }).catch(() => {});
 }
 
-function openApprove(screen, opener) {
+const APPROVE_HINT = "Your device will then ask for Face ID, a fingerprint or your PIN.";
+
+function openApprove(screen, opener, hint = APPROVE_HINT) {
   $("approve-text").textContent = screen;
+  $("approve-hint").textContent = hint;
   say($("approve-problem"), "");
   openSheet($("sheet-approve"), opener, $("approve-title"));
   clearTimeout(state.timer);
