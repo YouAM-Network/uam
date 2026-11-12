@@ -851,3 +851,14 @@ def _make_test_vk():
     return SigningKey.generate().verify_key
 
 KeyManager._make_test_vk = staticmethod(_make_test_vk)
+
+
+def test_the_next_step_after_init_depends_on_the_relay_and_the_link():
+    from uam.cli.main import _owner_next_step
+
+    assert _owner_next_step({"state": "unavailable"}) is None  # owners off
+    assert _owner_next_step(None) is None  # couldn't read it
+    assert "uam owner request" in _owner_next_step({"state": "none"})
+    assert _owner_next_step({"state": "active"}) is None
+    asked = {"state": "none", "request": {"state": "open", "expiresAt": "2026-11-13T00:00:00Z"}}
+    assert _owner_next_step(asked) is None  # already asked; the banner says so

@@ -258,6 +258,21 @@ def test_uam_init_asks_for_a_name_in_a_terminal(routed, terminal):
     assert "Initialized agent: carol::test.local" in result.output
 
 
+def test_uam_init_says_how_to_get_an_owner(routed, terminal):
+    """An agent set up on its own is told the next step: ask its person."""
+    result = CliRunner().invoke(cli, ["init", "--name", "dave"])
+    assert result.exit_code == 0, result.output
+    assert "uam owner request <their email>" in result.output
+    assert "uam owner link" in result.output
+
+
+def test_uam_init_says_nothing_more_once_linked(ada, routed, terminal, monkeypatch):
+    monkeypatch.setattr(cli_main, "_sleep", _approving(ada))
+    result = CliRunner().invoke(cli, ["init", "--setup"], input=_code(ada) + "\nerin\n")
+    assert result.exit_code == 0, result.output
+    assert "uam owner request" not in result.output
+
+
 # ---------------------------------------------------------------- P2d-4: cancel, fleets
 
 

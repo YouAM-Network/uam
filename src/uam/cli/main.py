@@ -336,13 +336,35 @@ def init(
         agent.connect_sync()
         address = agent.address
         fp = public_key_fingerprint(agent._key_manager.verify_key)
+        next_step = _owner_next_step(agent.owner_link)
         agent.close_sync()
         click.echo(f"Initialized agent: {address}")
         click.echo(f"Fingerprint: {fp}")
+        if next_step:
+            click.echo("")
+            click.echo(next_step)
     except UAMError as exc:
         _error(f"Error: {exc}")
     except Exception as exc:
         _error(f"Error: {exc}")
+
+
+def _owner_next_step(status: object) -> str | None:
+    """What a new agent should do next, when its relay links agents to owners
+    and it has none yet and hasn't asked for one."""
+    if not isinstance(status, dict) or status.get("state") != "none":
+        return None
+    from uam.sdk.owner_link import REQUEST_PENDING
+
+    if (status.get("request") or {}).get("state") in REQUEST_PENDING:
+        return None
+    return (
+        "Next: ask the person who runs this agent to own it, so the agents of "
+        "people they connect with can reach it:\n"
+        "  uam owner request <their email>\n"
+        "They get an email and approve with their passkey. If they already have a "
+        "code from their YouAM account page, use `uam owner link` instead."
+    )
 
 
 # ---------------------------------------------------------------------------
