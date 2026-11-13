@@ -110,6 +110,36 @@ def test_only_the_pinned_assets_are_served(owner, path):
     assert owner.get(path).status_code == 404
 
 
+def test_the_privacy_notice_is_served_on_the_owner_origin(owner):
+    """P2g-2: a short beta privacy notice at /privacy, linked from sign-in."""
+    resp = owner.get("/privacy")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/html")
+    assert "default-src 'self'" in resp.headers["content-security-policy"]
+    assert "<title>YouAM privacy</title>" in resp.text
+    for processor in ("Resend", "Cloudflare", "Google Cloud"):
+        assert processor in resp.text, processor
+
+
+def test_the_privacy_notice_runs_no_script_and_pins_its_styles(owner):
+    page = owner.get("/privacy").text
+    assert "<script" not in page and "{{" not in page
+    sheets = [t for t in ASSET.findall(page) if _attr(t, "rel") == "stylesheet"]
+    assert len(sheets) == 2  # tokens.css, owner.css: the same files as the page
+    for tag in sheets:
+        url = _attr(tag, "href")
+        assert url in owner.get("/").text, url
+        assert _attr(tag, "integrity") == _sri(owner.get(url).content), url
+
+
+def test_sign_in_links_to_the_privacy_notice(owner):
+    assert 'href="/privacy"' in owner.get("/").text
+
+
+def test_the_relay_origin_does_not_serve_the_privacy_notice(relay):
+    assert "YouAM privacy" not in relay.get("/privacy").text
+
+
 def test_the_relay_origin_does_not_serve_the_page(relay):
     resp = relay.get("/")
     assert "YouAM account" not in resp.text

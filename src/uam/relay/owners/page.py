@@ -46,20 +46,31 @@ def _asset(name: str, media_type: str) -> Asset:
     return Asset(url, integrity, data, media_type)
 
 
-def page_router() -> APIRouter:
-    assets = {name: _asset(name, kind) for name, kind in _ASSETS.items()}
-    html = _load("index.html").decode()
+def _fill(template: str, assets: dict[str, Asset]) -> str:
+    html = _load(template).decode()
     for name, asset in assets.items():
         html = html.replace("{{" + name + "}}", asset.url)
         html = html.replace("{{" + name + ":integrity}}", asset.integrity)
     if "{{" in html:
-        raise RuntimeError("owner page template names an asset that isn't served")
+        raise RuntimeError(f"{template} names an asset that isn't served")
+    return html
+
+
+def page_router() -> APIRouter:
+    assets = {name: _asset(name, kind) for name, kind in _ASSETS.items()}
+    html = _fill("index.html", assets)
+    # The beta privacy notice (P2g-2): plain HTML on the same stylesheets.
+    privacy_html = _fill("privacy.html", assets)
     by_url = {asset.url: asset for asset in assets.values()}
     router = APIRouter()
 
     @router.get("/", response_class=HTMLResponse, include_in_schema=False)
     async def index() -> HTMLResponse:
         return HTMLResponse(html)
+
+    @router.get("/privacy", response_class=HTMLResponse, include_in_schema=False)
+    async def privacy() -> HTMLResponse:
+        return HTMLResponse(privacy_html)
 
     # An invite link (/i/<id>#<secret>, P2e): the same page, which reads the
     # id from the path and the secret from the fragment the server never sees.

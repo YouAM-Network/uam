@@ -69,6 +69,13 @@ h2 { font-size: var(--text-m); font-weight: 600; letter-spacing: -0.006em; margi
 }
 .link:hover { color: var(--ink); text-decoration-color: var(--ink); }
 
+/* Prose: a page of plain text (the privacy notice) */
+.prose { display: grid; gap: var(--space-8); }
+.prose section { display: grid; gap: var(--space-3); }
+.prose p, .prose ul { margin: 0; color: var(--ink-soft); }
+.prose ul { padding-left: var(--space-5); display: grid; gap: var(--space-2); }
+.prose a { color: var(--ink); text-underline-offset: var(--space-1); }
+
 /* The sentence being signed */
 .quote {
   background: var(--quote); border: var(--rule-width) solid var(--rule);
