@@ -6,7 +6,7 @@ Top-level convenience re-exports::
     from uam.protocol import MessageType, create_envelope  # protocol functions
 """
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 try:
     from uam.sdk.agent import Agent

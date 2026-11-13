@@ -14,8 +14,8 @@ const pkg = JSON.parse(
 ) as { version: string };
 
 describe("SDK version", () => {
-  it("package version is 0.3.0", () => {
-    expect(pkg.version).toBe("0.3.0");
+  it("package version is 0.4.0", () => {
+    expect(pkg.version).toBe("0.4.0");
   });
 
   it("SDK_VERSION matches package.json", () => {
